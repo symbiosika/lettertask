@@ -23,7 +23,9 @@ export async function openSettings() {
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const pane = select([['right', 'Rechts'], ['bottom', 'Unten'], ['off', 'Aus']], c.readingPane || 'right');
   pane.name = 'readingPane';
-  const markRead = select([['0', 'Sofort beim Anzeigen'], ['5', 'Nach 5 Sekunden'], ['10', 'Nach 10 Sekunden'], ['30', 'Nach 30 Sekunden'], ['-1', 'Nie automatisch']], String(c.markReadDelaySecs ?? 0));
+  const mrOpts = [['0', 'Sofort beim Anzeigen'], ['2', 'Nach 2 Sekunden'], ['5', 'Nach 5 Sekunden'], ['10', 'Nach 10 Sekunden'], ['30', 'Nach 30 Sekunden'], ['-1', 'Nie automatisch']];
+  if (!mrOpts.some(([v]) => v === String(c.markReadDelaySecs ?? 0))) mrOpts.push([String(c.markReadDelaySecs), `Nach ${c.markReadDelaySecs} Sekunden`]);
+  const markRead = select(mrOpts, String(c.markReadDelaySecs ?? 0));
   markRead.name = 'markReadDelaySecs';
   const listMode = select([['columns', 'Spaltenansicht (klassisch)'], ['compact', 'Kompakt, zweizeilig (eM Client)']], c.listMode || 'columns');
   listMode.name = 'listMode';
