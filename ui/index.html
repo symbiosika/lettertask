@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outlook Classic</title>
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/calendar.css">
+</head>
+<body class="app">
+  <div class="menubar" id="menubar"></div>
+  <div class="toolbar" id="toolbar" role="toolbar"></div>
+  <div class="main">
+    <div class="navpane" id="navpane">
+      <div class="pane-title" id="nav-title">E-Mail</div>
+      <div class="nav-scroll" id="folder-tree"></div>
+      <div class="nav-scroll hidden" id="cal-nav"></div>
+      <div class="nav-buttons" id="nav-buttons"></div>
+    </div>
+    <div class="splitter" id="nav-split"></div>
+    <div class="content" id="content"></div>
+  </div>
+  <div class="statusbar" id="statusbar"></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
