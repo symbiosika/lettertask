@@ -1,0 +1,23 @@
+[package]
+name = "devserver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Serves ui/ and the service API over HTTP (browser dev + e2e tests)"
+
+[dependencies]
+mailcore = { path = "../core" }
+graph-fake = { path = "../graph-fake" }
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+chrono.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+reqwest.workspace = true

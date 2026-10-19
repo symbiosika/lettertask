@@ -1,0 +1,695 @@
+//! Service layer: everything the UI can do, exposed through [`Service::dispatch`].
+
+mod calendar;
+mod categories;
+mod compose;
+mod mail;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+use chrono::Utc;
+use serde::de::DeserializeOwned;
+use serde_json::{json, Value};
+
+use crate::auth::{self, OAuthConfig, TokenSet};
+use crate::error::{Error, Result};
+use crate::graph::GraphClient;
+use crate::host::Host;
+use crate::model::*;
+use crate::store::Store;
+use crate::tokens::TokenStore;
+
+pub struct ServiceOptions {
+    pub data_dir: PathBuf,
+    pub graph_base: String,
+    pub authority: String,
+    /// Demo mode: login is completed automatically without a browser.
+    pub demo: bool,
+    pub token_store: Arc<dyn TokenStore>,
+}
+
+pub struct Service {
+    opts: ServiceOptions,
+    http: reqwest::Client,
+    pub(crate) store: Store,
+    config: RwLock<Config>,
+    clients: RwLock<HashMap<String, Arc<GraphClient>>>,
+    pub(crate) host: Arc<dyn Host>,
+    active_folders: RwLock<HashMap<String, String>>,
+    folder_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    sync_all_lock: tokio::sync::Mutex<()>,
+    last_sync: RwLock<Option<String>>,
+}
+
+fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
+    let v = args.get(name).cloned().unwrap_or(Value::Null);
+    serde_json::from_value(v).map_err(|e| Error::invalid(format!("Parameter '{name}': {e}")))
+}
+
+fn ok<T: serde::Serialize>(v: T) -> Result<Value> {
+    Ok(serde_json::to_value(v)?)
+}
+
+impl Service {
+    pub fn new(opts: ServiceOptions, host: Arc<dyn Host>) -> Result<Arc<Self>> {
+        std::fs::create_dir_all(&opts.data_dir)?;
+        let store = Store::open(&opts.data_dir.join("cache.db"))?;
+        let mut config: Config = std::fs::read_to_string(opts.data_dir.join("config.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        config.demo = opts.demo;
+        if opts.demo && config.client_id.is_empty() {
+            config.client_id = "demo-client".into();
+        }
+        let http = reqwest::Client::builder()
+            .user_agent(concat!("OutlookClone/", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(15))
+            .build()?;
+        let svc = Arc::new(Service {
+            opts,
+            http,
+            store,
+            config: RwLock::new(config),
+            clients: RwLock::new(HashMap::new()),
+            host,
+            active_folders: RwLock::new(HashMap::new()),
+            folder_locks: Default::default(),
+            sync_all_lock: tokio::sync::Mutex::new(()),
+            last_sync: RwLock::new(None),
+        });
+        svc.restore_clients()?;
+        Ok(svc)
+    }
+
+    pub fn config(&self) -> Config {
+        self.config.read().unwrap().clone()
+    }
+
+    fn oauth(&self) -> OAuthConfig {
+        let c = self.config();
+        OAuthConfig {
+            authority: self.opts.authority.clone(),
+            tenant: if c.tenant.trim().is_empty() {
+                "organizations".into()
+            } else {
+                c.tenant.trim().to_string()
+            },
+            client_id: c.client_id.trim().to_string(),
+        }
+    }
+
+    fn make_client(&self, account_id: &str, tokens: TokenSet) -> Arc<GraphClient> {
+        Arc::new(GraphClient::new(
+            self.http.clone(),
+            self.opts.graph_base.clone(),
+            account_id,
+            self.oauth(),
+            tokens,
+            self.opts.token_store.clone(),
+        ))
+    }
+
+    /// Re-creates Graph clients for stored accounts from saved refresh tokens.
+    fn restore_clients(&self) -> Result<()> {
+        let mut map = HashMap::new();
+        for a in self.store.list_accounts()? {
+            if let Some(rt) = self.opts.token_store.load(&a.id) {
+                let tokens = TokenSet {
+                    access_token: String::new(),
+                    refresh_token: rt,
+                    expires_at: chrono::DateTime::<Utc>::MIN_UTC,
+                };
+                map.insert(a.id.clone(), self.make_client(&a.id, tokens));
+            }
+        }
+        *self.clients.write().unwrap() = map;
+        Ok(())
+    }
+
+    pub(crate) fn client(&self, account_id: &str) -> Result<Arc<GraphClient>> {
+        self.clients
+            .read()
+            .unwrap()
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| Error::Auth("Konto nicht angemeldet. Bitte erneut anmelden (Datei › Konto hinzufügen).".into()))
+    }
+
+    pub(crate) fn mailbox(&self, mailbox_id: &str) -> Result<(Mailbox, Arc<GraphClient>)> {
+        let mb = self.store.get_mailbox(mailbox_id)?;
+        let c = self.client(&mb.account_id)?;
+        Ok((mb, c))
+    }
+
+    pub(crate) fn folder_lock(&self, mailbox_id: &str, folder_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.folder_locks
+            .lock()
+            .unwrap()
+            .entry(format!("{mailbox_id}|{folder_id}"))
+            .or_default()
+            .clone()
+    }
+
+    pub(crate) fn emit(&self, event: &str, payload: Value) {
+        self.host.emit(event, payload);
+    }
+
+    pub(crate) fn emit_mail_changed(&self, mailbox_id: &str, folder_id: Option<&str>) {
+        self.emit("mail-changed", json!({"mailboxId": mailbox_id, "folderId": folder_id}));
+    }
+
+    fn emit_status(&self, state: &str, message: &str) {
+        let last = self.last_sync.read().unwrap().clone();
+        self.emit(
+            "sync-status",
+            json!({"state": state, "message": message, "lastSync": last}),
+        );
+    }
+
+    /// Single entry point for the UI.
+    pub async fn dispatch(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
+        let a = &args;
+        match cmd {
+            // ---- app / accounts ----
+            "get_config" => ok(self.config()),
+            "save_config" => ok(self.save_config(arg(a, "config")?)?),
+            "list_accounts" => ok(self.store.list_accounts()?),
+            "add_account" => ok(self.add_account().await?),
+            "remove_account" => {
+                self.remove_account(&arg::<String>(a, "accountId")?)?;
+                ok(Value::Null)
+            }
+            "add_shared_mailbox" => ok(self
+                .add_shared_mailbox(&arg::<String>(a, "accountId")?, &arg::<String>(a, "address")?)
+                .await?),
+            "remove_mailbox" => {
+                let id: String = arg(a, "mailboxId")?;
+                let mb = self.store.get_mailbox(&id)?;
+                if mb.is_primary() {
+                    return Err(Error::invalid("Das Hauptpostfach kann nur mit dem Konto entfernt werden."));
+                }
+                self.store.delete_mailbox(&id)?;
+                self.emit("accounts-changed", json!({}));
+                ok(Value::Null)
+            }
+            "set_active_folder" => {
+                let mb: String = arg(a, "mailboxId")?;
+                let f: String = arg(a, "folderId")?;
+                self.active_folders.write().unwrap().insert(mb, f);
+                ok(Value::Null)
+            }
+            "sync_all" => {
+                self.sync_all(false).await;
+                ok(Value::Null)
+            }
+
+            // ---- folders ----
+            "list_folders" => ok(self.store.list_folders(&arg::<String>(a, "mailboxId")?)?),
+            "sync_folders" => ok(self.sync_folders(&arg::<String>(a, "mailboxId")?).await?),
+            "create_folder" => ok(self
+                .create_folder(
+                    &arg::<String>(a, "mailboxId")?,
+                    arg::<Option<String>>(a, "parentId")?.as_deref(),
+                    &arg::<String>(a, "name")?,
+                )
+                .await?),
+            "rename_folder" => ok(self
+                .rename_folder(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "folderId")?,
+                    &arg::<String>(a, "name")?,
+                )
+                .await?),
+            "delete_folder" => {
+                self.delete_folder(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "folderId")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "mark_folder_read" => {
+                self.mark_folder_read(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "folderId")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "empty_folder" => {
+                self.empty_folder(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "folderId")?)
+                    .await?;
+                ok(Value::Null)
+            }
+
+            // ---- messages ----
+            "list_messages" => {
+                let q: ListQuery = serde_json::from_value(args.clone())
+                    .map_err(|e| Error::invalid(e.to_string()))?;
+                ok(self.list_messages(&q)?)
+            }
+            "sync_folder" => ok(self
+                .sync_folder(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "folderId")?, false)
+                .await?),
+            "load_older" => ok(self
+                .load_older(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "folderId")?)
+                .await?),
+            "search_messages" => ok(self
+                .search_messages(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "text")?,
+                    arg::<Option<String>>(a, "folderId")?.as_deref(),
+                )
+                .await?),
+            "get_message" => ok(self
+                .get_message(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)
+                .await?),
+            "set_read" => {
+                self.set_read(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?, arg(a, "isRead")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "set_flag" => {
+                self.set_flag(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?, &arg::<String>(a, "flag")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "set_categories" => {
+                self.set_categories(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    &arg::<Vec<String>>(a, "categories")?,
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "move_messages" => {
+                self.move_messages(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    &arg::<String>(a, "destFolderId")?,
+                    false,
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "copy_messages" => {
+                self.move_messages(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    &arg::<String>(a, "destFolderId")?,
+                    true,
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "delete_messages" => {
+                self.delete_messages(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    arg::<Option<bool>>(a, "permanent")?.unwrap_or(false),
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "download_attachment" => ok(self
+                .download_attachment(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "messageId")?,
+                    &arg::<String>(a, "attachmentId")?,
+                    &arg::<Option<String>>(a, "action")?.unwrap_or_else(|| "open".into()),
+                )
+                .await?),
+            "get_message_source" => ok(self
+                .get_message_source(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)
+                .await?),
+
+            // ---- compose ----
+            "create_draft" => ok(self
+                .create_draft(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Option<String>>(a, "mode")?.unwrap_or_else(|| "new".into()),
+                    arg::<Option<String>>(a, "sourceMessageId")?.as_deref(),
+                )
+                .await?),
+            "get_draft" => ok(self
+                .get_draft(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)
+                .await?),
+            "save_draft" => ok(self.save_draft(arg(a, "draft")?).await?),
+            "send_draft" => {
+                self.send_draft(arg(a, "draft")?).await?;
+                ok(Value::Null)
+            }
+            "discard_draft" => {
+                self.discard_draft(&arg::<String>(a, "mailboxId")?, arg::<Option<String>>(a, "draftId")?.as_deref())
+                    .await?;
+                ok(Value::Null)
+            }
+            "suggest_recipients" => ok(self
+                .suggest_recipients(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "query")?)
+                .await?),
+
+            // ---- categories ----
+            "list_categories" => ok(self.list_categories(&arg::<String>(a, "accountId")?).await?),
+            "create_category" => ok(self
+                .create_category(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "displayName")?,
+                    &arg::<String>(a, "color")?,
+                )
+                .await?),
+            "update_category" => ok(self
+                .update_category(&arg::<String>(a, "accountId")?, &arg::<String>(a, "id")?, &arg::<String>(a, "color")?)
+                .await?),
+            "delete_category" => {
+                self.delete_category(&arg::<String>(a, "accountId")?, &arg::<String>(a, "id")?)
+                    .await?;
+                ok(Value::Null)
+            }
+
+            // ---- calendar ----
+            "list_calendars" => ok(self.list_calendars(&arg::<String>(a, "accountId")?).await?),
+            "list_events" => ok(self
+                .list_events(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<Vec<String>>(a, "calendarIds")?,
+                    &arg::<String>(a, "start")?,
+                    &arg::<String>(a, "end")?,
+                )
+                .await?),
+            "get_event" => ok(self
+                .get_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
+                .await?),
+            "create_event" => ok(self
+                .create_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "calendarId")?, arg(a, "input")?)
+                .await?),
+            "update_event" => ok(self
+                .update_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?, arg(a, "input")?)
+                .await?),
+            "delete_event" => {
+                self.delete_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "respond_event" => {
+                self.respond_event(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "eventId")?,
+                    &arg::<String>(a, "response")?,
+                    &arg::<Option<String>>(a, "comment")?.unwrap_or_default(),
+                    arg::<Option<bool>>(a, "sendResponse")?.unwrap_or(true),
+                )
+                .await?;
+                ok(Value::Null)
+            }
+
+            // ---- mailbox settings ----
+            "get_auto_reply" => ok(self.get_auto_reply(&arg::<String>(a, "accountId")?).await?),
+            "set_auto_reply" => ok(self
+                .set_auto_reply(&arg::<String>(a, "accountId")?, arg(a, "autoReply")?)
+                .await?),
+
+            // ---- host ----
+            "open_window" => {
+                let kind: String = arg(a, "kind")?;
+                if !matches!(kind.as_str(), "compose" | "message" | "event") {
+                    return Err(Error::invalid("Unbekannter Fenstertyp"));
+                }
+                let params: HashMap<String, Value> = arg::<Option<_>>(a, "params")?.unwrap_or_default();
+                let mut ser = url::form_urlencoded::Serializer::new(String::new());
+                for (k, v) in &params {
+                    let s = match v {
+                        Value::String(s) => s.clone(),
+                        Value::Null => continue,
+                        other => other.to_string(),
+                    };
+                    ser.append_pair(k, &s);
+                }
+                self.host.open_window(&kind, &ser.finish())?;
+                ok(Value::Null)
+            }
+            "open_url" => {
+                let url: String = arg(a, "url")?;
+                self.open_url(&url)?;
+                ok(Value::Null)
+            }
+            _ => Err(Error::invalid(format!("Unbekannter Befehl: {cmd}"))),
+        }
+    }
+
+    fn open_url(&self, url: &str) -> Result<()> {
+        let lower = url.trim().to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("mailto:") {
+            let _ = rest;
+            let addr = url.trim()[7..].split('?').next().unwrap_or("");
+            let addr = urlencoding::decode(addr).map(|c| c.into_owned()).unwrap_or_default();
+            let mailbox = self
+                .store
+                .list_accounts()?
+                .into_iter()
+                .flat_map(|a| a.mailboxes)
+                .next()
+                .ok_or_else(|| Error::invalid("Kein Konto vorhanden"))?;
+            let mut ser = url::form_urlencoded::Serializer::new(String::new());
+            ser.append_pair("mailboxId", &mailbox.id);
+            ser.append_pair("mode", "new");
+            ser.append_pair("to", &addr);
+            return self.host.open_window("compose", &ser.finish());
+        }
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return self.host.open_url(url.trim());
+        }
+        Err(Error::invalid("Nur http(s)- und mailto-Links können geöffnet werden."))
+    }
+
+    // ---- config & accounts ----
+
+    fn save_config(&self, mut c: Config) -> Result<Config> {
+        c.demo = self.opts.demo;
+        if self.opts.demo {
+            c.client_id = "demo-client".into();
+        }
+        c.sync_interval_secs = c.sync_interval_secs.clamp(15, 3600);
+        let changed_auth = {
+            let cur = self.config.read().unwrap();
+            cur.client_id != c.client_id || cur.tenant != c.tenant
+        };
+        std::fs::write(
+            self.opts.data_dir.join("config.json"),
+            serde_json::to_string_pretty(&c)?,
+        )?;
+        *self.config.write().unwrap() = c.clone();
+        if changed_auth {
+            self.restore_clients()?;
+        }
+        Ok(c)
+    }
+
+    pub async fn add_account(self: &Arc<Self>) -> Result<Account> {
+        let oauth = self.oauth();
+        let tokens = if self.opts.demo {
+            let http = self.http.clone();
+            auth::interactive_login(
+                &self.http,
+                &oauth,
+                move |url| {
+                    // Demo: the fake authorize endpoint redirects straight to our loopback.
+                    tokio::spawn(async move {
+                        let _ = http.get(url).send().await;
+                    });
+                    Ok(())
+                },
+                Duration::from_secs(30),
+            )
+            .await?
+        } else {
+            let host = self.host.clone();
+            auth::interactive_login(&self.http, &oauth, move |url| host.open_url(&url), Duration::from_secs(300))
+                .await?
+        };
+        // Use a temporary client to learn who signed in.
+        let tmp = self.make_client("pending", tokens.clone());
+        let me = tmp.get("/me?$select=id,displayName,mail,userPrincipalName").await?;
+        let id = me["id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::Auth("Benutzer-ID fehlt".into()))?
+            .to_string();
+        let email = me["mail"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or(me["userPrincipalName"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let name = me["displayName"].as_str().unwrap_or(&email).to_string();
+        // The temporary client may have rotated the refresh token; take the latest.
+        drop(tmp);
+        self.opts.token_store.save(&id, &tokens.refresh_token)?;
+        self.store.upsert_account(&id, &email, &name)?;
+        let mailbox = Mailbox {
+            id: id.clone(),
+            account_id: id.clone(),
+            address: email.clone(),
+            display_name: name.clone(),
+            kind: "primary".into(),
+        };
+        self.store.upsert_mailbox(&mailbox)?;
+        self.clients
+            .write()
+            .unwrap()
+            .insert(id.clone(), self.make_client(&id, tokens));
+        self.sync_folders(&id).await?;
+        if let Some(inbox) = self.store.folder_by_well_known(&id, "inbox")? {
+            let _ = self.sync_folder(&id, &inbox.id, true).await;
+        }
+        self.emit("accounts-changed", json!({}));
+        let acc = self
+            .store
+            .list_accounts()?
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| Error::NotFound("Konto".into()))?;
+        Ok(acc)
+    }
+
+    fn remove_account(&self, account_id: &str) -> Result<()> {
+        self.store.delete_account(account_id)?;
+        self.opts.token_store.delete(account_id);
+        self.clients.write().unwrap().remove(account_id);
+        self.emit("accounts-changed", json!({}));
+        Ok(())
+    }
+
+    async fn add_shared_mailbox(self: &Arc<Self>, account_id: &str, address: &str) -> Result<Mailbox> {
+        let address = address.trim().to_lowercase();
+        if !address.contains('@') {
+            return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse angeben."));
+        }
+        let client = self.client(account_id)?;
+        let mb = Mailbox {
+            id: format!("{account_id}|{address}"),
+            account_id: account_id.to_string(),
+            address: address.clone(),
+            display_name: address.clone(),
+            kind: "shared".into(),
+        };
+        // Verify access before storing.
+        client
+            .get(&format!("{}/mailFolders/inbox?$select=id", mb.graph_prefix()))
+            .await
+            .map_err(|e| match e {
+                Error::Graph { status: 403 | 404, .. } => Error::invalid(format!(
+                    "Kein Zugriff auf das Postfach {address}. Sind Sie dafür berechtigt (Vollzugriff)?"
+                )),
+                other => other,
+            })?;
+        self.store.upsert_mailbox(&mb)?;
+        self.sync_folders(&mb.id).await?;
+        if let Some(inbox) = self.store.folder_by_well_known(&mb.id, "inbox")? {
+            let _ = self.sync_folder(&mb.id, &inbox.id, true).await;
+        }
+        self.emit("accounts-changed", json!({}));
+        Ok(mb)
+    }
+
+    // ---- background sync ----
+
+    /// "Senden/Empfangen": folders, inbox and active folder of every mailbox.
+    pub async fn sync_all(self: &Arc<Self>, background: bool) {
+        let Ok(_guard) = self.sync_all_lock.try_lock() else {
+            return;
+        };
+        let accounts = match self.store.list_accounts() {
+            Ok(a) => a,
+            Err(e) => {
+                self.emit_status("error", &e.to_string());
+                return;
+            }
+        };
+        if accounts.is_empty() {
+            return;
+        }
+        self.emit_status("syncing", "Senden/Empfangen…");
+        let mut errors = Vec::new();
+        let mut offline = false;
+        for mb in accounts.iter().flat_map(|a| a.mailboxes.iter()) {
+            if let Err(e) = self.sync_folders(&mb.id).await {
+                offline |= e.is_network();
+                errors.push(format!("{}: {e}", mb.address));
+                continue;
+            }
+            let mut targets = Vec::new();
+            if let Ok(Some(inbox)) = self.store.folder_by_well_known(&mb.id, "inbox") {
+                targets.push(inbox.id);
+            }
+            if let Some(active) = self.active_folders.read().unwrap().get(&mb.id).cloned() {
+                if !targets.contains(&active) {
+                    targets.push(active);
+                }
+            }
+            for f in targets {
+                if let Err(e) = self.sync_folder(&mb.id, &f, !background).await {
+                    offline |= e.is_network();
+                    errors.push(format!("{}: {e}", mb.address));
+                }
+            }
+        }
+        if errors.is_empty() {
+            *self.last_sync.write().unwrap() = Some(Utc::now().to_rfc3339());
+            self.emit_status("idle", "Alle Ordner sind auf dem neuesten Stand.");
+        } else if offline {
+            self.emit_status("offline", "Offline – Verbindung zu Microsoft 365 nicht möglich.");
+        } else {
+            self.emit_status("error", &errors.join("; "));
+        }
+    }
+
+    /// Spawns the periodic sync loop.
+    pub fn start_background_sync(self: &Arc<Self>) {
+        let svc = Arc::downgrade(self);
+        tokio::spawn(async move {
+            // Small delay so the UI is up before the first sync.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            loop {
+                let Some(s) = svc.upgrade() else { return };
+                s.sync_all(true).await;
+                let wait = s.config().sync_interval_secs.max(15);
+                drop(s);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+            }
+        });
+    }
+
+    /// Demo mode: sign in automatically when no account exists yet.
+    pub async fn ensure_demo_account(self: &Arc<Self>) -> Result<()> {
+        if self.opts.demo && self.store.list_accounts()?.is_empty() {
+            let acc = self.add_account().await?;
+            let _ = self
+                .add_shared_mailbox(&acc.id, "datenschutz@contoso.example")
+                .await;
+        }
+        Ok(())
+    }
+
+    // ---- mailbox settings ----
+
+    async fn get_auto_reply(&self, account_id: &str) -> Result<AutoReply> {
+        let c = self.client(account_id)?;
+        let v = c
+            .get_h(
+                "/me/mailboxSettings/automaticRepliesSetting",
+                &[("Prefer", "outlook.timezone=\"UTC\"".into())],
+            )
+            .await?;
+        Ok(crate::convert::auto_reply_from_graph(&v))
+    }
+
+    async fn set_auto_reply(&self, account_id: &str, a: AutoReply) -> Result<AutoReply> {
+        let c = self.client(account_id)?;
+        c.patch(
+            "/me/mailboxSettings",
+            &json!({"automaticRepliesSetting": crate::convert::auto_reply_to_graph(&a)}),
+        )
+        .await?;
+        self.get_auto_reply(account_id).await
+    }
+}
