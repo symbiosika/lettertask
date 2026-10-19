@@ -37,28 +37,43 @@ impl Service {
     pub(crate) async fn sync_folders(&self, mailbox_id: &str) -> Result<Vec<Folder>> {
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
-        let root_id = c
-            .get(&format!("{prefix}/mailFolders/msgfolderroot?$select=id"))
-            .await
-            .ok()
-            .and_then(|v| v["id"].as_str().map(str::to_string));
-
-        // Resolve well-known folder ids (some may not exist, e.g. archive).
-        let wk: Vec<(String, String)> = stream::iter(WELL_KNOWN.iter().map(|n| n.to_string()).collect::<Vec<_>>())
-            .map(|name: String| {
-                let c = c.clone();
-                let prefix = prefix.clone();
-                async move {
-                    c.get(&format!("{prefix}/mailFolders/{name}?$select=id"))
-                        .await
-                        .ok()
-                        .and_then(|v| v["id"].as_str().map(|id| (id.to_string(), name)))
-                }
-            })
-            .buffer_unordered(PARALLEL)
-            .filter_map(|x| async move { x })
-            .collect()
-            .await;
+        let known: Vec<(String, String)> = self
+            .store
+            .list_folders(mailbox_id)?
+            .into_iter()
+            .filter_map(|f| f.well_known.map(|w| (f.id, w)))
+            .collect();
+        let root_key = format!("rootfolder|{mailbox_id}");
+        let cached_root = self.store.kv_get(&root_key)?;
+        let (root_id, wk) = if known.iter().any(|(_, w)| w == "inbox") && cached_root.is_some() {
+            (cached_root, known)
+        } else {
+            let root_id = c
+                .get(&format!("{prefix}/mailFolders/msgfolderroot?$select=id"))
+                .await
+                .ok()
+                .and_then(|v| v["id"].as_str().map(str::to_string));
+            if let Some(r) = &root_id {
+                self.store.kv_set(&root_key, r)?;
+            }
+            // Resolve well-known folder ids (some may not exist, e.g. archive).
+            let wk: Vec<(String, String)> = stream::iter(WELL_KNOWN.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .map(|name: String| {
+                    let c = c.clone();
+                    let prefix = prefix.clone();
+                    async move {
+                        c.get(&format!("{prefix}/mailFolders/{name}?$select=id"))
+                            .await
+                            .ok()
+                            .and_then(|v| v["id"].as_str().map(|id| (id.to_string(), name)))
+                    }
+                })
+                .buffer_unordered(PARALLEL)
+                .filter_map(|x| async move { x })
+                .collect()
+                .await;
+            (root_id, wk)
+        };
 
         // Breadth-first over the folder hierarchy.
         let mut out = Vec::new();
