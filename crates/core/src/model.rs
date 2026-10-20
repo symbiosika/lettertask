@@ -352,7 +352,6 @@ pub struct Config {
     pub tenant: String,
     pub sync_interval_secs: u64,
     pub load_remote_images: bool,
-    pub signature_html: String,
     pub reading_pane: String,
     pub mark_read_delay_secs: i64,
     pub list_mode: String,
@@ -405,7 +404,6 @@ impl Default for Config {
             tenant: "organizations".into(),
             sync_interval_secs: 60,
             load_remote_images: false,
-            signature_html: String::new(),
             reading_pane: "right".into(),
             mark_read_delay_secs: 2,
             list_mode: "comfortable".into(),
@@ -468,4 +466,89 @@ impl Default for ListQuery {
             limit: 200,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Signature {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub html: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SignatureSettings {
+    pub signatures: Vec<Signature>,
+    pub default_id: Option<String>,
+    pub use_on_new: bool,
+    pub use_on_reply: bool,
+    pub use_on_forward: bool,
+}
+
+impl Default for SignatureSettings {
+    fn default() -> Self {
+        SignatureSettings {
+            signatures: vec![],
+            default_id: None,
+            use_on_new: true,
+            use_on_reply: true,
+            use_on_forward: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Phone {
+    /// "business" | "mobile" | "home"
+    #[serde(default = "business")]
+    pub kind: String,
+    #[serde(default)]
+    pub number: String,
+}
+
+fn business() -> String {
+    "business".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Contact {
+    pub id: String,
+    pub account_id: String,
+    /// "o365" | "local" | "collected"
+    pub source: String,
+    pub display_name: String,
+    pub given_name: String,
+    pub surname: String,
+    pub emails: Vec<String>,
+    pub company: String,
+    pub job_title: String,
+    pub phones: Vec<Phone>,
+    pub notes: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ContactInput {
+    pub display_name: String,
+    pub given_name: String,
+    pub surname: String,
+    pub emails: Vec<String>,
+    pub company: String,
+    pub job_title: String,
+    pub phones: Vec<Phone>,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPage {
+    pub items: Vec<Contact>,
+    pub total: i64,
 }

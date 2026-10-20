@@ -345,10 +345,11 @@ async fn delta_picks_up_server_side_changes() {
 #[tokio::test]
 async fn compose_send_with_large_attachment_and_reply() {
     let ctx = setup().await;
-    let _: Config = call(
+    let _: SignatureSettings = call(
         &ctx.svc,
-        "save_config",
-        json!({"config": {"signatureHtml": "<p>Viele Grüße<br>Max</p>", "syncIntervalSecs": 60}}),
+        "save_signatures",
+        json!({"accountId": ctx.account, "settings": {"signatures": [{"id": "", "name": "Standard", "html": "<p>Viele Grüße<br>Max</p>"}],
+            "defaultId": null, "useOnNew": true, "useOnReply": true, "useOnForward": false}}),
     )
     .await;
     let draft: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "new"})).await;
@@ -816,4 +817,144 @@ async fn reply_keeps_inline_images_editable_and_embedded() {
     assert!(body.contains("cid:"), "server body must use cid: references");
     assert!(!body.contains("#cid="));
     assert!(!body.contains("data:image/png"));
+}
+
+#[tokio::test]
+async fn signatures_per_account_and_mode() {
+    let ctx = setup().await;
+    let empty: SignatureSettings = call(&ctx.svc, "get_signatures", json!({"accountId": ctx.account})).await;
+    assert!(empty.signatures.is_empty());
+    assert!(empty.use_on_new && empty.use_on_reply && !empty.use_on_forward);
+    let saved: SignatureSettings = call(
+        &ctx.svc,
+        "save_signatures",
+        json!({"accountId": ctx.account, "settings": {"signatures": [
+            {"id": "", "name": "Kurz", "html": "<p>MM</p>"},
+            {"id": "", "name": "Lang", "html": "<p>Max Mustermann<br>Contoso GmbH</p>"}
+        ], "defaultId": null, "useOnNew": true, "useOnReply": true, "useOnForward": false}}),
+    )
+    .await;
+    assert_eq!(saved.signatures.len(), 2);
+    assert!(saved.signatures.iter().all(|s| !s.id.is_empty()));
+    // No valid default given → the first one becomes default.
+    assert_eq!(saved.default_id.as_deref(), Some(saved.signatures[0].id.as_str()));
+    let mut settings = saved.clone();
+    settings.default_id = Some(saved.signatures[1].id.clone());
+    let saved: SignatureSettings = call(&ctx.svc, "save_signatures", json!({"accountId": ctx.account, "settings": settings})).await;
+    let lang = saved.signatures[1].id.clone();
+
+    let new: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "new"})).await;
+    assert!(new.body_html.contains("Contoso GmbH"));
+    assert!(new.body_html.contains(&format!("data-signature-id=\"{lang}\"")));
+
+    let inbox = ctx.folder("inbox").await;
+    let src = ctx.list(&inbox.id).await.items[0].clone();
+    let reply: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": src.id})).await;
+    assert!(reply.body_html.contains("class=\"signature\""));
+    let fwd: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "forward", "sourceMessageId": src.id})).await;
+    assert!(!fwd.body_html.contains("class=\"signature\""), "no signature on forwards by default");
+
+    // Flags are honoured.
+    let mut s2 = saved.clone();
+    s2.use_on_new = false;
+    s2.use_on_forward = true;
+    let _: SignatureSettings = call(&ctx.svc, "save_signatures", json!({"accountId": ctx.account, "settings": s2})).await;
+    let new: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "new"})).await;
+    assert!(!new.body_html.contains("signature"));
+    let fwd: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "forward", "sourceMessageId": src.id})).await;
+    assert!(fwd.body_html.contains("Contoso GmbH"));
+    for d in [reply, fwd] {
+        let _: Value = call(&ctx.svc, "discard_draft", json!({"mailboxId": ctx.account, "draftId": d.id})).await;
+    }
+    assert!(call_err(&ctx.svc, "save_signatures", json!({"accountId": "nope", "settings": {}})).await.contains("Konto"));
+}
+
+#[tokio::test]
+async fn contacts_sync_crud_and_lookup() {
+    let ctx = setup().await;
+    let r: SyncResult = call(&ctx.svc, "sync_contacts", json!({"accountId": ctx.account})).await;
+    assert!(r.added >= 10, "{r:?}");
+    let all: ContactPage = call(&ctx.svc, "list_contacts", json!({"query": null, "accountId": null})).await;
+    assert_eq!(all.total, r.added);
+    let names: Vec<String> = all.items.iter().map(|c| c.display_name.to_lowercase()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    // Search by company and by name parts.
+    let erika: ContactPage = call(&ctx.svc, "list_contacts", json!({"query": "fabrikam"})).await;
+    assert_eq!(erika.total, 1);
+    let c0 = erika.items[0].clone();
+    assert_eq!(c0.source, "o365");
+    assert!(!c0.phones.is_empty());
+
+    // Lookup while writing: contacts come first.
+    let sugg: Vec<Address> = call(&ctx.svc, "suggest_recipients", json!({"mailboxId": ctx.account, "query": "fabrik"})).await;
+    assert_eq!(sugg[0].address, c0.emails[0]);
+
+    // Create → appears in Outlook (fake) and locally.
+    let created: Contact = call(
+        &ctx.svc,
+        "create_contact",
+        json!({"accountId": ctx.account, "input": {"givenName": "Paula", "surname": "Neu", "emails": ["paula@example.org"],
+            "company": "Beispiel AG", "phones": [{"kind": "mobile", "number": "+49 170 1234567"}]}}),
+    )
+    .await;
+    assert_eq!(created.display_name, "Paula Neu");
+    let fake = ctx.fake.as_ref().unwrap();
+    let token = fake.issue_token();
+    let http = reqwest::Client::new();
+    let server: Value = http.get(format!("{}/v1.0/me/contacts", fake.base_url)).bearer_auth(&token)
+        .query(&[("$top", "100")]).send().await.unwrap().json().await.unwrap();
+    assert!(server["value"].as_array().unwrap().iter().any(|c| c["displayName"] == "Paula Neu"));
+
+    let updated: Contact = call(
+        &ctx.svc,
+        "update_contact",
+        json!({"id": created.id, "input": {"givenName": "Paula", "surname": "Neumann", "emails": ["paula@example.org"], "jobTitle": "CEO"}}),
+    )
+    .await;
+    assert_eq!(updated.display_name, "Paula Neumann");
+    assert_eq!(updated.job_title, "CEO");
+
+    // Changes made elsewhere arrive via delta.
+    let gid = c0.id.split_once('|').unwrap().1.to_string();
+    http.delete(format!("{}/v1.0/me/contacts/{}", fake.base_url, urlencoding::encode(&gid)))
+        .bearer_auth(&token).send().await.unwrap().error_for_status().unwrap();
+    http.post(format!("{}/v1.0/me/contacts", fake.base_url)).bearer_auth(&token)
+        .json(&json!({"displayName": "Von Handy", "emailAddresses": [{"address": "handy@example.org"}]}))
+        .send().await.unwrap().error_for_status().unwrap();
+    let r: SyncResult = call(&ctx.svc, "sync_contacts", json!({"accountId": ctx.account})).await;
+    assert_eq!((r.added, r.removed), (1, 1), "{r:?}");
+    assert!(ctx.svc.dispatch("get_contact", json!({"id": c0.id})).await.is_err());
+
+    let _: Value = call(&ctx.svc, "delete_contact", json!({"id": updated.id})).await;
+    let left: ContactPage = call(&ctx.svc, "list_contacts", json!({"query": "paula"})).await;
+    assert_eq!(left.total, 0);
+    assert!(call_err(&ctx.svc, "create_contact", json!({"accountId": ctx.account, "input": {"emails": ["kaputt"]}})).await.contains("Ungültige"));
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, _)| e == "contacts-changed"));
+}
+
+#[tokio::test]
+async fn sent_recipients_are_collected() {
+    let ctx = setup().await;
+    let input = json!({"id": null, "mailboxId": ctx.account, "mode": "new",
+        "to": [{"name": "Neuer Kunde", "address": "kunde@neu.example"}], "cc": [], "bcc": [],
+        "subject": "Hallo", "bodyHtml": "<p>Hi</p>", "importance": "normal", "requestReadReceipt": false,
+        "newAttachments": [], "removedAttachmentIds": []});
+    let _: Value = call(&ctx.svc, "send_draft", json!({"draft": input})).await;
+    let collected: ContactPage = call(&ctx.svc, "list_contacts", json!({"source": "collected"})).await;
+    assert_eq!(collected.total, 1);
+    assert_eq!(collected.items[0].display_name, "Neuer Kunde");
+    let sugg: Vec<Address> = call(&ctx.svc, "suggest_recipients", json!({"mailboxId": ctx.account, "query": "neuer"})).await;
+    assert_eq!(sugg[0].address, "kunde@neu.example");
+    // Turning it into a real contact.
+    let c: Contact = call(
+        &ctx.svc,
+        "update_contact",
+        json!({"id": collected.items[0].id, "input": {"displayName": "Neuer Kunde", "emails": ["kunde@neu.example"], "company": "Neu GmbH"}}),
+    )
+    .await;
+    assert_eq!(c.source, "local");
+    let collected: ContactPage = call(&ctx.svc, "list_contacts", json!({"source": "collected"})).await;
+    assert_eq!(collected.total, 0);
 }

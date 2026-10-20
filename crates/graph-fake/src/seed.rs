@@ -112,6 +112,12 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
     .iter()
     .map(|(p, c, t)| person(p.0, p.1, c, t))
     .collect();
+    mb.contacts = mb
+        .people
+        .iter()
+        .filter(|p| p["jobTitle"] != "Datenschutz")
+        .map(|p| (0, crate::contacts::from_person(p)))
+        .collect();
 
     // ---- calendars & events (first, so the invitation can link to its event)
     mb.calendars.push(Cal { id: new_id("AAMkAC"), name: "Feiertage".into(), color: "lightGreen".into(), hex_color: "#2e7d32".into(), can_edit: false, is_default: false });

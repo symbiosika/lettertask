@@ -3,7 +3,9 @@
 mod calendar;
 mod categories;
 mod compose;
+mod contacts;
 mod mail;
+mod signatures;
 mod snooze;
 
 use std::collections::HashMap;
@@ -356,6 +358,29 @@ impl Service {
                 .await?),
 
             // ---- categories ----
+            // ---- signatures ----
+            "get_signatures" => ok(self.get_signatures(&arg::<String>(a, "accountId")?)?),
+            "save_signatures" => ok(self.save_signatures(&arg::<String>(a, "accountId")?, arg(a, "settings")?)?),
+
+            // ---- contacts ----
+            "list_contacts" => ok(self.list_contacts(
+                arg::<Option<String>>(a, "query")?.as_deref(),
+                arg::<Option<String>>(a, "accountId")?.as_deref(),
+                arg::<Option<String>>(a, "source")?.as_deref(),
+                arg::<Option<i64>>(a, "offset")?.unwrap_or(0),
+                arg::<Option<i64>>(a, "limit")?.unwrap_or(500),
+            )?),
+            "get_contact" => ok(self.get_contact(&arg::<String>(a, "id")?)?),
+            "sync_contacts" => ok(self.sync_contacts(&arg::<String>(a, "accountId")?).await?),
+            "create_contact" => ok(self
+                .create_contact(&arg::<String>(a, "accountId")?, arg(a, "input")?)
+                .await?),
+            "update_contact" => ok(self.update_contact(&arg::<String>(a, "id")?, arg(a, "input")?).await?),
+            "delete_contact" => {
+                self.delete_contact(&arg::<String>(a, "id")?).await?;
+                ok(Value::Null)
+            }
+
             "list_categories" => ok(self.list_categories(&arg::<String>(a, "accountId")?).await?),
             "create_category" => ok(self
                 .create_category(
@@ -594,6 +619,7 @@ impl Service {
 
     fn remove_account(&self, account_id: &str) -> Result<()> {
         self.store.delete_account(account_id)?;
+        self.store.delete_account_contacts(account_id)?;
         self.opts.token_store.delete(account_id);
         self.clients.write().unwrap().remove(account_id);
         self.emit("accounts-changed", json!({}));
@@ -620,6 +646,12 @@ impl Service {
         self.emit_status("syncing", "Senden/Empfangen…");
         let mut errors = Vec::new();
         let mut offline = false;
+        for acc in &accounts {
+            if let Err(e) = self.sync_contacts(&acc.id).await {
+                offline |= e.is_network();
+                errors.push(format!("{} (Kontakte): {e}", acc.email));
+            }
+        }
         for mb in accounts.iter().flat_map(|a| a.mailboxes.iter()) {
             if let Err(e) = self.sync_folders(&mb.id).await {
                 offline |= e.is_network();

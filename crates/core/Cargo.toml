@@ -24,6 +24,12 @@ rand = "0.8"
 urlencoding = "2"
 html-escape = "0.2"
 regex = "1"
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+webpki-roots = "1"
+mail-parser = "0.11"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "hostname", "tokio1", "tokio1-rustls-tls"] }
+utf7-imap = "0.3"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"], optional = true }
 
 [features]
@@ -31,5 +37,6 @@ default = ["keyring"]
 
 [dev-dependencies]
 graph-fake = { path = "../graph-fake" }
+axum.workspace = true
 tempfile = "3"
 urlencoding = "2"

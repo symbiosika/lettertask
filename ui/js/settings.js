@@ -6,6 +6,8 @@ import { modal, confirmDialog, reportError, toast, field } from './dialogs.js';
 import { PRESETS, presetHex, textOn, getCategories, setCategories } from './categories.js';
 import { state, loadCategories } from './state.js';
 import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
+import { signaturesPanel } from './signatures.js';
+import { chooseAccountKind, imapWizard, accountDetail, isImap, kindLabel } from './accounts.js';
 
 export const hooks = { onConfigSaved: () => {}, onAccountsChanged: () => {} };
 
@@ -19,10 +21,11 @@ function select(options, value) {
 const TABS = [
   ['general', 'Allgemein', 'settings'],
   ['reading', 'Lesen', 'mailOpen'],
-  ['compose', 'Schreiben', 'drafts'],
+  ['signatures', 'Signaturen', 'signature'],
   ['snooze', 'Wiedervorlage', 'snooze'],
-  ['account', 'Konto', 'user'],
+  ['accounts', 'Konten', 'user'],
 ];
+const TAB_ALIASES = { compose: 'signatures', account: 'accounts' };
 
 function snoozeEditor(initial) {
   let rows = initial.map((o) => ({ label: o.label, ...(parseRule(o.rule) || parseRule('tomorrow@08:00')) }));
@@ -60,7 +63,8 @@ function snoozeEditor(initial) {
   return { el: host, get: () => rows.filter((r) => r.label.trim()).map((r) => ({ label: r.label.trim(), rule: formatRule(r) })) };
 }
 
-export async function openSettings(initialTab = 'general') {
+export async function openSettings(initialTab = 'general', { accountId = null } = {}) {
+  initialTab = TAB_ALIASES[initialTab] || initialTab;
   const c = { ...state.config };
   const clientId = h('input.input', { value: c.clientId || '', placeholder: '00000000-0000-0000-0000-000000000000', name: 'clientId' });
   const tenant = h('input.input', { value: c.tenant || 'organizations', name: 'tenant' });
@@ -75,9 +79,9 @@ export async function openSettings(initialTab = 'general') {
   markRead.name = 'markReadDelaySecs';
   const listMode = select([['comfortable', 'Komfortabel – mit Vorschautext'], ['compact', 'Kompakt – zwei Zeilen']], c.listMode === 'compact' ? 'compact' : 'comfortable');
   listMode.name = 'listMode';
-  const sig = h('div.input.selectable.sig-editor', { contentEditable: 'true', dataset: { testid: 'signature' } });
-  sig.innerHTML = c.signatureHtml || '';
   const snooze = snoozeEditor(snoozeOptions(c));
+  const sigs = state.accounts.length ? signaturesPanel(state.accounts, accountId) : null;
+  const accounts = accountsPanel({ clientId, tenant, builtin: !!c.builtinClientId, demo: !!c.demo, initialAccountId: accountId });
 
   const panels = {
     general: h('div.set-panel',
@@ -91,18 +95,15 @@ export async function openSettings(initialTab = 'general') {
       field('Nachrichtenliste', listMode),
       h('label.checkrow', seps, 'Datumstrenner (Heute, Gestern, …) in der Liste anzeigen'),
       h('label.checkrow', remote, 'Externe Bilder in Nachrichten automatisch laden')),
-    compose: h('div.set-panel',
-      h('h3', 'Schreiben'),
-      h('label.lbl', 'Signatur (wird neuen Nachrichten, Antworten und Weiterleitungen hinzugefügt)'), sig),
+    signatures: h('div.set-panel',
+      h('h3', 'Signaturen'),
+      h('p.note', 'Jedes Konto hat eigene Signaturen. Die Standardsignatur (Stern) wird automatisch eingefügt; im Verfassen-Fenster kann sie über „Signatur“ gewechselt werden.'),
+      sigs ? sigs.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.')),
     snooze: h('div.set-panel',
       h('h3', 'Auf Wiedervorlage'),
       h('p.note', 'Diese Zeitpunkte erscheinen im Menü „Auf Wiedervorlage“. Die Nachricht verschwindet bis dahin im Ordner „Wiedervorlage“ und kommt dann ungelesen in den Posteingang zurück.'),
       snooze.el),
-    account: h('div.set-panel',
-      h('h3', 'Konto & Anmeldung'),
-      c.builtinClientId ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
-      field('Anwendungs-ID (Client-ID)', clientId),
-      field('Mandant (Tenant)', tenant, '„organizations“, „common“ oder Ihre Mandanten-ID/Domäne')),
+    accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),
   };
   const nav = h('div.set-nav', { role: 'tablist' });
   const content = h('div.set-content');
@@ -127,15 +128,68 @@ export async function openSettings(initialTab = 'general') {
       const config = {
         ...state.config,
         clientId: clientId.value.trim(), tenant: tenant.value.trim() || 'organizations', syncIntervalSecs: iv,
-        loadRemoteImages: remote.checked, signatureHtml: sig.innerHTML.trim() === '<br>' ? '' : sig.innerHTML,
+        loadRemoteImages: remote.checked,
         readingPane: pane.value, markReadDelaySecs: parseInt(markRead.value, 10), listMode: listMode.value,
         showDateSeparators: seps.checked, snoozeOptions: snooze.get(),
       };
+      delete config.signatureHtml;
       state.config = await call('save_config', { config });
+      if (sigs) await sigs.save();
       return 'ok';
     },
   });
   if (res === 'ok') { hooks.onConfigSaved(); toast('Einstellungen gespeichert.'); }
+}
+
+// ---------------------------------------------------------------- accounts tab
+function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
+  let selected = initialAccountId || (state.accounts[0] && state.accounts[0].id);
+  const listEl = h('div.acc-list', { role: 'listbox', dataset: { testid: 'acc-list' } });
+  const detailHost = h('div.acc-detail-host');
+  const render = () => {
+    listEl.innerHTML = '';
+    if (!state.accounts.some((a) => a.id === selected)) selected = state.accounts[0] && state.accounts[0].id;
+    for (const a of state.accounts) {
+      const row = h('div.acc-item' + (a.id === selected ? '.selected' : ''), { role: 'option', dataset: { testid: 'acc-item', id: a.id } },
+        h('span.avatar.xs', { style: { background: '#5b8def' } }, (a.displayName || a.email || '?').slice(0, 1).toUpperCase()),
+        h('span.acc-text', h('span.acc-n', a.displayName || a.email), h('span.acc-e', a.email)),
+        h('span.kind-badge.' + (isImap(a) ? 'imap' : 'o365'), kindLabel(a)));
+      row.addEventListener('click', () => { selected = a.id; render(); });
+      listEl.appendChild(row);
+    }
+    if (!state.accounts.length) listEl.appendChild(h('div.dim.acc-none', 'Noch kein Konto eingerichtet.'));
+    detailHost.innerHTML = '';
+    const acc = state.accounts.find((a) => a.id === selected);
+    if (acc) {
+      detailHost.appendChild(accountDetail(acc, {
+        onRemoved: async (x) => { if (await removeAccount(x)) render(); },
+        onSaved: async () => { hooks.onAccountsChanged(); await reloadAccounts(); render(); },
+      }));
+    }
+  };
+  const reloadAccounts = async () => { state.accounts = (await call('list_accounts', {}, { silent: true })) || []; };
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + ' Konto hinzufügen…' });
+  add.addEventListener('click', async () => {
+    const acc = await addAccountFlow();
+    if (acc) { await reloadAccounts(); selected = acc.id; render(); }
+  });
+  const adv = h('details.welcome-adv.acc-adv',
+    h('summary', 'Microsoft-365-Anmeldung (App-Registrierung)'),
+    builtin ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
+    demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
+    field('Anwendungs-ID (Client-ID)', clientId),
+    field('Mandant (Tenant)', tenant, '„organizations“, „common“ oder Ihre Mandanten-ID/Domäne'));
+  render();
+  return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add), detailHost), adv) };
+}
+
+async function removeAccount(acc) {
+  const ok = await confirmDialog(`Konto „${acc.email}“ entfernen? Lokale Daten (Zwischenspeicher, Anmeldung, Signaturen) werden gelöscht. Auf dem Server wird nichts gelöscht.`, { title: 'Konto entfernen', danger: true, ok: 'Entfernen' });
+  if (!ok) return false;
+  await call('remove_account', { accountId: acc.id });
+  state.accounts = state.accounts.filter((a) => a.id !== acc.id);
+  hooks.onAccountsChanged();
+  return true;
 }
 
 // ---------------------------------------------------------------- categories
@@ -292,14 +346,18 @@ export async function removeAccountDialog() {
   hooks.onAccountsChanged();
 }
 
+/** "Konto hinzufügen": choose Microsoft 365 or IMAP. Returns the new Account or null. */
 export async function addAccountFlow() {
-  const c = state.config || {};
-  if (!c.demo && !c.clientId && !c.builtinClientId) {
-    const ok = await welcomeDialog();
-    if (!ok) return;
-  } else {
-    await loginWithWait();
+  const kind = await chooseAccountKind();
+  if (kind === 'imap') {
+    const acc = await imapWizard();
+    if (acc) hooks.onAccountsChanged();
+    return acc;
   }
+  if (kind !== 'o365') return null;
+  const c = state.config || {};
+  if (!c.demo && !c.clientId && !c.builtinClientId) return (await welcomeDialog({ o365Only: true })) || null;
+  try { return await loginWithWait(); } catch (e) { reportError(e); return null; }
 }
 
 async function loginWithWait() {
@@ -316,7 +374,7 @@ async function loginWithWait() {
   } finally { overlay.remove(); }
 }
 
-export async function welcomeDialog() {
+export async function welcomeDialog({ o365Only = false } = {}) {
   const c = state.config || {};
   const clientId = h('input.input', { value: c.clientId || '', placeholder: 'Anwendungs-ID (GUID)', style: { width: '100%' }, name: 'clientId' });
   const tenant = h('input.input', { value: c.tenant || 'organizations', style: { width: '100%' }, name: 'tenant' });
@@ -332,12 +390,15 @@ export async function welcomeDialog() {
     field('Mandant', tenant));
   const body = h('div.welcome',
     h('div.welcome-hero', h('span.welcome-ic', { html: icon('mail', 36) }),
-      h('div', h('h2', 'Willkommen'), h('p', 'Melden Sie sich mit Ihrem Microsoft 365-Konto an. E-Mails, Kalender und Kategorien werden über Microsoft Graph synchronisiert.'))),
+      h('div', h('h2', 'Willkommen'), h('p', 'Melden Sie sich mit Ihrem Microsoft 365-Konto an. E-Mails, Kalender, Kontakte und Kategorien werden über Microsoft Graph synchronisiert. Andere Anbieter lassen sich per IMAP/SMTP einbinden.'))),
     adv);
   const res = await modal({
     title: 'Konto einrichten', body, width: 560,
-    buttons: [{ label: 'Mit Microsoft 365 anmelden', value: 'ok', primary: true, id: 'welcome-login' }, { label: 'Später', value: null, cancel: true }],
-    onBeforeClose: async () => {
+    buttons: [{ label: 'Mit Microsoft 365 anmelden', value: 'ok', primary: true, id: 'welcome-login' },
+      ...(o365Only ? [] : [{ label: 'IMAP-Konto…', value: 'imap', id: 'welcome-imap' }]),
+      { label: 'Später', value: null, cancel: true }],
+    onBeforeClose: async (v) => {
+      if (v === 'imap') return 'imap';
       const id = clientId.value.trim();
       const custom = id && id !== (c.clientId || '');
       if (!builtin || custom || adv.open) {
@@ -349,18 +410,23 @@ export async function welcomeDialog() {
       return 'ok';
     },
   });
+  if (res === 'imap') {
+    const acc = await imapWizard();
+    if (acc) hooks.onAccountsChanged();
+    return acc || false;
+  }
   if (res !== 'ok') return false;
-  try { await loginWithWait(); return true; } catch (e) { reportError(e); return false; }
+  try { return await loginWithWait(); } catch (e) { reportError(e); return false; }
 }
 
 export async function aboutDialog() {
   await modal({
     title: 'Über',
     body: h('div.confirm-body', h('span', { html: icon('mail', 40) }), h('div',
-      h('div', { style: { fontWeight: '600', fontSize: '15px' } }, 'Mail & Kalender für Microsoft 365'),
-      h('div', 'Fokussierter E-Mail- und Kalender-Client (Microsoft Graph API).'),
-      h('div', { style: { marginTop: '6px', color: '#666' } }, 'Rust · Tauri · Microsoft Graph v1.0'),
-      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · T Kategorien · Entf löschen · Strg+E Suchen · F9 Senden/Empfangen · Strg+1 Mail · Strg+2 Kalender'))),
+      h('div', { style: { fontWeight: '600', fontSize: '15px' } }, 'Mail, Kalender & Kontakte'),
+      h('div', 'Fokussierter E-Mail-Client für Microsoft 365 (Graph API) und IMAP/SMTP.'),
+      h('div', { style: { marginTop: '6px', color: '#666' } }, 'Rust · Tauri · Microsoft Graph v1.0 · IMAP/SMTP'),
+      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · T Kategorien · Entf löschen · Strg+E Suchen · F9 Senden/Empfangen · Strg+1 Mail · Strg+2 Kalender · Strg+3 Kontakte'))),
     width: 480,
   });
 }

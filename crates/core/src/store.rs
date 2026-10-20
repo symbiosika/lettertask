@@ -86,6 +86,15 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (account_id, calendar_id, id)
 );
 CREATE INDEX IF NOT EXISTS events_range ON events(account_id, calendar_id, start, end);
+CREATE TABLE IF NOT EXISTS contacts (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    search TEXT NOT NULL,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS contacts_name ON contacts(display_name COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -680,6 +689,105 @@ impl Store {
             params![account_id, id],
         )?;
         Ok(())
+    }
+
+    // ---- contacts ----
+
+    pub fn upsert_contact(&self, c: &Contact) -> Result<()> {
+        let search = format!(
+            "{} {} {} {} {}",
+            c.display_name,
+            c.given_name,
+            c.surname,
+            c.emails.join(" "),
+            c.company
+        )
+        .to_lowercase();
+        self.c().execute(
+            "INSERT OR REPLACE INTO contacts(id,account_id,source,display_name,search,json) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![c.id, c.account_id, c.source, c.display_name, search, serde_json::to_string(c)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_contact(&self, id: &str) -> Result<()> {
+        self.c().execute("DELETE FROM contacts WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn delete_account_contacts(&self, account_id: &str) -> Result<()> {
+        self.c()
+            .execute("DELETE FROM contacts WHERE account_id=?1", params![account_id])?;
+        Ok(())
+    }
+
+    pub fn get_contact(&self, id: &str) -> Result<Option<Contact>> {
+        let json: Option<String> = self
+            .c()
+            .query_row("SELECT json FROM contacts WHERE id=?1", params![id], |r| r.get(0))
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    /// Contacts matching all words of `query` (name, emails, company).
+    /// `source` filters by "o365" | "local" | "collected".
+    pub fn list_contacts(
+        &self,
+        query: Option<&str>,
+        account_id: Option<&str>,
+        source: Option<&str>,
+        offset: i64,
+        limit: i64,
+    ) -> Result<ContactPage> {
+        let words: Vec<String> = query
+            .unwrap_or("")
+            .split_whitespace()
+            .map(|w| format!("%{}%", w.to_lowercase().replace('%', "\\%").replace('_', "\\_")))
+            .collect();
+        let mut sql = String::from("FROM contacts WHERE (?1 IS NULL OR account_id=?1) AND (?2 IS NULL OR source=?2)");
+        for i in 0..words.len() {
+            sql.push_str(&format!(" AND search LIKE ?{} ESCAPE '\\'", i + 3));
+        }
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            account_id.map(|s| s.to_string().into()).unwrap_or(rusqlite::types::Value::Null),
+            source.map(|s| s.to_string().into()).unwrap_or(rusqlite::types::Value::Null),
+        ];
+        values.extend(words.into_iter().map(rusqlite::types::Value::from));
+        let c = self.c();
+        let total: i64 = c.query_row(
+            &format!("SELECT COUNT(*) {sql}"),
+            rusqlite::params_from_iter(values.iter()),
+            |r| r.get(0),
+        )?;
+        let limit = if limit <= 0 { 500 } else { limit };
+        let mut st = c.prepare(&format!(
+            "SELECT json {sql} ORDER BY CASE source WHEN 'collected' THEN 1 ELSE 0 END, display_name COLLATE NOCASE LIMIT {limit} OFFSET {}",
+            offset.max(0)
+        ))?;
+        let rows = st.query_map(rusqlite::params_from_iter(values.iter()), |r| r.get::<_, String>(0))?;
+        let mut items = Vec::new();
+        for j in rows {
+            if let Ok(ct) = serde_json::from_str(&j?) {
+                items.push(ct);
+            }
+        }
+        Ok(ContactPage { items, total })
+    }
+
+    /// True if any contact already has this e-mail address.
+    pub fn contact_with_email(&self, email: &str) -> Result<bool> {
+        let pattern = format!("%{}%", email.to_lowercase());
+        let found: Option<String> = self
+            .c()
+            .query_row(
+                "SELECT json FROM contacts WHERE search LIKE ?1",
+                params![pattern],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found
+            .and_then(|j| serde_json::from_str::<Contact>(&j).ok())
+            .is_some_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(email))))
     }
 
     // ---- kv ----

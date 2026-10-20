@@ -17,7 +17,23 @@ All JSON keys are **camelCase**. Timestamps are ISO-8601 UTC strings with `Z`
 
 ```ts
 Address      { name: string, address: string }
-Account      { id: string, email: string, displayName: string, mailboxes: Mailbox[] }
+Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[] }
+               // kind "imap": no calendar, no mailbox settings (auto reply); categories are local
+               // (stored as IMAP keywords on messages), "Wiedervorlage" times are kept locally.
+ServerSettings { host: string, port: number, security: "ssl"|"starttls"|"none", username: string }
+ImapAccountInput { email: string, displayName: string, imap: ServerSettings, smtp: ServerSettings,
+                   password: string, smtpPassword: string|null /* null = same as IMAP */ }
+Signature    { id: string, name: string, html: string }
+SignatureSettings { signatures: Signature[], defaultId: string|null,
+                    useOnNew: bool /* default true */, useOnReply: bool /* default true */,
+                    useOnForward: bool /* default false */ }
+Contact      { id: string, accountId: string, source: "o365"|"local"|"collected",
+               displayName: string, givenName: string, surname: string,
+               emails: string[], company: string, jobTitle: string,
+               phones: { kind: "business"|"mobile"|"home", number: string }[], notes: string,
+               readOnly: bool }
+ContactInput { displayName, givenName, surname, emails: string[], company, jobTitle,
+               phones: {kind, number}[], notes }
 Mailbox      { id: string, accountId: string, address: string, displayName: string, kind: "primary" | "shared" }
 Folder       { id: string, mailboxId: string, parentId: string|null, displayName: string,
                wellKnown: "inbox"|"drafts"|"sentitems"|"deleteditems"|"archive"|"junkemail"|"outbox"|"snoozed"|null,
@@ -78,7 +94,7 @@ DraftInput = Draft (without attachments) & {
 }
 Config {
   clientId: string, tenant: string /* "organizations" default */, syncIntervalSecs: number,
-  loadRemoteImages: bool, signatureHtml: string, readingPane: "right"|"bottom"|"off",
+  loadRemoteImages: bool, readingPane: "right"|"bottom"|"off",
   markReadDelaySecs: number /* -1 = never automatically */, listMode: "comfortable"|"compact",
   showDateSeparators: bool /* thin "Heute / Gestern / Älter" separators in the list */,
   snoozeOptions: SnoozeOption[] /* entries of the "Wiedervorlage" dropdown, editable in settings */,
@@ -103,7 +119,12 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `get_config` | `{}` | `Config` |
 | `save_config` | `{ config: Config }` | `Config` |
 | `list_accounts` | `{}` | `Account[]` |
-| `add_account` | `{}` | `Account` — opens system browser, waits for login (up to 5 min) |
+| `add_account` | `{}` | `Account` — Microsoft 365: opens system browser, waits for login (up to 5 min) |
+| `discover_imap` | `{ email }` | `{ imap: ServerSettings, smtp: ServerSettings, source: "ispdb"\|"autoconfig"\|"guess" }` — Thunderbird ISPDB / autoconfig lookup, else guesses (imap./smtp.<domain>) |
+| `test_imap_account` | `{ input: ImapAccountInput }` | `{ imapOk: bool, smtpOk: bool, imapError: string\|null, smtpError: string\|null }` |
+| `add_imap_account` | `{ input: ImapAccountInput }` | `Account` — verifies IMAP+SMTP login first, password goes to the OS keychain |
+| `update_imap_account` | `{ accountId, input: ImapAccountInput }` | `Account` (password "" = keep the stored one) |
+| `get_imap_account` | `{ accountId }` | `ImapAccountInput` with password "" |
 | `remove_account` | `{ accountId }` | `null` |
 | `set_active_folder` | `{ mailboxId, folderId }` | `null` — background sync also syncs this folder |
 | `sync_all` | `{}` | `null` — "Senden/Empfangen": folders + inbox + active folder of every mailbox |
@@ -141,7 +162,23 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `save_draft` | `{ draft: DraftInput }` | `Draft` (creates server draft when id is null) |
 | `send_draft` | `{ draft: DraftInput }` | `null` |
 | `discard_draft` | `{ mailboxId, draftId: string\|null }` | `null` |
-| `suggest_recipients` | `{ mailboxId, query }` | `Address[]` (max 10) |
+| `suggest_recipients` | `{ mailboxId, query }` | `Address[]` (max 10; local contacts first, then O365 People API, then known senders) |
+
+`create_draft` inserts the account's default signature according to SignatureSettings
+(`useOnNew` / `useOnReply` for reply+replyAll / `useOnForward`). The signature is wrapped in
+`<div class="signature" data-signature-id="…">…</div>` so the compose window can swap it.
+
+### Signatures (per account, stored locally)
+| `get_signatures` | `{ accountId }` | `SignatureSettings` |
+| `save_signatures` | `{ accountId, settings: SignatureSettings }` | `SignatureSettings` (ids are generated for new entries with id "") |
+
+### Contacts (local cache; O365 contacts synced via delta, sent-to addresses collected automatically)
+| `list_contacts` | `{ query: string\|null, accountId: string\|null, offset, limit }` | `{ items: Contact[], total }` sorted by displayName |
+| `get_contact` | `{ id }` | `Contact` |
+| `sync_contacts` | `{ accountId }` | `{ added, updated, removed }` (also part of background sync) |
+| `create_contact` | `{ accountId, input: ContactInput }` | `Contact` (O365 account → created in Outlook; IMAP → local) |
+| `update_contact` | `{ id, input: ContactInput }` | `Contact` (collected contacts become local ones) |
+| `delete_contact` | `{ id }` | `null` |
 
 ### Categories (per account – Outlook master category list)
 | `list_categories` | `{ accountId }` | `Category[]` |
@@ -174,6 +211,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `calendar-changed` | `{ accountId: string }` |
 | `accounts-changed` | `{}` |
 | `categories-changed` | `{ accountId: string }` |
+| `contacts-changed` | `{}` |
 | `new-mail` | `{ mailboxId, count, from: string, subject: string }` |
 
 Windows opened with `open_window` are separate pages that use the same API; changes they make are

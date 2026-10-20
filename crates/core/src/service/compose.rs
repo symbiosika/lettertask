@@ -3,6 +3,7 @@ use std::sync::Arc;
 use base64::Engine;
 use serde_json::{json, Value};
 
+use super::signatures::signature_block;
 use super::Service;
 use crate::convert::{self, MESSAGE_DETAIL_SELECT};
 use crate::error::{Error, Result};
@@ -26,17 +27,10 @@ pub(crate) fn prepend_to_body(html: &str, fragment: &str) -> String {
     format!("{fragment}{html}")
 }
 
-fn signature_block(sig: &str) -> String {
-    if sig.trim().is_empty() {
-        "<div><br></div>".into()
-    } else {
-        format!("<div><br></div><div class=\"signature\">{sig}</div>")
-    }
-}
-
 impl Service {
     pub(crate) async fn create_draft(&self, mailbox_id: &str, mode: &str, source: Option<&str>) -> Result<Draft> {
-        let sig = self.config().signature_html;
+        let account_id = self.store.get_mailbox(mailbox_id)?.account_id;
+        let sig = signature_block(self.signature_for(&account_id, mode).as_ref());
         if mode == "new" {
             return Ok(Draft {
                 id: None,
@@ -46,7 +40,7 @@ impl Service {
                 cc: vec![],
                 bcc: vec![],
                 subject: String::new(),
-                body_html: signature_block(&sig),
+                body_html: sig,
                 importance: "normal".into(),
                 request_read_receipt: false,
                 attachments: vec![],
@@ -69,7 +63,7 @@ impl Service {
         let id = v["id"].as_str().ok_or_else(|| Error::Other("Entwurf ohne ID".into()))?;
         let mut draft = self.load_draft(&mb, &c, id).await?;
         draft.mode = mode.to_string();
-        draft.body_html = prepend_to_body(&draft.body_html, &signature_block(&sig));
+        draft.body_html = prepend_to_body(&draft.body_html, &sig);
         if let Some(d) = self.store.folder_by_well_known(mailbox_id, "drafts")? {
             self.emit_mail_changed(mailbox_id, Some(&d.id));
         }
@@ -252,6 +246,8 @@ impl Service {
         let id = self.write_draft(&mb, &c, &d).await?;
         c.post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(&id)))
             .await?;
+        let recipients: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
+        self.collect_addresses(&mb.account_id, &recipients)?;
         self.store.delete_message(&mb.id, &id)?;
         for wk in ["drafts", "sentitems", "inbox"] {
             if let Some(f) = self.store.folder_by_well_known(&mb.id, wk)? {
@@ -292,6 +288,9 @@ impl Service {
                 out.push(a);
             }
         };
+        for a in self.contact_suggestions(q, 10)? {
+            push(a, &mut out);
+        }
         if let Ok((mb, c)) = self.mailbox(mailbox_id) {
             let _ = mb;
             let path = format!(
