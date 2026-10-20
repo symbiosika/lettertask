@@ -97,7 +97,7 @@ DraftInput = Draft (without attachments) & {
                            // body = sent text) is created directly in "Wiedervorlage", due at remindAt.
 }
 Config {
-  clientId: string, tenant: string /* default: built-in Symbiosika tenant be11db5c-df94-439f-b934-4c3240c9d1ad */, syncIntervalSecs: number,
+  clientId: string, tenant: string /* empty → built-in default "organizations" (multi-tenant) */, syncIntervalSecs: number,
   loadRemoteImages: bool, readingPane: "right"|"bottom"|"off",
   markReadDelaySecs: number /* -1 = never automatically */, listMode: "comfortable"|"compact",
   showDateSeparators: bool /* thin "Heute / Gestern / Älter" separators in the list */,

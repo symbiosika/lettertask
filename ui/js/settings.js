@@ -288,7 +288,7 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
     builtin ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
     demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
     field('Anwendungs-ID (Client-ID)', clientId),
-    field('Mandant (Tenant)', tenant, 'Mandanten-ID/Domäne, „organizations“ oder „common“ – leer = eingebauter Mandant'));
+    field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'));
   render();
   return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add), detailHost), adv) };
 }
