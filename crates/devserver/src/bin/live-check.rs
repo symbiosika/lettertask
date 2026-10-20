@@ -501,7 +501,10 @@ async fn edge_checks(c: &mut Checker, acc: &str, mb: &str, me: &str, cals: &[Cal
         c.check("Mail kommt im Posteingang an", received.is_some(), "nach 120 s nicht da");
         if let Some(m) = &received {
             c.check("Betreff unverändert", m.subject == subj, &m.subject);
-            c.check("Anzeigename mit Komma/Anführungszeichen", m.to.first().is_some_and(|a| a.name == "Müller, Hans \"Test\""), format!("{:?}", m.to));
+            // Exchange replaces the name of internal recipients with the one from
+            // the address book, so only the address can be checked here.
+            c.check("Empfängeradresse erhalten", m.to.first().is_some_and(|a| a.address.eq_ignore_ascii_case(me)), format!("{:?}", m.to));
+            c.note(format!("Anzeigename laut Server: {:?}", m.to.first().map(|a| &a.name)));
             let det: Option<MessageDetail> = c.call("Mail öffnen", "get_message", json!({"mailboxId": mb, "messageId": m.id})).await;
             if let Some(det) = det {
                 c.check("Entities bleiben Text", det.body_html.contains("&lt;kein Tag&gt;"), "verändert");
@@ -517,19 +520,44 @@ async fn edge_checks(c: &mut Checker, acc: &str, mb: &str, me: &str, cals: &[Cal
                     c.check("5-MB-Anhang vorhanden", false, "fehlt");
                 }
             }
+        }
+    }
+    // Reply chain with a short subject: Exchange derives the conversation from
+    // the subject, and very long subjects are cut differently in replies.
+    let chain = format!("{MARK} Kette {stamp}");
+    let sent: Option<Value> = c.call("Mail für Antwortkette senden", "send_draft", json!({"draft": draft(mb, json!([{"name": "", "address": me}]), &chain, "<p>x</p>", json!([]))})).await;
+    if sent.is_some() {
+        if let Some(m) = c.wait_for(mb, &inbox.id, &chain).await {
             let reply: Option<Draft> = c.call("Antwort erzeugen", "create_draft", json!({"mailboxId": mb, "mode": "reply", "sourceMessageId": m.id})).await;
             if let Some(r) = reply {
-                c.check("Betreff mit AW:", r.subject.starts_with("AW:") || r.subject.starts_with("RE:"), &r.subject);
+                c.check("Betreff mit AW:/RE:", r.subject.starts_with("AW:") || r.subject.starts_with("RE:"), &r.subject);
+                c.check("Antwort geht an den Absender", r.to.iter().any(|a| a.address.eq_ignore_ascii_case(me)), format!("{:?}", r.to));
                 let mut rd = serde_json::to_value(&r).unwrap_or_default();
                 rd["mailboxId"] = json!(mb);
                 rd["newAttachments"] = json!([]);
                 rd["removedAttachmentIds"] = json!([]);
                 let s: Option<Value> = c.call("Antwort senden", "send_draft", json!({"draft": rd})).await;
                 if s.is_some() {
-                    let got = c.wait_for(mb, &inbox.id, &format!("AW: {MARK} Ünïcödé")).await.or(c.wait_for(mb, &inbox.id, &format!("RE: {MARK} Ünïcödé")).await);
-                    c.check("Antwort in derselben Unterhaltung", got.as_ref().is_some_and(|g| g.conversation_id == m.conversation_id), "andere Unterhaltung oder nicht angekommen");
+                    let reply_subject = r.subject.clone();
+                    let t = Instant::now();
+                    let mut got = None;
+                    while got.is_none() && t.elapsed() < std::time::Duration::from_secs(120) {
+                        got = c.find(mb, &inbox.id, &stamp).await.into_iter().find(|x| x.subject == reply_subject);
+                        if got.is_none() {
+                            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                        }
+                    }
+                    match got {
+                        Some(g) => c.check("Antwort in derselben Unterhaltung", g.conversation_id == m.conversation_id, format!("{} vs {}", g.conversation_id, m.conversation_id)),
+                        None => {
+                            let seen: Vec<String> = c.find(mb, &inbox.id, &stamp).await.into_iter().map(|x| x.subject).collect();
+                            c.check("Antwort kommt an", false, format!("erwartet {reply_subject:?}, im Posteingang: {seen:?}"));
+                        }
+                    }
                 }
             }
+        } else {
+            c.check("Mail für Antwortkette kommt an", false, "nicht gefunden");
         }
     }
     let inj = format!("{MARK} Injektion {stamp}\r\nX-Injiziert: ja");

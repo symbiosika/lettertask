@@ -142,12 +142,19 @@ impl Service {
     }
 
     fn draft_json(d: &DraftInput) -> Value {
+        // Line breaks never belong in header fields; Graph copes, but the
+        // IMAP path strips them as well, so both behave the same.
+        let clean = |list: &[Address]| -> Vec<Address> {
+            list.iter()
+                .map(|a| Address { name: crate::imap::mime::header_text(&a.name), address: a.address.trim().to_string() })
+                .collect()
+        };
         json!({
-            "subject": d.subject,
+            "subject": crate::imap::mime::header_text(&d.subject),
             "body": {"contentType": "html", "content": d.body_html},
-            "toRecipients": convert::recipients_json(&d.to),
-            "ccRecipients": convert::recipients_json(&d.cc),
-            "bccRecipients": convert::recipients_json(&d.bcc),
+            "toRecipients": convert::recipients_json(&clean(&d.to)),
+            "ccRecipients": convert::recipients_json(&clean(&d.cc)),
+            "bccRecipients": convert::recipients_json(&clean(&d.bcc)),
             "importance": d.importance,
             "isReadReceiptRequested": d.request_read_receipt,
         })
@@ -480,6 +487,19 @@ pub(crate) fn data_to_cid(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{cid_to_data, data_to_cid, extract_data_images, prepend_to_body, valid_address};
+
+    #[test]
+    fn draft_json_strips_line_breaks_from_header_fields() {
+        let d: crate::model::DraftInput = serde_json::from_value(serde_json::json!({
+            "mailboxId": "m", "subject": "Hallo\r\nX-Injiziert: ja",
+            "to": [{"name": "Evil\r\nBcc: x@y.z", "address": " a@b.de "}]
+        }))
+        .unwrap();
+        let v = crate::Service::draft_json(&d);
+        assert_eq!(v["subject"], "Hallo X-Injiziert: ja");
+        assert_eq!(v["toRecipients"][0]["emailAddress"]["name"], "Evil Bcc: x@y.z");
+        assert_eq!(v["toRecipients"][0]["emailAddress"]["address"], "a@b.de");
+    }
 
     #[test]
     fn cid_roundtrip() {
