@@ -2,7 +2,7 @@
 import { call, openWindow } from './api.js';
 import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
-import { isImap, isGoogle, kindLabel, kindClass, accountAvatar } from './accounts.js';
+import { isImap, isGoogle, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
 import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
@@ -321,7 +321,8 @@ export function renderFolderTree() {
     const sec = h('div.tree-section', { role: 'tree', dataset: { mailboxRoot: mb.id } });
     const acc = state.accounts.find((x) => x.id === mb.accountId);
     const av = accountAvatar(acc, 'xs', mb);
-    const root = sectionHeader(key, mb.address || mb.displayName, av, { title: mb.address });
+    const label = acc && acc.label && mb.kind === 'primary' ? acc.label : mb.address || mb.displayName;
+    const root = sectionHeader(key, label, av, { title: mb.address });
     root.classList.add('account');
     if (acc) root.appendChild(h('span.kind-badge.sm.' + kindClass(acc), { title: isGoogle(acc) ? 'Google-Konto (IMAP/SMTP)' : isImap(acc) ? 'IMAP/SMTP-Konto' : 'Microsoft-365-Konto' }, kindLabel(acc)));
     root.addEventListener('contextmenu', (e) => { e.preventDefault(); mailboxContextMenu(mb, e.clientX, e.clientY); });
@@ -1368,7 +1369,7 @@ async function loadToday() {
   const multi = (res.todo || []).length > 1;
   for (const t of res.todo || []) {
     const acc = state.accounts.find((a) => a.id === t.accountId);
-    const label = multi && acc ? `${t.lane} · ${acc.email}` : t.lane;
+    const label = multi && acc ? `${t.lane} · ${accountLabel(acc)}` : t.lane;
     for (const m of t.items || []) { if (seen.has(m.id)) continue; seen.add(m.id); items.push({ ...m, _section: label }); }
   }
   today.due = due;

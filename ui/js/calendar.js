@@ -8,7 +8,7 @@ import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenu, busyClick } from './dialogs.js';
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
-import { isImap } from './accounts.js';
+import { isImap, accountLabel } from './accounts.js';
 
 /** Accounts with a calendar (IMAP accounts have none). */
 function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
@@ -129,7 +129,7 @@ export function renderNav() {
   }
   for (const a of calAccounts()) {
     const sec = h('div.cal-list');
-    sec.appendChild(h('div.tree-root.static', h('span.tr-label', 'Meine Kalender'), h('span.tr-sub', a.email)));
+    sec.appendChild(h('div.tree-root.static', h('span.tr-label', 'Meine Kalender'), h('span.tr-sub', accountLabel(a))));
     for (const c of cal.calendars.get(a.id) || []) {
       const color = c.color || '#2f6fe4';
       const cb = h('input.cal-check', { type: 'checkbox', checked: !cal.hidden.has(c.id) });

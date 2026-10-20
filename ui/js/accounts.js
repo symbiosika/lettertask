@@ -1,6 +1,6 @@
 // Account setup: chooser (Microsoft 365 / Google / IMAP), IMAP wizard, server settings editor.
 import { call } from './api.js';
-import { h, esc, EMAIL_RE, initials, avatarColor } from './util.js';
+import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
 import { modal, toast, reportError, busyClick, confirmDialog } from './dialogs.js';
 
@@ -269,17 +269,69 @@ export async function googleLogin(loginHint = null) {
   } catch (e) { reportError(e); return null; } finally { overlay.remove(); }
 }
 
+/** Name of the account in the views: the own name, else the address. */
+export function accountLabel(acc) {
+  return (acc && (acc.label || acc.email)) || '';
+}
+
 /**
- * Round account picture, or the initials when none is set. `size`: avatar size
- * class (xs, sm, lg, xl). With `mb`, a shared mailbox keeps its own initials.
+ * Round account picture, or the badge (own text/colour) or initials when none
+ * is set. `size`: avatar size class (xs, sm, lg, xl). With `mb`, a shared
+ * mailbox keeps its own initials.
  */
 export function accountAvatar(acc, size = 'xs', mb = null) {
   const name = mb ? mb.displayName : acc && acc.displayName;
   const addr = mb ? mb.address : acc && acc.email;
-  if (acc && acc.avatar && (!mb || mb.kind === 'primary')) {
+  const own = acc && (!mb || mb.kind === 'primary');
+  if (own && acc.avatar) {
     return h('span.avatar.img.' + size, { dataset: { testid: 'acc-avatar-img' } }, h('img', { src: acc.avatar, alt: '', draggable: 'false' }));
   }
-  return h('span.avatar.' + size, { style: { background: avatarColor(addr) } }, initials(name, addr));
+  const badge = (own && acc.badge) || {};
+  const background = badge.color || avatarColor(addr);
+  if (badge.text) {
+    return h('span.avatar.txt.' + size, { style: { background }, dataset: { testid: 'acc-avatar-text' }, title: badgeLines(badge.text).join(' '), html: badgeSvg(badge.text) });
+  }
+  return h('span.avatar.' + size, { style: { background } }, initials(name, addr));
+}
+
+export const BADGE_LINES = 2;
+export const BADGE_LINE_MAX = 8;
+
+/** Badge text → at most 2 trimmed, non-empty lines of at most 8 characters. */
+export function badgeLines(text) {
+  return String(text || '').split('\n').map((l) => l.trim()).filter(Boolean)
+    .slice(0, BADGE_LINES).map((l) => [...l].slice(0, BADGE_LINE_MAX).join(''));
+}
+
+const MEASURE_PX = 40;
+let measureCtx = null;
+function textWidth(s) {
+  try {
+    if (!measureCtx) {
+      measureCtx = document.createElement('canvas').getContext('2d');
+      measureCtx.font = `600 ${MEASURE_PX}px ${getComputedStyle(document.body).fontFamily}`;
+    }
+    return measureCtx.measureText(s).width;
+  } catch {
+    return [...s].length * MEASURE_PX * 0.62;
+  }
+}
+
+/**
+ * Badge text as SVG in a 100×100 box: the font size is chosen so the widest
+ * line fits into the circle, and the SVG scales with every avatar size.
+ */
+export function badgeSvg(text) {
+  const lines = badgeLines(text);
+  const two = lines.length > 1;
+  const maxW = two ? 66 : 76;
+  const maxH = two ? 34 : 44;
+  const widest = Math.max(1, ...lines.map(textWidth));
+  const fs = Math.min(maxH, (MEASURE_PX * maxW) / widest);
+  const lh = fs * 1.05;
+  const y0 = 50 - (lh * (lines.length - 1)) / 2;
+  return `<svg viewBox="0 0 100 100" aria-hidden="true">${lines.map((l, i) =>
+    `<text x="50" y="${(y0 + i * lh).toFixed(1)}" font-size="${fs.toFixed(1)}" text-anchor="middle" dominant-baseline="central">${esc(l)}</text>`).join('')}</svg>`;
 }
 
 const AVATAR_PX = 128;
@@ -330,16 +382,84 @@ function avatarEditor(acc, onChanged) {
   return h('div.acc-avatar-edit', file, pick, remove);
 }
 
+/**
+ * Look of the account in the views: own name instead of the address, colour
+ * and text of the round badge (used when there is no picture). Saved right
+ * away; `onPreview` gets each change while typing, `onChanged` after saving.
+ */
+function lookEditor(acc, { onPreview, onChanged }) {
+  const badge = acc.badge || {};
+  let color = badge.color || null;
+  const label = h('input.input', { name: 'accLabel', value: acc.label || '', placeholder: acc.email, maxLength: 60, dataset: { testid: 'acc-label' } });
+  const text = h('textarea.input.acc-badge-text', { name: 'accBadgeText', rows: 2, placeholder: initials(acc.displayName, acc.email), dataset: { testid: 'acc-badge-text' } });
+  text.value = badge.text || '';
+  const current = () => ({ label: label.value.trim() || null, badge: { color, text: badgeLines(text.value).join('\n') || null } });
+  const swatches = h('div.acc-swatches', { role: 'radiogroup', 'aria-label': 'Farbe' });
+  const picker = h('input.acc-color', { type: 'color', title: 'Eigene Farbe', 'aria-label': 'Eigene Farbe', dataset: { testid: 'acc-color' } });
+  const renderSwatches = () => {
+    swatches.innerHTML = '';
+    const sw = (c, title) => h('button.acc-swatch' + (c === color ? '.selected' : '') + (c ? '' : '.auto'), {
+      type: 'button', role: 'radio', 'aria-checked': c === color ? 'true' : 'false', title,
+      style: { background: c || avatarColor(acc.email) }, dataset: { testid: 'acc-swatch', color: c || '' },
+      onclick: () => { color = c; renderSwatches(); save(); },
+    }, c ? null : 'A');
+    swatches.appendChild(sw(null, 'Automatisch'));
+    for (const c of AVATAR_COLORS) swatches.appendChild(sw(c, c));
+    picker.value = color || avatarColor(acc.email);
+    swatches.appendChild(picker);
+  };
+  let saved = JSON.stringify(current());
+  const save = async () => {
+    const look = current();
+    onPreview(look);
+    const key = JSON.stringify(look);
+    if (key === saved) return;
+    try {
+      await call('set_account_look', { accountId: acc.id, ...look });
+      saved = key;
+      acc.label = look.label;
+      acc.badge = look.badge.color || look.badge.text ? look.badge : null;
+      onChanged();
+    } catch (e) { reportError(e); }
+  };
+  picker.addEventListener('input', () => { color = picker.value.toLowerCase(); onPreview(current()); });
+  picker.addEventListener('change', () => { renderSwatches(); save(); });
+  // At most 2 lines of 8 characters, already while typing.
+  text.addEventListener('input', () => {
+    const lines = text.value.split('\n').slice(0, BADGE_LINES).map((l) => [...l].slice(0, BADGE_LINE_MAX).join(''));
+    const v = lines.join('\n');
+    if (v !== text.value) text.value = v;
+    onPreview(current());
+  });
+  text.addEventListener('change', save);
+  label.addEventListener('input', () => onPreview(current()));
+  label.addEventListener('change', save);
+  renderSwatches();
+  return h('div.acc-look', { dataset: { testid: 'acc-look' } },
+    h('div.wiz-grid',
+      h('label.srv-l', 'Name in der Ansicht'), label,
+      h('label.srv-l', 'Farbe'), swatches,
+      h('label.srv-l', 'Inhalt im Kreis'), h('div', text,
+        h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`))));
+}
+
 /** Account detail panel for the settings dialog ("Konten" tab). */
-export function accountDetail(acc, { onRemoved, onSaved, onAvatar }) {
+export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
   const box = h('div.acc-detail', { dataset: { testid: 'acc-detail' } });
+  let avatar = accountAvatar(acc, 'xl');
   const header = h('div.acc-head',
-    accountAvatar(acc, 'xl'),
+    avatar,
     h('div.acc-head-text',
       h('div', h('span.kind-badge.' + kindClass(acc), kindLabel(acc))),
       h('div.acc-name', acc.displayName || acc.email), h('div.dim', acc.email),
       avatarEditor(acc, () => onAvatar && onAvatar(acc))));
-  box.appendChild(header);
+  // Live preview while editing (the picture, if any, stays in front).
+  const preview = (look) => {
+    const next = accountAvatar({ ...acc, label: look.label, badge: look.badge }, 'xl');
+    avatar.replaceWith(next);
+    avatar = next;
+  };
+  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }));
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));
   if (isGoogle(acc)) return googleDetail(acc, box, remove, onSaved);

@@ -4,7 +4,7 @@ import { h, esc, initials, avatarColor, debounce, load, store, EMAIL_RE } from '
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, showMenu, busyClick } from './dialogs.js';
 import { state, mailboxes } from './state.js';
-import { isImap, kindLabel, kindClass } from './accounts.js';
+import { isImap, kindLabel, kindClass, accountLabel } from './accounts.js';
 import { makeSplitter } from './mail.js';
 
 const PHONE_KINDS = [['business', 'Geschäftlich'], ['mobile', 'Mobil'], ['home', 'Privat']];
@@ -70,7 +70,7 @@ export function renderNav() {
   const sec = h('div.tree-section', { role: 'tree' });
   sec.appendChild(node('all', 'Alle Kontakte', 'contacts'));
   for (const a of state.accounts) {
-    sec.appendChild(node(a.id, a.email, isImap(a) ? 'server' : 'people', h('span.kind-badge.sm.' + kindClass(a), kindLabel(a))));
+    sec.appendChild(node(a.id, accountLabel(a), isImap(a) ? 'server' : 'people', h('span.kind-badge.sm.' + kindClass(a), kindLabel(a))));
   }
   sec.appendChild(node('collected', 'Gesammelte Adressen', 'clock'));
   els.nav.appendChild(sec);
@@ -121,7 +121,7 @@ function renderList() {
   const title = document.getElementById('ct-title');
   const count = document.getElementById('ct-count');
   const acc = state.accounts.find((a) => a.id === ct.source);
-  if (title) title.textContent = ct.source === 'all' ? 'Alle Kontakte' : ct.source === 'collected' ? 'Gesammelte Adressen' : acc ? acc.email : 'Kontakte';
+  if (title) title.textContent = ct.source === 'all' ? 'Alle Kontakte' : ct.source === 'collected' ? 'Gesammelte Adressen' : acc ? accountLabel(acc) : 'Kontakte';
   if (count) count.textContent = String(ct.total);
   els.list.innerHTML = '';
   if (!ct.items.length) {
@@ -173,7 +173,7 @@ function renderDetail() {
       h('div.ct-hero-text',
         h('h2.ct-name', { dataset: { testid: 'contact-name' } }, name),
         role ? h('div.ct-role', role) : null,
-        h('div.ct-origin.dim', `${SOURCE_LABEL[c.source] || c.source}${acc ? ' · ' + acc.email : ''}${c.readOnly ? ' · schreibgeschützt' : ''}`)),
+        h('div.ct-origin.dim', `${SOURCE_LABEL[c.source] || c.source}${acc ? ' · ' + accountLabel(acc) : ''}${c.readOnly ? ' · schreibgeschützt' : ''}`)),
       h('div.ct-actions',
         btn('E-Mail schreiben', 'mail', () => writeTo(c, c.emails[0]), { primary: true, disabled: !c.emails.length, testid: 'contact-write' }),
         btn('Bearbeiten', 'edit', () => editContact(c), { testid: 'contact-edit' }),
@@ -224,7 +224,7 @@ export async function editContact(c, accountId) {
   const job = inp('jobTitle', v.jobTitle, 'Position');
   const notes = h('textarea.input', { name: 'notes', rows: 3 });
   notes.value = v.notes || '';
-  const accSel = h('select.input', { name: 'contactAccount' }, ...state.accounts.map((a) => h('option', { value: a.id, selected: a.id === accountId }, `${a.email} (${isImap(a) ? 'lokal' : 'Microsoft 365'})`)));
+  const accSel = h('select.input', { name: 'contactAccount' }, ...state.accounts.map((a) => h('option', { value: a.id, selected: a.id === accountId }, `${accountLabel(a)} (${isImap(a) ? 'lokal' : 'Microsoft 365'})`)));
 
   const emailsHost = h('div.ct-multi', { dataset: { testid: 'ct-emails' } });
   const renderEmails = () => {

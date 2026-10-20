@@ -142,6 +142,73 @@ test('Eigenes Kontobild: wählen, rund anzeigen, entfernen', async ({ page }) =>
   await expect(page.locator('.tree-root.account .avatar.img')).toHaveCount(0);
 });
 
+test('Konto-Darstellung: eigener Name, Farbe und Text im Kreis', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-settings]').click();
+  await page.locator('[data-testid=settings-tab-accounts]').click();
+  const detail = page.locator('[data-testid=acc-detail]');
+  await detail.locator('[data-testid=acc-label]').fill('Contoso');
+  await detail.locator('[data-testid=acc-label]').press('Tab');
+  await detail.locator('[data-testid=acc-swatch][data-color="#d0567a"]').click();
+  // more than 2 lines / 8 characters are cut while typing
+  await detail.locator('[data-testid=acc-badge-text]').fill('CONTOSO-AG\nIT\nXYZ');
+  await expect(detail.locator('[data-testid=acc-badge-text]')).toHaveValue('CONTOSO-\nIT');
+  await detail.locator('[data-testid=acc-badge-text]').blur();
+  const big = detail.locator('.acc-head [data-testid=acc-avatar-text]');
+  await expect(big.locator('text')).toHaveText(['CONTOSO-', 'IT']);
+  await expect(big).toHaveCSS('background-color', 'rgb(208, 86, 122)');
+  // the text fits into the circle
+  const fit = await big.evaluate((el) => {
+    const c = el.getBoundingClientRect();
+    return [...el.querySelectorAll('text')].every((t) => { const r = t.getBoundingClientRect(); return r.left >= c.left && r.right <= c.right; });
+  });
+  expect(fit).toBe(true);
+  await expect(page.locator('[data-testid=acc-item]').first()).toContainText('Contoso');
+  await expect(page.locator('[data-testid=acc-item] [data-testid=acc-avatar-text]')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  // views: folder pane, account button, contacts
+  await expect(page.locator('.tree-root.account .tr-label').first()).toHaveText('Contoso');
+  await expect(page.locator('#account-chip [data-testid=acc-avatar-text]')).toBeVisible();
+  await page.locator('[data-testid=nav-contacts]').click();
+  await expect(page.locator('[data-testid=ct-src-account]').first()).toContainText('Contoso');
+  // survives a reload; emptying restores address and initials
+  await page.reload();
+  await expect(page.locator('.tree-root.account .tr-label').first()).toHaveText('Contoso');
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-settings]').click();
+  await page.locator('[data-testid=settings-tab-accounts]').click();
+  await detail.locator('[data-testid=acc-label]').fill('');
+  await detail.locator('[data-testid=acc-label]').press('Tab');
+  await detail.locator('[data-testid=acc-badge-text]').fill('');
+  await detail.locator('[data-testid=acc-badge-text]').blur();
+  await detail.locator('[data-testid=acc-swatch][data-color=""]').click();
+  await expect(detail.locator('.acc-head [data-testid=acc-avatar-text]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.tree-root.account .tr-label').first()).toHaveText('max.mustermann@contoso.example');
+});
+
+test('Kontakte: lange Namen überlappen die Schaltflächen nicht', async ({ page }) => {
+  await openApp(page);
+  await page.setViewportSize({ width: 1500, height: 800 });
+  await page.locator('[data-testid=nav-contacts]').click();
+  await page.locator('[data-testid=contact-row]').first().click();
+  const name = page.locator('[data-testid=contact-name]');
+  // the rendered text itself (an overflowing text sticks out of its box)
+  const box = await name.evaluate((el) => {
+    el.textContent = 'vorname.nachname@symbiosika.example';
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const r = range.getBoundingClientRect();
+    return { x: r.left, y: r.top, width: r.width, height: r.height };
+  });
+  const btn = await page.locator('[data-testid=contact-write]').boundingBox();
+  const overlap = box.x < btn.x + btn.width && btn.x < box.x + box.width && box.y < btn.y + btn.height && btn.y < box.y + box.height;
+  expect(overlap).toBe(false);
+  const card = await page.locator('.ct-card').boundingBox();
+  expect(box.x + box.width).toBeLessThanOrEqual(card.x + card.width);
+});
+
 test('Reihenfolge der Konten in den Einstellungen ändern', async ({ page, context }) => {
   // The demo has one account: a second (IMAP) one is simulated in list_accounts.
   let order = null;

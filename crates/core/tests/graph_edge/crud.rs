@@ -311,3 +311,34 @@ async fn account_picture_is_validated_and_listed() {
     assert_eq!(accounts[0].avatar, None);
     let _: Value = call(&ctx.svc, "set_account_order", json!({"accountIds": [ctx.account]})).await;
 }
+
+#[tokio::test]
+async fn account_name_and_badge_are_validated_and_listed() {
+    let ctx = setup().await;
+    let look = json!({"accountId": ctx.account, "label": "  Büro  ", "badge": {"color": "#D0567A", "text": " CUCO \n\n LHV "}});
+    let _: Value = call(&ctx.svc, "set_account_look", look).await;
+    let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
+    assert_eq!(accounts[0].label.as_deref(), Some("Büro"));
+    let badge = accounts[0].badge.clone().expect("badge");
+    assert_eq!(badge.color.as_deref(), Some("#d0567a"));
+    assert_eq!(badge.text.as_deref(), Some("CUCO\nLHV"));
+
+    for bad in [
+        json!({"label": "x".repeat(61)}),
+        json!({"badge": {"color": "red"}}),
+        json!({"badge": {"color": "#12345g"}}),
+        json!({"badge": {"text": "NEUNZEICH"}}),
+        json!({"badge": {"text": "A\nB\nC"}}),
+    ] {
+        let mut args = bad;
+        args["accountId"] = json!(ctx.account);
+        call_err(&ctx.svc, "set_account_look", args).await;
+    }
+    call_err(&ctx.svc, "set_account_look", json!({"accountId": "unbekannt"})).await;
+
+    // empty = defaults again (address, initials, derived colour)
+    let _: Value = call(&ctx.svc, "set_account_look", json!({"accountId": ctx.account, "label": " ", "badge": {"text": ""}})).await;
+    let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
+    assert_eq!(accounts[0].label, None);
+    assert_eq!(accounts[0].badge, None);
+}

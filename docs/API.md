@@ -17,8 +17,9 @@ All JSON keys are **camelCase**. Timestamps are ISO-8601 UTC strings with `Z`
 
 ```ts
 Address      { name: string, address: string }
-Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[], avatar: string|null,
+Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[], avatar: string|null, label: string|null, badge: AccountBadge|null,
                auth?: "google" /* IMAP account signed in with Google (Gmail / Workspace) */ }
+AccountBadge { color: "#rrggbb"|null, text: string|null }   // text: up to 2 lines ("\n") of up to 8 characters
                // kind "imap": no calendar, no mailbox settings (auto reply); categories are local
                // (stored as IMAP keywords on messages), "Wiedervorlage" times are kept locally.
                // auth "google": IMAP/SMTP at imap.gmail.com / smtp.gmail.com with SASL XOAUTH2;
@@ -143,6 +144,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `remove_account` | `{ accountId }` | `null` |
 | `set_account_order` | `{ accountIds: string[] }` | `null` — display order from top to bottom (folder pane, menus, „Von“); emits `accounts-changed` |
 | `set_account_avatar` | `{ accountId, avatar: string\|null }` | `null` — own picture as `data:image/png\|jpeg\|webp;base64,…` (max. 300 KB; the UI crops it to 128 px), `null` = initials again; emits `accounts-changed` |
+| `set_account_look` | `{ accountId, label: string\|null, badge: { color, text }\|null }` | `null` — name in the views instead of the address (max. 60 characters) and the round badge without a picture: colour `#rrggbb` and up to 2 lines of up to 8 characters; empty/`null` = address, derived colour, initials; emits `accounts-changed` |
 | `set_active_folder` | `{ mailboxId, folderId }` | `null` — background sync also syncs this folder |
 | `sync_all` | `{}` | `null` — "Senden/Empfangen": folders + inbox + active folder of every mailbox |
 

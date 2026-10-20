@@ -69,6 +69,48 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "unbekannte Ursache".into())
 }
 
+/// Longest name of an account in the views.
+const LABEL_MAX: usize = 60;
+/// Account badge: at most this many lines of this many characters.
+const BADGE_LINES: usize = 2;
+const BADGE_LINE_MAX: usize = 8;
+
+/// Name in the views: trimmed, empty = the address again.
+fn clean_account_label(v: Option<String>) -> Result<Option<String>> {
+    let v = v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if v.as_ref().is_some_and(|s| s.chars().count() > LABEL_MAX || s.chars().any(char::is_control)) {
+        return Err(Error::invalid(format!("Der Kontoname darf höchstens {LABEL_MAX} Zeichen lang sein.")));
+    }
+    Ok(v)
+}
+
+/// Badge colour "#rrggbb" and up to 2 lines of up to 8 characters (trimmed).
+fn clean_account_badge(v: Option<AccountBadge>) -> Result<AccountBadge> {
+    let v = v.unwrap_or_default();
+    let color = v.color.map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty());
+    if let Some(c) = &color {
+        if c.len() != 7 || !c.starts_with('#') || !c[1..].chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(Error::invalid("Die Farbe ist ungültig."));
+        }
+    }
+    let lines: Vec<String> = v
+        .text
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() > BADGE_LINES
+        || lines.iter().any(|l| l.chars().count() > BADGE_LINE_MAX || l.chars().any(char::is_control))
+    {
+        return Err(Error::invalid(format!(
+            "Höchstens {BADGE_LINES} Zeilen mit je {BADGE_LINE_MAX} Zeichen sind möglich."
+        )));
+    }
+    let text = (!lines.is_empty()).then(|| lines.join("\n"));
+    Ok(AccountBadge { color, text })
+}
+
 /// Largest accepted account picture (the UI scales it down to 128 px first).
 const AVATAR_MAX: usize = 300_000;
 
@@ -295,6 +337,16 @@ impl Service {
                     check_avatar(v)?;
                 }
                 if !self.store.set_account_avatar(&id, avatar.as_deref())? {
+                    return Err(Error::invalid("Unbekanntes Konto."));
+                }
+                self.emit("accounts-changed", json!({}));
+                ok(Value::Null)
+            }
+            "set_account_look" => {
+                let id: String = arg(a, "accountId")?;
+                let label = clean_account_label(arg(a, "label")?)?;
+                let badge = clean_account_badge(arg(a, "badge")?)?;
+                if !self.store.set_account_look(&id, label.as_deref(), &badge)? {
                     return Err(Error::invalid("Unbekanntes Konto."));
                 }
                 self.emit("accounts-changed", json!({}));

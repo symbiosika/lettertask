@@ -8,7 +8,7 @@ import { state, loadCategories, loadLanes, lanesOf } from './state.js';
 import { LANE_NAME_RE } from './categories.js';
 import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
 import { signaturesPanel } from './signatures.js';
-import { chooseAccountKind, imapWizard, googleLogin, accountDetail, kindLabel, kindClass, accountAvatar } from './accounts.js';
+import { chooseAccountKind, imapWizard, googleLogin, accountDetail, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
 
 export const hooks = { onConfigSaved: () => {}, onAccountsChanged: () => {} };
 
@@ -278,15 +278,14 @@ function accountsPanel({ initialAccountId }) {
   let selected = initialAccountId || (state.accounts[0] && state.accounts[0].id);
   const listEl = h('div.acc-list', { role: 'listbox', dataset: { testid: 'acc-list' } });
   const detailHost = h('div.acc-detail-host');
-  const render = () => {
+  const renderList = () => {
     listEl.innerHTML = '';
-    if (!state.accounts.some((a) => a.id === selected)) selected = state.accounts[0] && state.accounts[0].id;
     const n = state.accounts.length;
     state.accounts.forEach((a, i) => {
       const mv = (e, d) => { e.stopPropagation(); moveAccount(i, d).catch(reportError); };
       const row = h('div.acc-item' + (a.id === selected ? '.selected' : ''), { role: 'option', dataset: { testid: 'acc-item', id: a.id } },
         accountAvatar(a, 'xs'),
-        h('span.acc-text', h('span.acc-n', a.displayName || a.email), h('span.acc-e', a.email)),
+        h('span.acc-text', h('span.acc-n', a.label || a.displayName || a.email), h('span.acc-e', a.email)),
         h('span.kind-badge.' + kindClass(a), kindLabel(a)),
         n > 1 ? h('span.acc-order',
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', 'aria-label': 'Nach oben', html: icon('up', 14), disabled: i === 0, dataset: { testid: 'acc-up' }, onclick: (e) => mv(e, -1) }),
@@ -295,6 +294,10 @@ function accountsPanel({ initialAccountId }) {
       listEl.appendChild(row);
     });
     if (!state.accounts.length) listEl.appendChild(h('div.dim.acc-none', 'Noch kein Konto eingerichtet.'));
+  };
+  const render = () => {
+    if (!state.accounts.some((a) => a.id === selected)) selected = state.accounts[0] && state.accounts[0].id;
+    renderList();
     detailHost.innerHTML = '';
     const acc = state.accounts.find((a) => a.id === selected);
     if (acc) {
@@ -302,6 +305,12 @@ function accountsPanel({ initialAccountId }) {
         onRemoved: async (x) => { if (await removeAccount(x)) render(); },
         onSaved: async () => { hooks.onAccountsChanged(); await reloadAccounts(); render(); },
         onAvatar: () => render(),
+        onLook: (x) => {
+          // state.accounts may already be a reloaded copy (accounts-changed).
+          const cur = state.accounts.find((a) => a.id === x.id);
+          if (cur && cur !== x) Object.assign(cur, { label: x.label, badge: x.badge });
+          renderList();
+        },
       }));
     }
   };
@@ -326,7 +335,7 @@ function accountsPanel({ initialAccountId }) {
   // for the server settings).
   return { el: h('div.acc-panel',
     h('div.acc-side', listEl,
-      h('div.acc-side-foot', add, state.accounts.length > 1 ? h('span.note.acc-hint', 'Reihenfolge und Kontobild werden sofort übernommen.') : null)),
+      h('div.acc-side-foot', add, state.accounts.length > 1 ? h('span.note.acc-hint', 'Reihenfolge, Kontobild und Darstellung werden sofort übernommen.') : null)),
     detailHost) };
 }
 
