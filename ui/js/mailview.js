@@ -8,51 +8,113 @@ import { showMenu, showMenuAt, reportError, toast } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
 import { fmtSnoozeTarget } from './snooze.js';
 
-const REMOTE_RE = /(<img\b[^>]*\bsrc\s*=\s*["']?\s*(https?:)?\/\/)|(url\(\s*["']?\s*(https?:)?\/\/)|(<image\b[^>]*href\s*=\s*["']?\s*https?:)/i;
+// Mail HTML is untrusted. It is parsed with DOMParser (inert: no scripts, no
+// loads), cleaned, and rendered in a sandboxed iframe without allow-scripts and
+// with its own CSP. Remote resources stay blocked unless the user allows them.
 
-export function hasRemoteContent(html) { return REMOTE_RE.test(html || ''); }
+/** Attributes that make the browser fetch a resource (links excluded). */
+const FETCH_ATTRS = ['src', 'srcset', 'poster', 'background', 'data', 'lowsrc', 'dynsrc', 'imagesrcset'];
+/** Elements whose href / xlink:href loads a resource instead of being a link. */
+const HREF_LOADERS = new Set(['link', 'image', 'use', 'feimage', 'script', 'tref']);
+const ABS_URL = /(^|[\s,])\s*([a-z][a-z0-9+.-]*:)?\/\//i;
+const LOCAL_URL = /^\s*(data:|cid:|about:|#|$)/i;
+
+function parseMail(html) {
+  return new DOMParser().parseFromString(String(html || ''), 'text/html');
+}
+
+function remoteUrl(v) { return !LOCAL_URL.test(v) && ABS_URL.test(v); }
+
+/** True if CSS text can load something from outside (url(), @import, image-set strings). */
+function remoteCss(css) {
+  if (!css) return false;
+  if (/@import/i.test(css)) return true;
+  if (/["']\s*(https?:)?\/\//i.test(css)) return true;
+  const re = /url\(\s*(["']?)([^"')]*)/gi;
+  let m;
+  while ((m = re.exec(css))) {
+    if (!/^\s*(data:|cid:|#)/i.test(m[2])) return true;
+  }
+  return false;
+}
+
+function hasRemoteIn(doc) {
+  for (const s of doc.querySelectorAll('style')) if (remoteCss(s.textContent)) return true;
+  for (const el of doc.querySelectorAll('*')) {
+    for (const a of el.attributes) {
+      const name = a.name.toLowerCase();
+      if (FETCH_ATTRS.includes(name) && remoteUrl(a.value)) return true;
+      if ((name === 'href' || name === 'xlink:href') && HREF_LOADERS.has(el.localName.toLowerCase()) && remoteUrl(a.value)) return true;
+      if (name === 'style' && remoteCss(a.value)) return true;
+    }
+  }
+  return false;
+}
+
+export function hasRemoteContent(html) { return hasRemoteIn(parseMail(html)); }
 
 /** Builds the iframe srcdoc for a mail body. */
 export function buildSrcdoc(bodyHtml, allowRemote) {
   const img = allowRemote ? "data: cid: https: http:" : "data: cid:";
-  const csp = `default-src 'none'; img-src ${img}; style-src 'unsafe-inline'${allowRemote ? ' https: http:' : ''}; font-src data:${allowRemote ? ' https: http:' : ''}; media-src data:`;
-  const clean = String(bodyHtml || '')
-    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, '')
-    .replace(/<meta\b[^>]*http-equiv\s*=\s*["']?(refresh|content-security-policy)[^>]*>/gi, '')
-    .replace(/<base\b[^>]*>/gi, '');
-  return `<!doctype html><html><head><meta charset="utf-8">` +
+  const remote = allowRemote ? ' https: http:' : '';
+  const csp = `default-src 'none'; img-src ${img}; style-src 'unsafe-inline'${remote}; font-src data:${remote}; media-src data:; form-action 'none'; base-uri 'none'`;
+  const doc = parseMail(bodyHtml);
+  // Nothing in a mail may run code, embed documents, redirect or change the CSP/base.
+  doc.querySelectorAll('script,meta,base,iframe,frame,frameset,object,embed,applet,portal').forEach((n) => n.remove());
+  doc.querySelectorAll(allowRemote ? 'link:not([rel~=stylesheet i])' : 'link').forEach((n) => n.remove());
+  for (const el of doc.querySelectorAll('*')) {
+    for (const a of [...el.attributes]) {
+      // event handlers never run (sandbox), target="_self" etc. must not navigate the pane
+      if (/^on/i.test(a.name) || a.name.toLowerCase() === 'target') el.removeAttribute(a.name);
+    }
+  }
+  const head = doc.head;
+  head.insertAdjacentHTML('afterbegin',
+    `<meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
     `<base target="_blank">` +
     `<style>html{background:#fff}body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;margin:4px 2px 24px;word-wrap:break-word;overflow-wrap:anywhere}` +
     `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font-family:Consolas,"Cascadia Mono",monospace;font-size:13px}blockquote{margin:0 0 0 .8ex;border-left:2px solid #c9d3e3;padding-left:1.2ex;color:#57606a}a{color:#2f6fe4}` +
-    `::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#d0d4da;border-radius:5px;border:2px solid #fff}</style>` +
-    `</head><body>${clean}</body></html>`;
+    `::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#d0d4da;border-radius:5px;border:2px solid #fff}</style>`);
+  return '<!doctype html>' + doc.documentElement.outerHTML;
+}
+
+/** Link target of a clicked element: <a>, <area> or SVG <a> (href / xlink:href). */
+function linkOf(target) {
+  const a = target && target.closest ? target.closest('a, area') : null;
+  if (!a) return null;
+  return { el: a, href: (a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '').trim() };
 }
 
 /** Mounts the body iframe and wires link interception. */
 export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
   host.innerHTML = '';
-  const frame = h('iframe.mail-frame', { sandbox: 'allow-same-origin allow-popups allow-popups-to-escape-sandbox', title: 'Nachrichtentext', referrerpolicy: 'no-referrer' });
+  // No allow-scripts, no allow-popups/forms/top-navigation: links only open
+  // through the click handler below (http(s) in the browser, mailto in compose).
+  const frame = h('iframe.mail-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', referrerpolicy: 'no-referrer' });
   frame.srcdoc = buildSrcdoc(bodyHtml, allowRemote);
   frame.addEventListener('load', () => {
     let doc;
     try { doc = frame.contentDocument; } catch { return; }
     if (!doc) return;
     doc.addEventListener('click', (e) => {
-      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-      if (!a) return;
+      const link = linkOf(e.target);
+      if (!link) return;
       e.preventDefault();
-      const href = a.getAttribute('href') || '';
+      const { href } = link;
       if (/^mailto:/i.test(href)) {
-        const to = decodeURIComponent(href.slice(7).split('?')[0]);
+        let to = href.slice(7).split('?')[0];
+        try { to = decodeURIComponent(to); } catch { /* keep raw */ }
         openWindow('compose', { mailboxId, mode: 'new', to }).catch(reportError);
-      } else if (/^(https?:|ftp:)/i.test(href)) {
+      } else if (/^https?:\/\//i.test(href)) {
         openUrl(href).catch(reportError);
       } else if (href.startsWith('#')) {
         const t = doc.getElementById(href.slice(1)) || doc.getElementsByName(href.slice(1))[0];
         if (t) t.scrollIntoView();
       }
     });
+    // Middle click / other buttons never follow a link.
+    doc.addEventListener('auxclick', (e) => { if (linkOf(e.target)) e.preventDefault(); });
     // Forward keyboard shortcuts typed while the iframe has focus.
     doc.addEventListener('keydown', (e) => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey, bubbles: true }));

@@ -183,7 +183,7 @@ export function fileToBase64(file) {
 
 /** Converts plain text from HTML (used for local previews). */
 export function htmlToText(html) {
-  const d = document.createElement('div');
-  d.innerHTML = html;
-  return d.textContent || '';
+  // Inert document: a detached <div> of this document would still load images and fire onerror.
+  const doc = new DOMParser().parseFromString(String(html ?? ''), 'text/html');
+  return (doc.body && doc.body.textContent) || '';
 }

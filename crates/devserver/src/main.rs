@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use axum::extract::{Path as AxPath, State};
-use axum::http::StatusCode;
+use axum::extract::{Path as AxPath, Request, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -86,6 +87,47 @@ async fn events(State(st): State<AppState>) -> Sse<impl Stream<Item = Result<Eve
         .filter_map(|m| m.ok())
         .map(|v| Ok(Event::default().data(v.to_string())));
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// The app windows' Content-Security-Policy, taken from the Tauri config so the
+/// browser (and the e2e tests) run the UI under exactly the same policy.
+fn app_csp() -> String {
+    let conf: Value = serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).expect("tauri.conf.json");
+    conf["app"]["security"]["csp"].as_str().unwrap_or("default-src 'self'").to_string()
+}
+
+/// Only requests addressed to this loopback server are served: a foreign Host
+/// header means DNS rebinding, a foreign Origin a cross-site request (CSRF).
+fn request_allowed(host: Option<&str>, origin: Option<&str>, port: u16) -> bool {
+    let local = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let Some(host) = host else { return false };
+    if !local.iter().any(|l| l.eq_ignore_ascii_case(host)) {
+        return false;
+    }
+    match origin {
+        None => true,
+        Some(o) => local.iter().any(|l| o.eq_ignore_ascii_case(&format!("http://{l}"))),
+    }
+}
+
+#[derive(Clone)]
+struct Guard {
+    port: u16,
+    csp: HeaderValue,
+}
+
+async fn guard(State(g): State<Guard>, req: Request, next: Next) -> Response {
+    let allowed = {
+        let hdr = |n: header::HeaderName| req.headers().get(n).and_then(|v| v.to_str().ok());
+        request_allowed(hdr(header::HOST), hdr(header::ORIGIN), g.port)
+    };
+    if !allowed {
+        return (StatusCode::FORBIDDEN, "Zugriff verweigert").into_response();
+    }
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(header::CONTENT_SECURITY_POLICY, g.csp);
+    res.headers_mut().insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    res
 }
 
 struct Args {
@@ -180,10 +222,15 @@ async fn main() -> anyhow::Result<()> {
     svc.start_background_sync();
 
     let state = AppState { svc, tx };
+    let g = Guard {
+        port: args.port,
+        csp: HeaderValue::from_str(&app_csp())?,
+    };
     let app = Router::new()
         .route("/api/call/{cmd}", post(call))
         .route("/api/events", get(events))
         .fallback_service(ServeDir::new(&args.ui_dir))
+        .layer(axum::middleware::from_fn_with_state(g, guard))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
@@ -191,4 +238,30 @@ async fn main() -> anyhow::Result<()> {
     println!("Outlook-Clone Dev-Server läuft auf http://{addr}/ {}", if args.demo { "(Demo-Modus)" } else { "" });
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_loopback_host_and_origin_are_served() {
+        assert!(request_allowed(Some("127.0.0.1:8080"), None, 8080));
+        assert!(request_allowed(Some("localhost:8080"), Some("http://localhost:8080"), 8080));
+        // DNS rebinding: evil.example resolves to 127.0.0.1
+        assert!(!request_allowed(Some("evil.example:8080"), None, 8080));
+        assert!(!request_allowed(None, None, 8080));
+        assert!(!request_allowed(Some("127.0.0.1:9999"), None, 8080));
+        // cross-site POST from a web page
+        assert!(!request_allowed(Some("127.0.0.1:8080"), Some("https://evil.example"), 8080));
+        assert!(!request_allowed(Some("127.0.0.1:8080"), Some("null"), 8080));
+    }
+
+    #[test]
+    fn csp_comes_from_tauri_config() {
+        let csp = app_csp();
+        assert!(csp.contains("script-src 'self'"), "{csp}");
+        assert!(csp.contains("object-src 'none'"), "{csp}");
+        assert!(!csp.contains("unsafe-eval"), "{csp}");
+    }
 }
