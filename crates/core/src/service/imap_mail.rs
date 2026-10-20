@@ -990,8 +990,15 @@ impl Service {
         for (uid, due, key) in items {
             let Ok(dt) = DateTime::parse_from_rfc3339(due) else { continue };
             let id = im::message_id(uv, *uid, folder);
-            if self.imap_set_due(mb, std::slice::from_ref(&id), Some(dt.with_timezone(&Utc))).await? && !key.is_empty() {
+            if !self.imap_set_due(mb, std::slice::from_ref(&id), Some(dt.with_timezone(&Utc))).await? {
+                continue;
+            }
+            if !key.is_empty() {
                 self.store.kv_set(key, "")?;
+            } else {
+                for mid in self.imap_message_ids(mb, std::slice::from_ref(&id)).await? {
+                    self.store.kv_set(&snooze_key(mb, &mid), "")?;
+                }
             }
         }
         Ok(())

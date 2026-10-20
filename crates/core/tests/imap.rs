@@ -689,3 +689,162 @@ async fn tasks_rules_and_send_reminders() {
         .unwrap_or_else(|| panic!("reminder missing: {:?}", page.items.iter().map(|m| &m.subject).collect::<Vec<_>>()));
     assert!(reminder.due_at.is_some());
 }
+
+fn due_keywords(flags: &[String]) -> Vec<String> {
+    flags.iter().filter(|f| f.starts_with("$due_")).cloned().collect()
+}
+
+#[tokio::test]
+async fn due_time_lives_on_the_server_as_keyword() {
+    let Some(ctx) = setup().await else { return };
+    let inbox = ctx.folder("inbox").await;
+    let a = ctx.by_subject(&inbox.id, "Rechnung Oktober").await;
+    let until = chrono::Utc::now() + chrono::Duration::days(2);
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [a.id], "until": until.to_rfc3339()})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let flags = server_flags(ctx.dv.port, &snoozed.id).await;
+    let kw = due_keywords(&flags.iter().find(|(s, _)| s == "Rechnung Oktober").unwrap().1);
+    assert_eq!(kw, [mailcore::imap::due_keyword(until)]);
+    // Snoozing again replaces the keyword.
+    let m = ctx.by_subject(&snoozed.id, "Rechnung Oktober").await;
+    let later = until + chrono::Duration::days(5);
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [m.id], "until": later.to_rfc3339()})).await;
+    let flags = server_flags(ctx.dv.port, &snoozed.id).await;
+    assert_eq!(due_keywords(&flags[0].1), [mailcore::imap::due_keyword(later)]);
+
+    // Another device (fresh cache) sees the due time.
+    let dir2 = tempfile::tempdir().unwrap();
+    let svc2 = Service::new(
+        ServiceOptions {
+            data_dir: dir2.path().to_path_buf(),
+            graph_base: "http://127.0.0.1:9/v1.0".into(),
+            authority: "http://127.0.0.1:9".into(),
+            demo: false,
+            token_store: Arc::new(MemoryTokenStore::default()),
+        },
+        Arc::new(NullHost::default()),
+    )
+    .unwrap();
+    let _: Account = call(&svc2, "add_imap_account", json!({"input": input(ctx.dv.port, ctx.sink.port, PASSWORD)})).await;
+    let folders: Vec<Folder> = call(&svc2, "list_folders", json!({"mailboxId": ctx.account})).await;
+    let sz = folders.iter().find(|f| f.well_known.as_deref() == Some("snoozed")).expect("snooze folder recognised").clone();
+    let _: SyncResult = call(&svc2, "sync_folder", json!({"mailboxId": ctx.account, "folderId": sz.id})).await;
+    let page: MessagePage = call(&svc2, "list_messages", json!({"mailboxId": ctx.account, "folderId": sz.id})).await;
+    let expect = mailcore::imap::keyword_due(&mailcore::imap::due_keyword(later));
+    assert_eq!(page.items[0].due_at, expect);
+
+    // Unsnooze removes the keyword.
+    let m = ctx.by_subject(&snoozed.id, "Rechnung Oktober").await;
+    let _: Value = call(&ctx.svc, "unsnooze_messages", json!({"mailboxId": ctx.account, "ids": [m.id]})).await;
+    let flags = server_flags(ctx.dv.port, "INBOX").await;
+    let back = &flags.iter().find(|(s, _)| s == "Rechnung Oktober").unwrap().1;
+    assert!(due_keywords(back).is_empty(), "{back:?}");
+    assert!(!back.contains(&"\\Seen".to_string()));
+}
+
+#[tokio::test]
+async fn local_due_times_migrate_to_keywords() {
+    let Some(ctx) = setup().await else { return };
+    let inbox = ctx.folder("inbox").await;
+    let a = ctx.by_subject(&inbox.id, "Grüße aus München").await;
+    let until = chrono::Utc::now() + chrono::Duration::days(1);
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [a.id], "until": until.to_rfc3339()})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    // Simulate data from an older version: keyword gone, due time only local.
+    let mut c = raw_conn(ctx.dv.port).await;
+    c.session.select(&snoozed.id).await.unwrap();
+    let kw = mailcore::imap::due_keyword(until);
+    let _: Vec<_> = c.session.store("1:*", format!("-FLAGS ({kw})")).await.unwrap().try_collect().await.unwrap();
+    c.session.logout().await.unwrap();
+    let store = mailcore::store::Store::open(&ctx._dir.path().join("cache.db")).unwrap();
+    let key = format!("imapsnooze|{}|m1@example.com", ctx.account);
+    store.kv_set(&key, &until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)).unwrap();
+
+    ctx.sync(&snoozed.id).await;
+    let flags = server_flags(ctx.dv.port, &snoozed.id).await;
+    assert_eq!(due_keywords(&flags[0].1), [kw]);
+    assert_eq!(store.kv_get(&key).unwrap().as_deref(), Some(""));
+    assert!(ctx.list(&snoozed.id).await.items[0].due_at.is_some());
+}
+
+#[tokio::test]
+async fn thread_ids_and_follow_up_reminders() {
+    let Some(ctx) = setup().await else { return };
+    let inbox = ctx.folder("inbox").await;
+    // Own message id is the thread root of a standalone mail.
+    let g = ctx.by_subject(&inbox.id, "Grüße aus München").await;
+    assert_eq!(g.conversation_id, "m1@example.com");
+
+    let remind = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let _: Value = call(
+        &ctx.svc,
+        "send_draft",
+        json!({"draft": {"id": null, "mailboxId": ctx.account, "to": [{"name": "Erik", "address": "erik@example.com"}],
+            "subject": "Angebot 0815", "bodyHtml": "<p>Bitte prüfen</p>", "remindAt": remind}}),
+    )
+    .await;
+    let snoozed = ctx.folder("snoozed").await;
+    let reminder = ctx
+        .list(&snoozed.id)
+        .await
+        .items
+        .into_iter()
+        .find(|m| m.subject.contains("Angebot 0815"))
+        .expect("reminder in Wiedervorlage");
+    assert!(reminder.categories.iter().any(|c| c.starts_with("[F_")), "{:?}", reminder.categories);
+    let flags = server_flags(ctx.dv.port, &snoozed.id).await;
+    assert!(flags.iter().any(|(_, f)| f.iter().any(|x| x.starts_with("$cat_.005bF_"))), "{flags:?}");
+
+    // The answer from Erik references the sent mail.
+    let sent = ctx.folder("sentitems").await;
+    let raw = server_raw(ctx.dv.port, &sent.id, "Angebot 0815").await.unwrap();
+    let sent_id = mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap().message_id().unwrap().to_string();
+    let reply = format!(
+        "From: Erik <erik@example.com>\r\nTo: {ME}\r\nSubject: AW: Angebot 0815\r\nMessage-ID: <answer1@example.com>\r\nIn-Reply-To: <{sent_id}>\r\nReferences: <{sent_id}>\r\n\r\nPasst.\r\n"
+    );
+    let mut c = raw_conn(ctx.dv.port).await;
+    c.session.append("INBOX", None, None, reply.as_bytes()).await.unwrap();
+    c.session.logout().await.unwrap();
+    ctx.sync(&inbox.id).await;
+    let answer = ctx.by_subject(&inbox.id, "AW: Angebot 0815").await;
+    assert_eq!(answer.conversation_id, sent_id);
+    assert!(!ctx.list(&snoozed.id).await.items.iter().any(|m| m.subject.contains("Angebot 0815")), "reminder still snoozed");
+    let archive = ctx.folder("archive").await;
+    assert!(ctx.list(&archive.id).await.items.iter().any(|m| m.subject.contains("Angebot 0815")));
+}
+
+#[tokio::test]
+async fn recurring_tasks_keep_rhythm() {
+    let Some(ctx) = setup().await else { return };
+    let due = chrono::Utc::now() + chrono::Duration::days(1);
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Monatsabschluss", "bodyHtml": "<p>Belege</p>", "due": due.to_rfc3339(), "recurrence": "monthly"}),
+    )
+    .await;
+    assert_eq!(t.recurrence.as_deref(), Some("monthly"));
+    let snoozed = ctx.folder("snoozed").await;
+    let flags = server_flags(ctx.dv.port, &snoozed.id).await;
+    let f = &flags.iter().find(|(s, _)| s == "Monatsabschluss").unwrap().1;
+    assert!(f.contains(&mailcore::imap::category_keyword("[#monthly]")), "{f:?}");
+    assert_eq!(due_keywords(f).len(), 1);
+
+    // Returning to the inbox keeps the due keyword of a recurring task.
+    let _: Value = call(&ctx.svc, "unsnooze_messages", json!({"mailboxId": ctx.account, "ids": [t.id]})).await;
+    let inbox = ctx.folder("inbox").await;
+    let flags = server_flags(ctx.dv.port, "INBOX").await;
+    let f = &flags.iter().find(|(s, _)| s == "Monatsabschluss").unwrap().1;
+    assert_eq!(due_keywords(f).len(), 1, "{f:?}");
+    let task = ctx.by_subject(&inbox.id, "Monatsabschluss").await;
+    assert!(!task.is_read);
+    assert_eq!(task.recurrence.as_deref(), Some("monthly"));
+
+    // Done (archive) → next occurrence a month later in Wiedervorlage.
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [task.id]})).await;
+    let next = ctx.by_subject(&snoozed.id, "Monatsabschluss").await;
+    let next_due = chrono::DateTime::parse_from_rfc3339(next.due_at.as_deref().unwrap()).unwrap();
+    let days = (next_due.with_timezone(&chrono::Utc) - due).num_days();
+    assert!((27..=31).contains(&days), "next due in {days} days");
+    assert_eq!(next.recurrence.as_deref(), Some("monthly"));
+}
