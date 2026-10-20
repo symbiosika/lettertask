@@ -75,6 +75,47 @@ impl Checker {
     fn note(&self, text: impl AsRef<str>) {
         println!("      {}", text.as_ref());
     }
+
+    fn check(&mut self, label: &str, ok: bool, detail: impl AsRef<str>) {
+        if ok {
+            self.ok += 1;
+            println!("  ✔ {label}");
+        } else {
+            println!("  ✘ {label:<46} {}", detail.as_ref());
+            self.failed.push(format!("{label}: {}", detail.as_ref()));
+        }
+    }
+
+    async fn raw(&self, cmd: &str, args: Value) -> mailcore::Result<Value> {
+        self.svc.dispatch(cmd, args).await
+    }
+
+    async fn folder(&self, mb: &str, wk: &str) -> Option<Folder> {
+        let fs: Vec<Folder> = serde_json::from_value(self.raw("list_folders", json!({"mailboxId": mb})).await.ok()?).ok()?;
+        fs.into_iter().find(|f| f.well_known.as_deref() == Some(wk))
+    }
+
+    /// Syncs `folder` and returns the messages whose subject contains `needle`.
+    async fn find(&self, mb: &str, folder: &str, needle: &str) -> Vec<MessageSummary> {
+        let _ = self.raw("sync_folder", json!({"mailboxId": mb, "folderId": folder})).await;
+        let p: Option<MessagePage> = self
+            .raw("list_messages", json!({"mailboxId": mb, "folderId": folder, "sortBy": "received", "sortDesc": true, "limit": 200}))
+            .await
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok());
+        p.map(|p| p.items).unwrap_or_default().into_iter().filter(|m| m.subject.contains(needle)).collect()
+    }
+
+    async fn wait_for(&self, mb: &str, folder: &str, needle: &str) -> Option<MessageSummary> {
+        let t = Instant::now();
+        while t.elapsed() < std::time::Duration::from_secs(120) {
+            if let Some(m) = self.find(mb, folder, needle).await.into_iter().next() {
+                return Some(m);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        }
+        None
+    }
 }
 
 #[tokio::main]
@@ -278,6 +319,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if write {
+        edge_checks(&mut c, &acc, &mb, &account.email, &cals).await;
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
     println!("\n== Ergebnis: {} erfolgreich, {} fehlgeschlagen", c.ok, c.failed.len());
     for f in &c.failed {
@@ -287,4 +332,305 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+const MARK: &str = "[Outlook Classic] Graph-Test";
+
+/// Deterministic pseudo-random bytes (no rand dependency needed).
+fn noise(len: usize) -> Vec<u8> {
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn draft(mb: &str, to: Value, subject: &str, body: &str, atts: Value) -> Value {
+    json!({"id": null, "mailboxId": mb, "mode": "new", "to": to, "cc": [], "bcc": [], "subject": subject,
+        "bodyHtml": body, "importance": "normal", "requestReadReceipt": false,
+        "newAttachments": atts, "removedAttachmentIds": []})
+}
+
+fn event_input(subject: &str, start: &str, end: &str, tz: &str, all_day: bool, recurrence: Value) -> Value {
+    json!({"subject": subject, "start": start, "end": end, "timeZone": tz, "isAllDay": all_day, "location": "Raum „Ü“",
+        "bodyHtml": "", "attendees": [], "showAs": "free", "categories": [], "isReminderOn": false,
+        "reminderMinutes": 0, "isOnlineMeeting": false, "recurrence": recurrence, "sensitivity": "normal", "importance": "normal"})
+}
+
+fn utc(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc))
+}
+
+/// Edge cases against the real service. Everything created carries `stamp`
+/// and is removed again at the end.
+async fn edge_checks(c: &mut Checker, acc: &str, mb: &str, me: &str, cals: &[Calendar]) {
+    let b64 = |s: &[u8]| base64::engine::general_purpose::STANDARD.encode(s);
+    let stamp = chrono::Utc::now().format("%H%M%S").to_string();
+    let mut events: Vec<String> = vec![];
+
+    // ---- calendar: time zones, DST, all-day, series ----
+    if let Some(cal) = cals.iter().find(|x| x.is_default && x.can_edit) {
+        println!("\n== Randfälle: Kalender und Zeitzonen");
+        let cases = [
+            ("Winterzeit", "2026-11-19T10:00:00", "2026-11-19T10:30:00", "Europe/Berlin", "2026-11-19T09:00:00Z", 30),
+            ("Sommerzeit", "2027-07-01T10:00:00", "2027-07-01T11:00:00", "Europe/Berlin", "2027-07-01T08:00:00Z", 60),
+            ("über die Zeitumstellung", "2027-03-27T22:00:00", "2027-03-28T04:00:00", "Europe/Berlin", "2027-03-27T21:00:00Z", 300),
+            ("New York", "2026-12-01T09:00:00", "2026-12-01T09:15:00", "America/New_York", "2026-12-01T14:00:00Z", 15),
+            ("UTC", "2026-12-02T09:00:00", "2026-12-02T09:45:00", "UTC", "2026-12-02T09:00:00Z", 45),
+        ];
+        for (label, start, end, tz, want, minutes) in cases {
+            let subj = format!("{MARK} {label} {stamp}");
+            let ev: Option<Event> = c
+                .call(&format!("Termin {label} anlegen"), "create_event", json!({"accountId": acc, "calendarId": cal.id, "input": event_input(&subj, start, end, tz, false, Value::Null)}))
+                .await;
+            let Some(ev) = ev else { continue };
+            events.push(ev.id.clone());
+            let (s, e) = (utc(&ev.start), utc(&ev.end));
+            c.check(&format!("{label}: Beginn {want} (Antwort auf Anlegen)"), s == utc(want), &ev.start);
+            c.check(&format!("{label}: Dauer {minutes} min"), matches!((s, e), (Some(s), Some(e)) if (e - s).num_minutes() == minutes), format!("{} – {}", ev.start, ev.end));
+            let got: Option<EventDetail> = c.call(&format!("{label}: Termin neu laden"), "get_event", json!({"accountId": acc, "eventId": ev.id})).await;
+            if let Some(got) = got {
+                let gs = serde_json::to_value(&got).ok().and_then(|v| v["start"].as_str().map(str::to_string)).unwrap_or_default();
+                c.check(&format!("{label}: Neuladen liefert dieselbe Zeit"), utc(&gs) == s, format!("{gs} vs {}", ev.start));
+            }
+        }
+        // Update across DST: move the winter event into summer.
+        if let Some(id) = events.first().cloned() {
+            let input = event_input(&format!("{MARK} verschoben {stamp}"), "2027-06-15T10:00:00", "2027-06-15T10:30:00", "Europe/Berlin", false, Value::Null);
+            let ev: Option<Event> = c.call("Termin in die Sommerzeit verschieben", "update_event", json!({"accountId": acc, "eventId": id, "input": input})).await;
+            if let Some(ev) = ev {
+                c.check("Verschoben: Beginn 08:00Z (Antwort auf Ändern)", utc(&ev.start) == utc("2027-06-15T08:00:00Z"), &ev.start);
+            }
+        }
+        // All-day over two days.
+        let subj = format!("{MARK} ganztägig {stamp}");
+        let ev: Option<Event> = c
+            .call("Ganztägigen Termin (2 Tage) anlegen", "create_event", json!({"accountId": acc, "calendarId": cal.id, "input": event_input(&subj, "2026-12-24T00:00:00", "2026-12-26T00:00:00", "Europe/Berlin", true, Value::Null)}))
+            .await;
+        if let Some(ev) = ev {
+            events.push(ev.id.clone());
+            c.check("ganztägig markiert", ev.is_all_day, "isAllDay false");
+            let in_view: Option<Vec<Event>> = c
+                .call("Ganztägig in Ansicht 25.12.", "list_events", json!({"accountId": acc, "calendarIds": [cal.id], "start": "2026-12-25T00:00:00Z", "end": "2026-12-25T23:59:00Z"}))
+                .await;
+            c.check("erscheint am zweiten Tag", in_view.is_some_and(|v| v.iter().any(|e| e.subject == subj)), "fehlt");
+            let next_day: Option<Vec<Event>> = c
+                .call("Ganztägig in Ansicht 26.12. (danach)", "list_events", json!({"accountId": acc, "calendarIds": [cal.id], "start": "2026-12-26T12:00:00Z", "end": "2026-12-26T23:00:00Z"}))
+                .await;
+            c.check("nicht mehr am 26.12. mittags", next_day.is_some_and(|v| !v.iter().any(|e| e.subject == subj)), "ragt in den 26.12.");
+        }
+        // Weekly series with 5 occurrences across the DST switch in March.
+        let subj = format!("{MARK} Serie {stamp}");
+        let rec = json!({"pattern": "weekly", "interval": 1, "daysOfWeek": ["thursday"], "dayOfMonth": 0, "month": 0, "startDate": "2027-03-11", "endDate": null, "occurrences": 5});
+        let ev: Option<Event> = c
+            .call("Wöchentliche Serie (5×, über Zeitumstellung)", "create_event", json!({"accountId": acc, "calendarId": cal.id, "input": event_input(&subj, "2027-03-11T09:00:00", "2027-03-11T09:30:00", "Europe/Berlin", false, rec)}))
+            .await;
+        if let Some(ev) = ev {
+            events.push(ev.id.clone());
+            let occ: Vec<Event> = c
+                .call::<Vec<Event>>("Serie in Ansicht März/April", "list_events", json!({"accountId": acc, "calendarIds": [cal.id], "start": "2027-03-01T00:00:00Z", "end": "2027-04-30T00:00:00Z"}))
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| e.subject == subj)
+                .collect();
+            c.check("5 Vorkommen", occ.len() == 5, format!("{} Vorkommen", occ.len()));
+            let hours: Vec<String> = occ.iter().filter_map(|e| utc(&e.start)).map(|d| d.format("%H:%M").to_string()).collect();
+            c.check(
+                "Ortszeit bleibt 09:00 (3× 08:00Z vor, 2× 07:00Z nach der Umstellung)",
+                hours.iter().filter(|h| *h == "08:00").count() == 3 && hours.iter().filter(|h| *h == "07:00").count() == 2,
+                format!("{hours:?}"),
+            );
+            if let Some(o) = occ.get(2) {
+                let _: Option<Value> = c.call("Einzelnes Vorkommen löschen", "delete_event", json!({"accountId": acc, "eventId": o.id})).await;
+                let left = c
+                    .raw("list_events", json!({"accountId": acc, "calendarIds": [cal.id], "start": "2027-03-01T00:00:00Z", "end": "2027-04-30T00:00:00Z"}))
+                    .await
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<Vec<Event>>(v).ok())
+                    .unwrap_or_default();
+                c.check("danach 4 Vorkommen", left.iter().filter(|e| e.subject == subj).count() == 4, format!("{}", left.iter().filter(|e| e.subject == subj).count()));
+            }
+        }
+        let bad = event_input("x", "2026-12-01T10:00:00", "2026-12-01T09:00:00", "Europe/Berlin", false, Value::Null);
+        let r = c.raw("create_event", json!({"accountId": acc, "calendarId": cal.id, "input": bad})).await;
+        c.check("Ende vor Beginn wird abgelehnt", r.is_err(), "angelegt");
+        if let Ok(v) = r {
+            if let Some(id) = v["id"].as_str() {
+                events.push(id.to_string());
+            }
+        }
+        for id in &events {
+            let _: Option<Value> = c.call("Testtermin löschen", "delete_event", json!({"accountId": acc, "eventId": id})).await;
+        }
+    }
+
+    // ---- mail ----
+    println!("\n== Randfälle: Ordner");
+    let Some(inbox) = c.folder(mb, "inbox").await else { return };
+    let pname = format!("Prüfung Ä ö ü ß & Co {stamp}");
+    let parent: Option<Folder> = c.call("Ordner mit Umlauten und & anlegen", "create_folder", json!({"mailboxId": mb, "parentId": null, "name": pname})).await;
+    if let Some(p) = &parent {
+        c.check("Anzeigename exakt", p.display_name == pname, &p.display_name);
+        let ch: Option<Folder> = c.call("Unterordner mit € und Emoji", "create_folder", json!({"mailboxId": mb, "parentId": p.id, "name": "Unter € 📁"})).await;
+        if let Some(ch) = ch {
+            let r: Option<Folder> = c.call("Unterordner umbenennen (Anführungszeichen)", "rename_folder", json!({"mailboxId": mb, "folderId": ch.id, "name": "Kunde \"Müller\""})).await;
+            c.check("Neuer Name exakt", r.is_some_and(|r| r.display_name == "Kunde \"Müller\""), "abweichend");
+        }
+    }
+    c.check("Posteingang lässt sich nicht löschen", c.raw("delete_folder", json!({"mailboxId": mb, "folderId": inbox.id})).await.is_err(), "gelöscht?!");
+    c.check("Leerer Ordnername abgelehnt", c.raw("create_folder", json!({"mailboxId": mb, "parentId": null, "name": " "})).await.is_err(), "angelegt");
+
+    println!("\n== Randfälle: Versand und Empfang");
+    let subj = format!("{MARK} Ünïcödé 😀 „Zitat“ {stamp} {}", "lang ".repeat(40).trim_end());
+    let big = noise(5 * 1024 * 1024);
+    let pdf = "Prüfbericht März 2026 (final) – Kopie.pdf";
+    let atts = json!([
+        {"name": pdf, "contentType": "application/pdf", "contentBase64": b64(b"%PDF-1.4 Testinhalt")},
+        {"name": "gross.bin", "contentType": "application/octet-stream", "contentBase64": b64(&big)},
+    ]);
+    let mut d = draft(mb, json!([{"name": "Müller, Hans \"Test\"", "address": me}]), &subj, "<p>Grüße &amp; &lt;kein Tag&gt;</p>", atts);
+    d["cc"] = json!([{"name": "", "address": me.to_uppercase()}]);
+    let sent: Option<Value> = c.call("Unicode-Betreff + 5 MB + Umlaut-Anhang senden", "send_draft", json!({"draft": d})).await;
+    if sent.is_some() {
+        let received = c.wait_for(mb, &inbox.id, &stamp).await;
+        c.check("Mail kommt im Posteingang an", received.is_some(), "nach 120 s nicht da");
+        if let Some(m) = &received {
+            c.check("Betreff unverändert", m.subject == subj, &m.subject);
+            c.check("Anzeigename mit Komma/Anführungszeichen", m.to.first().is_some_and(|a| a.name == "Müller, Hans \"Test\""), format!("{:?}", m.to));
+            let det: Option<MessageDetail> = c.call("Mail öffnen", "get_message", json!({"mailboxId": mb, "messageId": m.id})).await;
+            if let Some(det) = det {
+                c.check("Entities bleiben Text", det.body_html.contains("&lt;kein Tag&gt;"), "verändert");
+                c.check("Umlaut-Dateiname exakt", det.attachments.iter().any(|a| a.name == pdf), format!("{:?}", det.attachments.iter().map(|a| &a.name).collect::<Vec<_>>()));
+                if let Some(a) = det.attachments.iter().find(|a| a.name == "gross.bin") {
+                    let p: Option<Option<String>> = c.call("5-MB-Anhang herunterladen", "download_attachment", json!({"mailboxId": mb, "messageId": m.id, "attachmentId": a.id, "action": "save"})).await;
+                    if let Some(Some(path)) = p {
+                        let bytes = std::fs::read(&path).unwrap_or_default();
+                        c.check("5-MB-Anhang bitgenau", bytes == big, format!("{} statt {} Bytes", bytes.len(), big.len()));
+                        let _ = std::fs::remove_file(path);
+                    }
+                } else {
+                    c.check("5-MB-Anhang vorhanden", false, "fehlt");
+                }
+            }
+            let reply: Option<Draft> = c.call("Antwort erzeugen", "create_draft", json!({"mailboxId": mb, "mode": "reply", "sourceMessageId": m.id})).await;
+            if let Some(r) = reply {
+                c.check("Betreff mit AW:", r.subject.starts_with("AW:") || r.subject.starts_with("RE:"), &r.subject);
+                let mut rd = serde_json::to_value(&r).unwrap_or_default();
+                rd["mailboxId"] = json!(mb);
+                rd["newAttachments"] = json!([]);
+                rd["removedAttachmentIds"] = json!([]);
+                let s: Option<Value> = c.call("Antwort senden", "send_draft", json!({"draft": rd})).await;
+                if s.is_some() {
+                    let got = c.wait_for(mb, &inbox.id, &format!("AW: {MARK} Ünïcödé")).await.or(c.wait_for(mb, &inbox.id, &format!("RE: {MARK} Ünïcödé")).await);
+                    c.check("Antwort in derselben Unterhaltung", got.as_ref().is_some_and(|g| g.conversation_id == m.conversation_id), "andere Unterhaltung oder nicht angekommen");
+                }
+            }
+        }
+    }
+    let inj = format!("{MARK} Injektion {stamp}\r\nX-Injiziert: ja");
+    let svc = c.svc.clone();
+    let args = json!({"draft": draft(mb, json!([{"name": "Evil\r\nX-Injiziert: ja", "address": me}]), &inj, "<p>x</p>", json!([]))});
+    match tokio::spawn(async move { svc.dispatch("send_draft", args).await }).await {
+        Err(_) => c.check("Zeilenumbruch in Betreff/Name ohne Absturz", false, "Panic im Service"),
+        Ok(Err(e)) => c.check(&format!("Zeilenumbruch in Betreff/Name abgelehnt ({e})"), true, ""),
+        Ok(Ok(_)) => {
+            let m = c.wait_for(mb, &inbox.id, &format!("Injektion {stamp}")).await;
+            match m {
+                Some(m) => {
+                    let src: Option<String> = c.call("Quelltext der Injektions-Mail", "get_message_source", json!({"mailboxId": mb, "messageId": m.id})).await;
+                    let src = src.unwrap_or_default();
+                    let head = src.split("\r\n\r\n").next().unwrap_or("");
+                    c.check("Kein injizierter Header", !head.lines().any(|l| l.to_ascii_lowercase().starts_with("x-injiziert")), "X-Injiziert angekommen");
+                }
+                None => c.check("Injektions-Mail kommt an", false, "nicht gefunden"),
+            }
+        }
+    }
+
+    println!("\n== Randfälle: Aufgaben, Wiedervorlage, Kategorien, Suche");
+    let tsubj = format!("{MARK} Aufgabe {stamp}");
+    let t: Option<MessageSummary> = c.call("Aufgabe anlegen", "create_task", json!({"mailboxId": mb, "subject": tsubj, "bodyHtml": "<p>Prüfbericht</p>", "due": null})).await;
+    if let Some(t) = t {
+        c.check("Aufgabe ungelesen im Posteingang", t.folder_id == inbox.id && !t.is_read, format!("{} {}", t.folder_id, t.is_read));
+        let cats = ["Projekt Ä", "Rot & Blau", "100%", "a\"b"];
+        let _: Option<Value> = c.call("Kategorien mit Sonderzeichen setzen", "set_categories", json!({"mailboxId": mb, "ids": [t.id], "categories": cats})).await;
+        let got = c.find(mb, &inbox.id, &tsubj).await.into_iter().next().map(|m| m.categories).unwrap_or_default();
+        for cat in cats {
+            c.check(&format!("Kategorie „{cat}“ übersteht Sync"), got.iter().any(|g| g == cat), format!("{got:?}"));
+        }
+        let until = (chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+        let _: Option<Value> = c.call("Zurückstellen (2 Tage)", "snooze_messages", json!({"mailboxId": mb, "ids": [t.id], "until": until})).await;
+        c.check("nicht mehr im Posteingang", c.find(mb, &inbox.id, &tsubj).await.is_empty(), "noch da");
+        if let Some(sn) = c.folder(mb, "snoozed").await {
+            if let Some(m) = c.find(mb, &sn.id, &tsubj).await.into_iter().next() {
+                c.check("in Wiedervorlage mit Fälligkeit", m.due_at.is_some(), "dueAt fehlt");
+                let _: Option<Value> = c.call("Wiedervorlage aufheben", "unsnooze_messages", json!({"mailboxId": mb, "ids": [m.id]})).await;
+                c.check("zurück im Posteingang", !c.find(mb, &inbox.id, &tsubj).await.is_empty(), "fehlt");
+            } else {
+                c.check("in Wiedervorlage gefunden", false, "fehlt");
+            }
+        }
+    }
+    for q in [stamp.clone(), "Prüfbericht".into(), "\"Aufgabe".into(), "a OR b".into(), "subject:(x".into(), "%_*\\".into()] {
+        let r = c.raw("search_messages", json!({"mailboxId": mb, "text": q, "folderId": null})).await;
+        c.check(&format!("Suche {q:?} ohne Fehler"), r.is_ok(), format!("{:?}", r.err()));
+    }
+
+    println!("\n== Randfälle: Kontakte, Abwesenheit, ungültige Kennungen");
+    let ct: Option<Value> = c
+        .call("Kontakt mit Umlauten anlegen", "create_contact", json!({"accountId": acc, "input": {"givenName": "Jürgen", "surname": format!("Ößterreicher {stamp}"), "emails": ["juergen.test@example.invalid"], "company": "Müller & Söhne"}}))
+        .await;
+    if let Some(id) = ct.as_ref().and_then(|v| v["id"].as_str()) {
+        let u: Option<Value> = c.call("Kontakt ändern", "update_contact", json!({"id": id, "input": {"givenName": "Jürgen", "surname": format!("Ößterreicher {stamp}"), "emails": ["juergen.test@example.invalid"], "jobTitle": "Geschäftsführer"}})).await;
+        c.check("Änderung übernommen", u.is_some_and(|u| u.to_string().contains("Geschäftsführer")), "fehlt");
+        let _: Option<Value> = c.call("Kontakt löschen", "delete_contact", json!({"id": id})).await;
+    }
+    c.check("Ungültige E-Mail im Kontakt abgelehnt", c.raw("create_contact", json!({"accountId": acc, "input": {"emails": ["kaputt"]}})).await.is_err(), "angelegt");
+    let orig: Option<AutoReply> = c.call("Abwesenheitsnotiz sichern", "get_auto_reply", json!({"accountId": acc})).await;
+    if let Some(orig) = orig {
+        let ar = json!({"status": "scheduled", "internalReplyMessage": "<p>Test – bin weg</p>", "externalReplyMessage": "<p>Test</p>",
+            "scheduledStart": "2030-12-20T08:00:00Z", "scheduledEnd": "2031-01-06T17:00:00Z", "externalAudience": "contactsOnly"});
+        let _: Option<Value> = c.call("Abwesenheitsnotiz planen (2030)", "set_auto_reply", json!({"accountId": acc, "autoReply": ar})).await;
+        let back: Option<AutoReply> = c.call("Abwesenheitsnotiz lesen", "get_auto_reply", json!({"accountId": acc})).await;
+        c.check("geplant gespeichert", back.is_some_and(|b| b.status == "scheduled"), "Status abweichend");
+        let _: Option<Value> = c.call("Abwesenheitsnotiz wiederherstellen", "set_auto_reply", json!({"accountId": acc, "autoReply": orig})).await;
+    }
+    for (label, cmd, args) in [
+        ("Nachricht mit unbekannter Kennung", "get_message", json!({"mailboxId": mb, "messageId": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0Abogus"})),
+        ("Verschieben in unbekannten Ordner", "move_messages", json!({"mailboxId": mb, "ids": ["bogus"], "destFolderId": "bogus"})),
+        ("Termin mit unbekannter Kennung", "get_event", json!({"accountId": acc, "eventId": "bogus"})),
+    ] {
+        let r = c.raw(cmd, args).await;
+        c.check(&format!("{label} → Fehler"), r.is_err(), "kein Fehler");
+    }
+    let r = c.raw("list_folders", json!({"mailboxId": "gibt-es-nicht"})).await;
+    c.check("Unbekanntes Postfach → Fehler oder leer", r.as_ref().map_or(true, |v| v.as_array().is_some_and(|a| a.is_empty())), format!("{r:?}"));
+
+    // ---- cleanup ----
+    println!("\n== Aufräumen");
+    let mut n = 0;
+    for wk in ["inbox", "sentitems", "archive", "snoozed", "drafts"] {
+        if let Some(f) = c.folder(mb, wk).await {
+            let ids: Vec<String> = c.find(mb, &f.id, &stamp).await.into_iter().map(|m| m.id).collect();
+            if !ids.is_empty() {
+                n += ids.len();
+                let _ = c.raw("delete_messages", json!({"mailboxId": mb, "ids": ids})).await;
+            }
+        }
+    }
+    if let Some(f) = c.folder(mb, "deleteditems").await {
+        let ids: Vec<String> = c.find(mb, &f.id, &stamp).await.into_iter().map(|m| m.id).collect();
+        if !ids.is_empty() {
+            let _ = c.raw("delete_messages", json!({"mailboxId": mb, "ids": ids})).await;
+        }
+    }
+    c.note(format!("{n} Testmails gelöscht"));
+    if let Some(p) = &parent {
+        let _: Option<Value> = c.call("Testordner löschen", "delete_folder", json!({"mailboxId": mb, "folderId": p.id})).await;
+    }
 }
