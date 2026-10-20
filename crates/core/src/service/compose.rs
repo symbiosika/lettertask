@@ -170,13 +170,17 @@ impl Service {
     /// Creates/updates the server draft incl. attachments; returns its id.
     async fn write_draft(&self, mb: &Mailbox, c: &Arc<GraphClient>, d: &DraftInput) -> Result<String> {
         for a in d.to.iter().chain(&d.cc).chain(&d.bcc) {
-            if !a.address.contains('@') {
+            if !valid_address(&a.address) {
                 return Err(Error::invalid(format!("Ungültige Adresse: {}", a.address)));
             }
         }
         let prefix = mb.graph_prefix();
         let mut d = d.clone();
-        d.body_html = data_to_cid(&d.body_html);
+        // Images from the editor become `cid:` references again; pasted images
+        // (plain data URIs) become inline attachments – many mail clients do
+        // not show data URIs.
+        let (html, pasted) = extract_data_images(&data_to_cid(&d.body_html));
+        d.body_html = html;
         let d = &d;
         let body = Self::draft_json(d);
         let id = match &d.id {
@@ -202,57 +206,88 @@ impl Service {
             }
         }
         for a in &d.new_attachments {
+            if a.name.trim().is_empty() {
+                return Err(Error::invalid("Anhang ohne Dateinamen."));
+            }
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(a.content_base64.trim())
                 .map_err(|e| Error::invalid(format!("Anhang {}: {e}", a.name)))?;
-            if bytes.len() <= SIMPLE_ATTACHMENT_LIMIT {
-                c.post(
-                    &format!("{prefix}/messages/{}/attachments", seg(&id)),
-                    &json!({
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": a.name,
-                        "contentType": a.content_type,
-                        "contentBytes": a.content_base64.trim(),
-                    }),
-                )
-                .await?;
-            } else {
-                let session = c
-                    .post(
-                        &format!(
-                            "{prefix}/messages/{}/attachments/createUploadSession",
-                            seg(&id)
-                        ),
-                        &json!({"AttachmentItem": {
-                            "attachmentType": "file",
-                            "name": a.name,
-                            "size": bytes.len(),
-                            "contentType": a.content_type,
-                        }}),
-                    )
-                    .await?;
-                let url = session["uploadUrl"]
-                    .as_str()
-                    .ok_or_else(|| Error::Other("Upload-Sitzung ohne URL".into()))?;
-                let total = bytes.len();
-                let mut start = 0;
-                while start < total {
-                    let end = (start + CHUNK).min(total);
-                    c.put_upload_chunk(url, bytes[start..end].to_vec(), start, total)
-                        .await?;
-                    start = end;
-                }
-            }
+            let content_type = if a.content_type.trim().is_empty() { "application/octet-stream" } else { a.content_type.trim() };
+            Self::upload_attachment(c, &prefix, &id, a.name.trim(), content_type, &bytes, None).await?;
+        }
+        for (i, img) in pasted.iter().enumerate() {
+            let name = format!("Bild{}.{}", i + 1, img.content_type.rsplit('/').next().unwrap_or("png"));
+            Self::upload_attachment(c, &prefix, &id, &name, &img.content_type, &img.bytes, Some(&img.cid)).await?;
         }
         Ok(id)
+    }
+
+    /// Adds a file attachment; above 3 MB through an upload session.
+    /// `content_id` makes it an inline attachment.
+    async fn upload_attachment(
+        c: &Arc<GraphClient>,
+        prefix: &str,
+        id: &str,
+        name: &str,
+        content_type: &str,
+        bytes: &[u8],
+        content_id: Option<&str>,
+    ) -> Result<()> {
+        if bytes.len() <= SIMPLE_ATTACHMENT_LIMIT {
+            let mut body = json!({
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": name,
+                "contentType": content_type,
+                "contentBytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+            });
+            if let Some(cid) = content_id {
+                body["isInline"] = json!(true);
+                body["contentId"] = json!(cid);
+            }
+            c.post(&format!("{prefix}/messages/{}/attachments", seg(id)), &body).await?;
+            return Ok(());
+        }
+        let mut item = json!({
+            "attachmentType": "file",
+            "name": name,
+            "size": bytes.len(),
+            "contentType": content_type,
+        });
+        if let Some(cid) = content_id {
+            item["isInline"] = json!(true);
+            item["contentId"] = json!(cid);
+        }
+        let session = c
+            .post(
+                &format!("{prefix}/messages/{}/attachments/createUploadSession", seg(id)),
+                &json!({ "AttachmentItem": item }),
+            )
+            .await?;
+        let url = session["uploadUrl"]
+            .as_str()
+            .ok_or_else(|| Error::Other("Upload-Sitzung ohne URL".into()))?;
+        let total = bytes.len();
+        let mut start = 0;
+        while start < total {
+            let end = (start + CHUNK).min(total);
+            c.put_upload_chunk(url, bytes[start..end].to_vec(), start, total).await?;
+            start = end;
+        }
+        Ok(())
     }
 
     pub(crate) async fn send_draft(&self, d: DraftInput) -> Result<()> {
         if crate::imap::is_imap_id(&d.mailbox_id) {
             return self.imap_send_draft(d).await;
         }
-        if d.to.is_empty() && d.cc.is_empty() && d.bcc.is_empty() {
+        if d.to.iter().chain(&d.cc).chain(&d.bcc).all(|a| a.address.trim().is_empty()) {
             return Err(Error::invalid("Bitte mindestens einen Empfänger angeben."));
+        }
+        // Check the reminder before anything is sent: a failure afterwards
+        // would make the user send the mail a second time.
+        let remind_at = d.remind_at.as_deref().filter(|a| !a.trim().is_empty());
+        if remind_at.is_some() {
+            super::tasks::parse_due(remind_at)?;
         }
         let (mb, c) = self.mailbox(&d.mailbox_id)?;
         let id = self.write_draft(&mb, &c, &d).await?;
@@ -265,12 +300,33 @@ impl Service {
         } else {
             None
         };
-        c.post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(&id)))
-            .await?;
+        if let Err(e) = c
+            .post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(&id)))
+            .await
+        {
+            // The draft (incl. attachments) stays on the server; show it.
+            if let Some(f) = self.store.folder_by_well_known(&mb.id, "drafts")? {
+                let _ = self.sync_folder(&mb.id, &f.id, true).await;
+                self.emit_mail_changed(&mb.id, Some(&f.id));
+            }
+            const KEPT: &str = "Die Nachricht wurde nicht gesendet und liegt im Ordner Entwürfe.";
+            return Err(match e {
+                Error::Graph { status, code, message } => Error::Graph { status, code, message: format!("{message} – {KEPT}") },
+                Error::Network(m) => Error::Network(format!("{m} – {KEPT}")),
+                other => other,
+            });
+        }
         let recipients: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
-        self.collect_addresses(&mb.account_id, &recipients)?;
-        if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
-            self.create_send_reminder(&d, at, thread.as_deref()).await?;
+        if let Err(e) = self.collect_addresses(&mb.account_id, &recipients) {
+            tracing::warn!("Adressen konnten nicht gemerkt werden: {e}");
+        }
+        if let Some(at) = remind_at {
+            // The mail is out; a failing reminder must not report the send as failed.
+            if let Err(e) = self.create_send_reminder(&d, at, thread.as_deref()).await {
+                tracing::warn!("Erinnerung konnte nicht angelegt werden: {e}");
+                self.host.notify("Erinnerung konnte nicht angelegt werden", &format!("{}: {e}", d.subject));
+                self.emit("reminder-failed", json!({"mailboxId": mb.id, "subject": d.subject, "message": e.to_string()}));
+            }
         }
         self.store.delete_message(&mb.id, &id)?;
         for wk in ["drafts", "sentitems", "inbox"] {
@@ -347,6 +403,56 @@ impl Service {
     }
 }
 
+/// Plausibility check for a recipient address (the server does the rest).
+pub(crate) fn valid_address(a: &str) -> bool {
+    let a = a.trim();
+    let Some((local, domain)) = a.rsplit_once('@') else { return false };
+    !local.is_empty()
+        && !local.contains('@')
+        && !domain.is_empty()
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';' | '"' | '(' | ')'))
+}
+
+/// A pasted image taken out of the HTML.
+pub(crate) struct PastedImage {
+    pub cid: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Replaces `src="data:image/…;base64,…"` with `cid:` references and returns
+/// the images; identical images share one attachment.
+pub(crate) fn extract_data_images(html: &str) -> (String, Vec<PastedImage>) {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r#"(?i)(src\s*=\s*)(["'])data:(image/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)(["'])"#).expect("regex")
+    });
+    let mut images: Vec<(String, PastedImage)> = Vec::new();
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let out = re.replace_all(html, |caps: &regex::Captures| {
+        let b64: String = caps[4].chars().filter(|c| !c.is_whitespace()).collect();
+        if caps[2] != caps[5] {
+            return caps[0].to_string();
+        }
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) else {
+            return caps[0].to_string();
+        };
+        let cid = match images.iter().find(|(k, _)| *k == b64) {
+            Some((_, img)) => img.cid.clone(),
+            None => {
+                let cid = format!("bild{}.{}@{}", images.len() + 1, &tag[..12], "outlook-classic");
+                images.push((b64, PastedImage { cid: cid.clone(), content_type: caps[3].to_ascii_lowercase(), bytes }));
+                cid
+            }
+        };
+        format!("{}{}cid:{cid}{}", &caps[1], &caps[2], &caps[5])
+    });
+    (out.into_owned(), images.into_iter().map(|(_, i)| i).collect())
+}
+
 /// Marker appended to data URIs that stand in for `cid:` references while
 /// editing; a fragment does not affect how the image is decoded.
 const CID_MARK: &str = "#cid=";
@@ -373,7 +479,7 @@ pub(crate) fn data_to_cid(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cid_to_data, data_to_cid, prepend_to_body};
+    use super::{cid_to_data, data_to_cid, extract_data_images, prepend_to_body, valid_address};
 
     #[test]
     fn cid_roundtrip() {
@@ -394,5 +500,41 @@ mod tests {
             "<html><BODY class=x><i>s</i><p>a</p></body></html>"
         );
         assert_eq!(prepend_to_body("<p>a</p>", "<i>s</i>"), "<i>s</i><p>a</p>");
+    }
+
+    #[test]
+    fn address_plausibility() {
+        for ok in ["a@b.example", " erika.mustermann+tag@fabrikam.example ", "x@localhost", "ü@müller.example"] {
+            assert!(valid_address(ok), "{ok}");
+        }
+        for bad in ["", "a", "a@", "@b", "a@@b", "a b@c", "a@b.", "a@.b", "<a@b>", "a@b,c@d", "a;b@c", "\"a\"@b"] {
+            assert!(!valid_address(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pasted_images_are_extracted() {
+        let png = "iVBORw0KGgo=";
+        let html = format!(r#"<img src="data:image/png;base64,{png}"><IMG SRC = 'data:image/JPEG;base64,/9j/4A==' ><img src="data:image/png;base64,{png}">"#);
+        let (out, imgs) = extract_data_images(&html);
+        assert_eq!(imgs.len(), 2);
+        assert_eq!(imgs[1].content_type, "image/jpeg");
+        assert_eq!(out.matches(&format!("cid:{}", imgs[0].cid)).count(), 2);
+        assert!(!out.contains("base64"));
+        // Mismatched quotes, broken base64, non-images and editor images stay.
+        for keep in [
+            r#"<img src="data:image/png;base64,AAAA'>"#,
+            r#"<img src="data:image/png;base64,***">"#,
+            r#"<a href="data:text/html;base64,PGI+">x</a>"#,
+            r#"<img src="cid:abc@def">"#,
+        ] {
+            let (out, imgs) = extract_data_images(keep);
+            assert!(imgs.is_empty(), "{keep}");
+            assert_eq!(out, keep);
+        }
+        // Whitespace inside the base64 (line-wrapped) is fine.
+        let (_, imgs) = extract_data_images("<img src=\"data:image/gif;base64,R0lG\nODlh\">");
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].bytes, b"GIF89a");
     }
 }

@@ -2,10 +2,9 @@
 //! POST/PATCH-in-event-zone behaviour of real Graph), DST transitions,
 //! all-day and overnight events, recurring series, validation.
 
-mod graph_common;
 
 use chrono::{TimeZone, Utc};
-use graph_common::*;
+use crate::common::*;
 use mailcore::model::*;
 use serde_json::{json, Value};
 

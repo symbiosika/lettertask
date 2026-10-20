@@ -1,6 +1,5 @@
 //! Shared setup for the Graph edge-case tests: a fresh fake Graph server and a
 //! signed-in demo account, driven through `Service::dispatch` like the UI.
-#![allow(dead_code)]
 
 use std::sync::Arc;
 

@@ -1,7 +1,6 @@
 //! Graph client robustness: token refresh, throttling, transient errors,
 //! paging, odd responses – against small scripted servers and the fake.
 
-mod graph_common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, post};
 use axum::Router;
-use graph_common::*;
+use crate::common::*;
 use mailcore::auth::{OAuthConfig, TokenSet};
 use mailcore::graph::GraphClient;
 use mailcore::model::*;

@@ -31,7 +31,7 @@ fn validate(lanes: &[String]) -> Result<Vec<String>> {
                 "Ungültiger Lane-Name \"{l}\": nur Buchstaben, Ziffern, Leerzeichen, - und _ (max. 30 Zeichen)."
             )));
         }
-        if out.iter().any(|x| x.eq_ignore_ascii_case(l)) {
+        if out.iter().any(|x| x.to_lowercase() == l.to_lowercase()) {
             return Err(Error::invalid(format!("Die Lane \"{l}\" gibt es doppelt.")));
         }
         out.push(l.to_string());
@@ -47,6 +47,16 @@ impl Service {
     pub(crate) async fn save_lanes(&self, account_id: &str, lanes: &[String]) -> Result<Vec<String>> {
         let lanes = validate(lanes)?;
         let old = self.get_lanes(account_id)?;
+        // Outlook category names ignore case: "ToDo" → "todo" would delete the
+        // shared category and strip the lane from all mails.
+        if let Some(l) = lanes
+            .iter()
+            .find(|l| !old.contains(l) && old.iter().any(|o| o.to_lowercase() == l.to_lowercase()))
+        {
+            return Err(Error::invalid(format!(
+                "Die Lane \"{l}\" unterscheidet sich nur in der Groß-/Kleinschreibung von einer bestehenden. Bitte einen anderen Namen wählen."
+            )));
+        }
         let existing = self.list_categories(account_id).await?;
         for l in lanes.iter().filter(|l| !old.contains(l)) {
             let name = lane_category(l);
