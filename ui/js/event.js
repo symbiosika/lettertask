@@ -445,7 +445,7 @@ async function init() {
 
 async function confirmDiscard() {
   const choice = await modal({
-    title: 'Outlook Classic',
+    title: 'lettertask',
     body: h('div.confirm-body', h('span', { html: icon('warning', 32) }), h('div', 'Möchten Sie die Änderungen speichern?')),
     buttons: [{ label: 'Ja', value: 'yes', primary: true }, { label: 'Nein', value: 'no' }, { label: 'Abbrechen', value: 'cancel', cancel: true }],
   });

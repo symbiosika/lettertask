@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
         .await;
         // Fresh state every start so tests are reproducible.
         let dir = args.data_dir.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("outlook-clone-demo-{}", std::process::id()))
+            std::env::temp_dir().join(format!("lettertask-demo-{}", std::process::id()))
         });
         let _ = std::fs::remove_dir_all(&dir);
         (
@@ -191,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
         let dir = args
             .data_dir
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("outlook-clone-dev"));
+            .unwrap_or_else(|| std::env::temp_dir().join("lettertask-dev"));
         let tokens: Arc<dyn TokenStore> = Arc::new(FileTokenStore::new(dir.join("tokens.json")));
         (
             dir,
@@ -235,7 +235,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("Outlook-Clone Dev-Server läuft auf http://{addr}/ {}", if args.demo { "(Demo-Modus)" } else { "" });
+    println!("lettertask Dev-Server läuft auf http://{addr}/ {}", if args.demo { "(Demo-Modus)" } else { "" });
     axum::serve(listener, app).await?;
     Ok(())
 }

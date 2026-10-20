@@ -24,7 +24,7 @@ use mailcore::tokens::MemoryTokenStore;
 use mailcore::{Host, Service, ServiceOptions};
 use serde_json::{json, Value};
 
-const MARK: &str = "[Outlook Classic] IMAP-Test";
+const MARK: &str = "[lettertask] IMAP-Test";
 
 struct ConsoleHost;
 
@@ -269,7 +269,7 @@ async fn write_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str) {
     let Some(inbox) = folder(c, mb, "inbox").await else { return };
 
     // Folders.
-    let fname = format!("OutlookClassic-Test-{stamp}");
+    let fname = format!("lettertask-Test-{stamp}");
     let f: Option<Folder> = c.call("Ordner anlegen", "create_folder", json!({"mailboxId": mb, "parentId": null, "name": fname})).await;
     let f = match f {
         Some(f) => c.call::<Folder>("Ordner umbenennen", "rename_folder", json!({"mailboxId": mb, "folderId": f.id, "name": format!("{fname}-x")})).await.or(Some(f)),
@@ -286,11 +286,11 @@ async fn write_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str) {
         let ids = json!([t.id]);
         let _: Option<Value> = c.call("Als gelesen markieren", "set_read", json!({"mailboxId": mb, "ids": ids, "isRead": true})).await;
         let _: Option<Value> = c.call("Kennzeichnen", "set_flag", json!({"mailboxId": mb, "ids": ids, "flag": "flagged"})).await;
-        let _: Option<Value> = c.call("Kategorie setzen (IMAP-Schlagwort)", "set_categories", json!({"mailboxId": mb, "ids": ids, "categories": ["OutlookClassic-Test"]})).await;
+        let _: Option<Value> = c.call("Kategorie setzen (IMAP-Schlagwort)", "set_categories", json!({"mailboxId": mb, "ids": ids, "categories": ["lettertask-Test"]})).await;
         if let Some(m) = find(c, mb, &inbox.id, &task_subj).await {
             c.check(
                 "Status nach erneutem Sync erhalten",
-                m.is_read && m.flag == "flagged" && m.categories.iter().any(|x| x == "OutlookClassic-Test"),
+                m.is_read && m.flag == "flagged" && m.categories.iter().any(|x| x == "lettertask-Test"),
                 format!("gelesen {}, Flag {}, Kategorien {:?}", m.is_read, m.flag, m.categories),
             );
         }

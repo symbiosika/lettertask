@@ -110,7 +110,7 @@ impl Service {
         config.demo = opts.demo;
         Self::apply_defaults(&mut config, opts.demo);
         let http = reqwest::Client::builder()
-            .user_agent(concat!("OutlookClone/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("lettertask/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(15))
             .build()?;

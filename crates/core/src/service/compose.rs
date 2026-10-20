@@ -450,7 +450,7 @@ pub(crate) fn extract_data_images(html: &str) -> (String, Vec<PastedImage>) {
         let cid = match images.iter().find(|(k, _)| *k == b64) {
             Some((_, img)) => img.cid.clone(),
             None => {
-                let cid = format!("bild{}.{}@{}", images.len() + 1, &tag[..12], "outlook-classic");
+                let cid = format!("bild{}.{}@{}", images.len() + 1, &tag[..12], "lettertask");
                 images.push((b64, PastedImage { cid: cid.clone(), content_type: caps[3].to_ascii_lowercase(), bytes }));
                 cid
             }

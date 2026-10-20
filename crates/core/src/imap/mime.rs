@@ -432,7 +432,7 @@ pub fn build(o: &Outgoing, draft: bool) -> Result<lettre::Message> {
         .subject(header_text(&o.subject))
         .date_now()
         .message_id(Some(o.message_id.clone()))
-        .user_agent(concat!("OutlookClassic/", env!("CARGO_PKG_VERSION")).to_string());
+        .user_agent(concat!("lettertask/", env!("CARGO_PKG_VERSION")).to_string());
     for a in &o.to {
         b = b.to(mailbox(a)?);
     }

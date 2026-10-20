@@ -396,17 +396,17 @@ pub struct SnoozeOption {
 
 /// App registration of Symbiosika in Entra ID. Desktop apps are public
 /// clients (no secret), so client and tenant id are not confidential.
-/// Other builds can override both via `OUTLOOK_CLASSIC_CLIENT_ID` /
-/// `OUTLOOK_CLASSIC_TENANT` at compile time.
+/// Other builds can override both via `LETTERTASK_CLIENT_ID` /
+/// `LETTERTASK_TENANT` at compile time.
 const SYMBIOSIKA_CLIENT_ID: &str = "c0bb40f0-6019-427c-bbfb-01c552e44257";
 const SYMBIOSIKA_TENANT_ID: &str = "be11db5c-df94-439f-b934-4c3240c9d1ad";
 
 pub fn builtin_client_id() -> &'static str {
-    option_env!("OUTLOOK_CLASSIC_CLIENT_ID").map(str::trim).unwrap_or(SYMBIOSIKA_CLIENT_ID)
+    option_env!("LETTERTASK_CLIENT_ID").map(str::trim).unwrap_or(SYMBIOSIKA_CLIENT_ID)
 }
 
 pub fn builtin_tenant() -> &'static str {
-    option_env!("OUTLOOK_CLASSIC_TENANT").map(str::trim).unwrap_or(SYMBIOSIKA_TENANT_ID)
+    option_env!("LETTERTASK_TENANT").map(str::trim).unwrap_or(SYMBIOSIKA_TENANT_ID)
 }
 
 pub fn default_snooze_options() -> Vec<SnoozeOption> {
