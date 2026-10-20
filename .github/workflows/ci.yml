@@ -1,8 +1,10 @@
 name: CI
 
+# Runs for pull requests and the main branches only – pushes to work
+# branches (checkpoints of unfinished work) do not trigger CI.
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [develop, main]
   pull_request:
 
 # A newer push to the same branch cancels the run still in progress.
