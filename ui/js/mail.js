@@ -10,6 +10,13 @@ import { openTagPicker, countTagUse } from './tagpicker.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
 import { state, mailboxes, mailboxById, accountOfMailbox, foldersOf, folderById, wellKnown, loadFolders, lanesOf, loadLanes } from './state.js';
 import { createBoard, viewToggle, laneOf } from './kanban.js';
+import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory, recurrenceLabel } from './recurrence.js';
+import { burst, celebrateEmptyInbox } from './confetti.js';
+
+/** Pseudo folder id of the "Heute" view (all accounts). */
+export const TODAY = '__today__';
+export function isToday() { return state.current.folderId === TODAY; }
+const today = { due: [], todo: [], count: 0 };
 import { openCategoryManager } from './settings.js';
 
 const PAGE = 200;
@@ -37,7 +44,7 @@ let view = load('mailView', 'list'); // 'list' | 'kanban'
 let board = null;
 
 /** Kanban is shown for the folder unless server search results are displayed. */
-export function kanbanActive() { return view === 'kanban' && !list.search; }
+export function kanbanActive() { return view === 'kanban' && !list.search && !isToday(); }
 export function getView() { return view; }
 export function setView(v) {
   if (v !== 'list' && v !== 'kanban') return;
@@ -50,6 +57,12 @@ export function setView(v) {
 export function toggleView() { setView(view === 'kanban' ? 'list' : 'kanban'); }
 function kanbanPane() { return (state.config && state.config.kanbanReadingPane) || load('kanbanPane', 'bottom'); }
 function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
+/** Mailbox the given messages belong to (the Heute view mixes accounts). */
+function mbOf(ids) {
+  if (!isToday() && !list.search) return state.current.mailboxId;
+  const m = ids && ids.length ? findItem(ids[0]) : null;
+  return (m && m.mailboxId) || state.current.mailboxId;
+}
 export function currentLanes() { return lanesOf(currentAccount()); }
 
 // ============================================================ setup
@@ -280,6 +293,14 @@ export function renderFolderTree() {
   const favs = favorites().map((f) => folderById(f.mailboxId, f.folderId)).filter(Boolean);
   const favSec = h('div.tree-section.favorites', { role: 'tree', dataset: { section: 'favorites' } });
   favSec.appendChild(sectionHeader(favKey, 'Favoriten', null));
+  if (isExpanded(favKey) && mailboxes().length) {
+    const sel = state.mode === 'mail' && isToday();
+    const node = h('div.tree-node.today-node' + (sel ? '.selected' : ''), { style: { paddingLeft: '8px' }, dataset: { testid: 'today-node', folderId: TODAY }, role: 'treeitem', 'aria-selected': sel ? 'true' : 'false', title: 'Heute fällige Aufgaben und erste Kanban-Lane' },
+      h('span.twisty'), h('span.fic', { html: icon('sun', 18) }), h('span.fname', 'Heute'),
+      h('span.fcount', { html: today.count ? `<span class="count" data-testid="today-count">${today.count}</span>` : '' }));
+    node.addEventListener('click', () => selectFolder(state.current.mailboxId || mailboxes()[0].id, TODAY));
+    favSec.appendChild(node);
+  }
   if (isExpanded(favKey)) {
     for (const f of favs) {
       const [n] = folderNode(f, 0, { flat: true, favorite: true });
@@ -390,6 +411,13 @@ export async function selectFolder(mailboxId, folderId) {
   renderFolderTree();
   renderListHead();
   onSelectionChanged();
+  if (folderId === TODAY) {
+    if (!mailboxById(mailboxId)) state.current.mailboxId = mailboxes()[0] && mailboxes()[0].id;
+    applyReadingPaneLayout();
+    await reloadList();
+    return;
+  }
+  applyReadingPaneLayout();
   call('set_active_folder', { mailboxId, folderId }, { silent: true }).catch(() => {});
   await reloadList();
   // pull fresh data in the background
@@ -407,18 +435,21 @@ function renderListHead() {
   const f = currentFolder();
   const title = els.head.querySelector('.folder-name');
   const count = els.head.querySelector('.lh-count');
-  title.textContent = list.search ? 'Suchergebnisse' : (f ? f.displayName : '');
+  title.textContent = list.search ? 'Suchergebnisse' : isToday() ? 'Heute' : (f ? f.displayName : '');
   const n = list.search ? list.search.items.length : list.total;
   count.textContent = n ? String(n) : '';
   count.title = list.search ? '' : `${list.total} Elemente, ${list.unread} ungelesen`;
   const mb = mailboxById(state.current.mailboxId);
-  document.title = `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
+  document.title = isToday() ? 'Heute' : `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
 
   const tools = els.head.querySelector('.lh-tools');
   tools.innerHTML = '';
   const chip = (label, on, fn, testid) => h('button.chip' + (on ? '.on' : ''), { type: 'button', onclick: fn, dataset: { testid } }, label);
   const fl = list.filter;
-  if (!list.search) {
+  if (isToday() && !list.search) {
+    const d = new Date();
+    tools.appendChild(h('span.today-sub', `${['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][d.getDay()]}, ${d.getDate()}.${d.getMonth() + 1}. · ${today.due.length} fällig`));
+  } else if (!list.search) {
     tools.append(
       chip('Alle', !fl.unreadOnly && !fl.flaggedOnly && !fl.category, () => setFilter({ unreadOnly: false, flaggedOnly: false, category: null }), 'filter-all'),
       chip('Ungelesen', fl.unreadOnly, () => setFilter({ ...fl, unreadOnly: !fl.unreadOnly }), 'filter-unread'),
@@ -440,7 +471,7 @@ function renderListHead() {
   }
   const sortHost = els.head.querySelector('.lh-sort');
   sortHost.innerHTML = '';
-  if (!list.search) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
+  if (!list.search && !isToday()) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
   const sortBtn = h('button.chip.sort', { type: 'button', title: 'Sortieren', dataset: { testid: 'sort-menu' }, html: `${icon('sort', 14)}<span>${esc(SORT_LABELS[list.sortBy] || 'Datum')}</span>` });
   sortBtn.addEventListener('click', () => showMenuAt(sortBtn, [
     { header: 'Sortieren nach' },
@@ -450,7 +481,7 @@ function renderListHead() {
     { label: 'Aufsteigend', checked: !list.sortDesc, onClick: () => setSortDir(false) },
   ]));
   const dirBtn = h('button.icon-btn.sm', { type: 'button', title: list.sortDesc ? 'Absteigend' : 'Aufsteigend', html: icon(list.sortDesc ? 'down' : 'up', 15), onclick: () => setSortDir(!list.sortDesc) });
-  sortHost.append(sortBtn, dirBtn);
+  if (!isToday()) sortHost.append(sortBtn, dirBtn);
 
   // search bar
   if (list.search) {
@@ -484,6 +515,7 @@ export async function reloadList({ keepCount = true } = {}) {
   const { mailboxId, folderId } = state.current;
   if (!mailboxId || !folderId) { renderList(); return; }
   if (list.search) { renderList(); return; }
+  if (folderId === TODAY) { await loadToday(); return; }
   const kb = kanbanActive();
   const limit = kb ? 1000 : keepCount ? Math.max(PAGE, list.items.length) : PAGE;
   const accountId = accountOfMailbox(mailboxId);
@@ -506,7 +538,7 @@ export async function reloadList({ keepCount = true } = {}) {
 }
 
 async function loadMore() {
-  if (list.loading || list.search || kanbanActive()) return;
+  if (list.loading || list.search || kanbanActive() || isToday()) return;
   const { mailboxId, folderId } = state.current;
   if (list.items.length < list.total) {
     list.loading = true;
@@ -544,11 +576,15 @@ function renderList() {
   const snoozedView = f && f.wellKnown === 'snoozed' && !list.search;
   const items = visibleItems();
   const accountId = accountOfMailbox(state.current.mailboxId);
-  const separators = !!(state.config ? state.config.showDateSeparators ?? true : true) && list.sortBy === 'received' && !list.search && !snoozedView;
+  const separators = !!(state.config ? state.config.showDateSeparators ?? true : true) && list.sortBy === 'received' && !list.search && !snoozedView && !isToday();
 
   const frag = document.createDocumentFragment();
   let lastGroup = null;
   for (const m of items) {
+    if (isToday() && m._section !== lastGroup) {
+      lastGroup = m._section;
+      frag.appendChild(h('div.m-sep.today-sec', { dataset: { section: m._section } }, m._section));
+    }
     if (separators) {
       const g = dateGroup(m.receivedAt);
       if (g.key !== lastGroup) {
@@ -556,14 +592,14 @@ function renderList() {
         frag.appendChild(h('div.m-sep', { dataset: { group: g.key } }, g.label));
       }
     }
-    frag.appendChild(msgRow(m, accountId, toMode, snoozedView));
+    frag.appendChild(msgRow(m, isToday() ? accountOfMailbox(m.mailboxId) : accountId, toMode, snoozedView || (isToday() && m._due)));
   }
   els.list.innerHTML = '';
   els.list.classList.toggle('compact', !!compact);
   els.list.appendChild(frag);
   if (!items.length) {
-    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : 'inbox', 40) }),
-      h('div', list.search ? 'Keine Ergebnisse gefunden.' : 'Keine Elemente in dieser Ansicht.')));
+    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : 'inbox', 40) }),
+      h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : 'Keine Elemente in dieser Ansicht.')));
   } else if (!list.search && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
     els.list.appendChild(h('div.load-more', list.loading ? 'Weitere Elemente werden geladen…' : (list.canLoadOlder && list.items.length >= list.total ? 'Weitere Elemente auf dem Server – nach unten scrollen, um sie zu laden.' : '')));
   }
@@ -578,7 +614,10 @@ function msgRow(m, accountId, toMode, snoozedView) {
   const cls = 'div.msg' + (m.isRead ? '' : '.unread') + (sel ? '.selected' : '') + (list.cursor === m.id ? '.cursor' : '') + (m.flag === 'flagged' ? '.flagged' : '');
   const el = h(cls, { draggable: 'true', dataset: { id: m.id }, role: 'option', 'aria-selected': sel ? 'true' : 'false' });
   const flagIc = snoozedView ? '' : m.flag === 'flagged' ? icon('flag', 15, 'flagged') : m.flag === 'complete' ? icon('check', 15, 'done') : icon('flag', 15, 'ghost');
-  const time = snoozedView && m.dueAt
+  const overdue = isToday() && m._due && m.dueAt && new Date(m.dueAt) < new Date();
+  const time = isToday() && m._due && m.dueAt
+    ? `<span class="m-due${overdue ? ' overdue' : ''}" title="Fällig ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 13)} ${overdue ? 'überfällig ' : ''}${esc(fmtDueShort(m.dueAt))}</span>`
+    : snoozedView && m.dueAt
     ? `<span class="m-due" title="Auf Wiedervorlage bis ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 13)} bis ${esc(fmtDueShort(m.dueAt))}</span>`
     : esc(fmtListDate(m.receivedAt));
   const cats = visibleCats(m.categories).map((c) => chipHtml(accountId, c)).join('');
@@ -588,7 +627,7 @@ function msgRow(m, accountId, toMode, snoozedView) {
     `<div class="m-main">` +
       `<div class="m-l1"><span class="m-from" title="${esc(who)}">${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
       `<div class="m-l2"><span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
-        `<span class="m-icons">${m.importance === 'high' ? icon('important', 14, 'imp') : ''}${m.hasAttachments ? icon('attach', 14) : ''}<span class="flagcell" title="Kennzeichnung umschalten">${flagIc}</span></span></div>` +
+        `<span class="m-icons">${recurrenceBadgeHtml(recurrenceOf(m), { short: true })}${m.importance === 'high' ? icon('important', 14, 'imp') : ''}${m.hasAttachments ? icon('attach', 14) : ''}<span class="flagcell" title="Kennzeichnung umschalten">${flagIc}</span></span></div>` +
       `<div class="m-l3"><span class="m-prev">${esc(m.preview || '')}</span>${cats ? `<span class="m-cats">${cats}</span>` : ''}</div>` +
     `</div>` +
     `<div class="m-quick">` +
@@ -636,7 +675,7 @@ export async function serverSearch(text, opts = {}) {
   if (!text) { clearSearch(); return; }
   const { mailboxId, folderId } = state.current;
   if (!mailboxId) return;
-  const args = { mailboxId, text, folderId: opts.scope === 'all' ? null : folderId };
+  const args = { mailboxId, text, folderId: opts.scope === 'all' || folderId === TODAY ? null : folderId };
   if (opts.field && opts.field !== 'all') args.field = opts.field;
   if (opts.hasAttachments) args.hasAttachments = true;
   const items = await call('search_messages', args);
@@ -786,7 +825,7 @@ const selectionChanged = debounce(() => {
 
 export function getSelection() {
   const items = visibleItems().filter((m) => list.selection.has(m.id));
-  return { mailboxId: state.current.mailboxId, folderId: state.current.folderId, ids: items.map((m) => m.id), items };
+  return { mailboxId: mbOf(items.map((m) => m.id)), folderId: state.current.folderId, ids: items.map((m) => m.id), items };
 }
 export function listStats() { return { total: list.search ? list.search.items.length : list.total, unread: list.unread }; }
 
@@ -813,6 +852,7 @@ async function showReading(m, text) {
       snoozed: inSnoozedFolder(),
       onChanged: () => {},
       setCategories: (cats) => setCategoriesFor([{ m: findItem(m.id) || m, cats }]),
+      setRecurrence: (rule) => setRecurrenceFor([m.id], rule),
       onManageCategories: () => openCategoryManager(accountId),
       onAction: (name, anchor) => {
         if (name === 'more') showMenuAt(anchor, moreItems(true));
@@ -893,7 +933,8 @@ function localUpdate(ids, fn) {
 }
 
 export async function applyRead(ids, isRead) {
-  const { mailboxId, folderId } = state.current;
+  const { folderId } = state.current;
+  const mailboxId = mbOf(ids);
   let delta = 0;
   localUpdate(ids, (m) => { if (m.isRead !== isRead) { delta += isRead ? -1 : 1; m.isRead = isRead; } });
   const f = folderById(mailboxId, folderId);
@@ -903,9 +944,10 @@ export async function applyRead(ids, isRead) {
 }
 
 export async function applyFlag(ids, flag) {
+  if (flag === 'complete') burst(rowEl(ids[0]));
   localUpdate(ids, (m) => { m.flag = flag; });
   renderList();
-  await call('set_flag', { mailboxId: state.current.mailboxId, ids, flag }, { silent: true });
+  await call('set_flag', { mailboxId: mbOf(ids), ids, flag }, { silent: true });
   if (currentDetail && ids.includes(currentDetail.id)) refreshReading();
 }
 
@@ -958,7 +1000,7 @@ export async function deleteSelected(permanent = false) {
 }
 
 async function deleteIds(ids, permanent) {
-  const mailboxId = state.current.mailboxId;
+  const mailboxId = mbOf(ids);
   const f = currentFolder();
   if (permanent || (f && f.wellKnown === 'deleteditems' && !list.search)) {
     const ok = await confirmDialog(ids.length === 1 ? 'Das ausgewählte Element wird endgültig gelöscht. Fortfahren?' : `${ids.length} Elemente werden endgültig gelöscht. Fortfahren?`, { danger: true, ok: 'Endgültig löschen', cancel: 'Abbrechen', title: 'Endgültig löschen' });
@@ -968,15 +1010,21 @@ async function deleteIds(ids, permanent) {
   await removeFromList(ids);
   await call('delete_messages', { mailboxId, ids, permanent });
   await refreshFolders(mailboxId);
+  checkInboxZero();
 }
 
 export async function moveOrCopy(ids, destFolderId, kind = 'move') {
-  const { mailboxId } = state.current;
+  const mailboxId = mbOf(ids);
+  const dest = folderById(mailboxId, destFolderId);
+  if (kind === 'move' && dest && dest.wellKnown === 'archive') {
+    const node = els.nav && els.nav.querySelector(`.tree-node[data-folder-id="${CSS.escape(destFolderId)}"]`);
+    burst(node || rowEl(ids[0]));
+  }
   if (kind === 'move') await removeFromList(ids);
   await call(kind === 'move' ? 'move_messages' : 'copy_messages', { mailboxId, ids, destFolderId });
-  const dest = folderById(mailboxId, destFolderId);
   toast(`${ids.length} ${ids.length === 1 ? 'Element' : 'Elemente'} ${kind === 'move' ? 'verschoben' : 'kopiert'} nach „${dest ? dest.displayName : ''}".`);
   await refreshFolders(mailboxId);
+  if (kind === 'move') checkInboxZero();
 }
 
 export async function archiveSelected() {
@@ -985,9 +1033,10 @@ export async function archiveSelected() {
 }
 
 async function archiveIds(ids) {
-  const mailboxId = state.current.mailboxId;
+  const mailboxId = mbOf(ids);
   const archive = wellKnown(mailboxId, 'archive');
   if (archive && archive.id === state.current.folderId && !list.search) { toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
+  burst(rowEl(ids[0]));
   await removeFromList(ids);
   try {
     await call('archive_messages', { mailboxId, ids });
@@ -997,6 +1046,7 @@ async function archiveIds(ids) {
   }
   toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
   await refreshFolders(mailboxId);
+  checkInboxZero();
 }
 
 /** Auf Wiedervorlage bis `until` (Date). */
@@ -1008,6 +1058,7 @@ export async function snoozeSelected(until) {
   await call('snooze_messages', { mailboxId: s.mailboxId, ids: s.ids, until: until.toISOString() });
   toast(`Auf Wiedervorlage bis ${fmtSnoozeTarget(until)}.`);
   await refreshFolders(s.mailboxId);
+  checkInboxZero();
 }
 
 export async function unsnoozeSelected() {
@@ -1082,7 +1133,7 @@ async function setCategoriesFor(changes) {
     groups.get(k).push(m.id);
   }
   renderList();
-  for (const [k, ids] of groups) await call('set_categories', { mailboxId: state.current.mailboxId, ids, categories: JSON.parse(k) }, { silent: true });
+  for (const [k, ids] of groups) await call('set_categories', { mailboxId: mbOf(ids), ids, categories: JSON.parse(k) }, { silent: true });
 }
 
 export function flagMenuItems() {
@@ -1111,6 +1162,7 @@ function moreItems(fromReadingPane) {
       ? { label: 'Als gelesen markieren', icon: 'mailOpen', shortcut: 'Strg+Q', onClick: () => markSelected(true) }
       : { label: 'Als ungelesen markieren', icon: 'mail', shortcut: 'Strg+U', onClick: () => markSelected(false) },
     { label: 'Kennzeichnung', icon: 'flag', submenu: flagMenuItems },
+    { label: 'Wiederholung', icon: 'repeat', submenu: recurrenceSubmenu, testid: 'more-recurrence' },
     { label: 'Verschieben', icon: 'move', submenu: () => moveMenuItems('move') },
     { separator: true },
     { label: 'In neuem Fenster öffnen', icon: 'open', disabled: !single, onClick: () => openMessage(s.items[0]) },
@@ -1141,6 +1193,7 @@ function messageContextMenu(x, y) {
     { label: 'Kennzeichnung', icon: 'flag', submenu: flagMenuItems },
     { label: 'Auf Wiedervorlage', icon: 'snooze', shortcut: 'S', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
     { label: 'Kanban-Lane', icon: 'kanban', submenu: laneMenuItems, testid: 'ctx-lane' },
+    { label: 'Wiederholung', icon: 'repeat', submenu: recurrenceSubmenu, testid: 'ctx-recurrence' },
     { separator: true },
     { label: 'Archivieren', icon: 'archive', shortcut: 'E', onClick: () => archiveSelected(), testid: 'ctx-archive' },
     { label: 'Verschieben', icon: 'move', submenu: () => moveMenuItems('move'), testid: 'ctx-move' },
@@ -1158,8 +1211,88 @@ export const hooks = { snoozeItems: null, openLaneSettings: null };
 export async function onMailChanged(p) {
   const tasks = [];
   if (p && p.mailboxId) tasks.push(refreshFolders(p.mailboxId));
-  if (p && p.mailboxId === state.current.mailboxId && (!p.folderId || p.folderId === state.current.folderId)) tasks.push(reloadList());
+  if (isToday()) tasks.push(reloadList());
+  else if (p && p.mailboxId === state.current.mailboxId && (!p.folderId || p.folderId === state.current.folderId)) tasks.push(reloadList());
+  refreshTodayCount();
   await Promise.all(tasks);
+}
+
+// ============================================================ Heute
+/** Loads the "Heute" view: due mails of all accounts + first Kanban lane per account. */
+async function loadToday() {
+  let res;
+  try { res = await call('list_today', {}, { silent: true }); } catch (e) { res = { due: [], todo: [] }; console.warn(e); }
+  if (!isToday()) return;
+  const seen = new Set();
+  const items = [];
+  const due = [...(res.due || [])].sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || '')));
+  for (const m of due) { if (seen.has(m.id)) continue; seen.add(m.id); items.push({ ...m, _section: 'Heute fällig', _due: true }); }
+  const multi = (res.todo || []).length > 1;
+  for (const t of res.todo || []) {
+    const acc = state.accounts.find((a) => a.id === t.accountId);
+    const label = multi && acc ? `${t.lane} · ${acc.email}` : t.lane;
+    for (const m of t.items || []) { if (seen.has(m.id)) continue; seen.add(m.id); items.push({ ...m, _section: label }); }
+  }
+  today.due = due;
+  today.todo = res.todo || [];
+  setTodayCount(items.length);
+  list.items = items;
+  list.total = items.length;
+  list.unread = items.filter((m) => !m.isRead).length;
+  list.canLoadOlder = false;
+  const ids = new Set(items.map((m) => m.id));
+  for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
+  if (list.cursor && !ids.has(list.cursor)) list.cursor = null;
+  renderList();
+  onCountsChanged();
+}
+
+function setTodayCount(n) {
+  if (today.count === n) return;
+  today.count = n;
+  renderFolderTree();
+}
+
+/** Badge in the sidebar: due today + first-lane items (deduplicated). */
+export const refreshTodayCount = debounce(async () => {
+  if (!mailboxes().length) return;
+  try {
+    const res = await call('list_today', {}, { silent: true });
+    const ids = new Set([...(res.due || []).map((m) => m.id), ...(res.todo || []).flatMap((t) => (t.items || []).map((m) => m.id))]);
+    setTodayCount(ids.size);
+  } catch { /* backend without list_today */ }
+}, 400);
+
+// ============================================================ recurrence
+export async function setRecurrenceFor(ids, rule) {
+  const mailboxId = mbOf(ids);
+  localUpdate(ids, (m) => {
+    m.recurrence = rule;
+    m.categories = [...(m.categories || []).filter((c) => !isRecurrenceCategory(c)), ...(rule ? [recurrenceCategory(rule)] : [])];
+  });
+  renderList();
+  await call('set_recurrence', { mailboxId, ids, recurrence: rule || null }, { silent: true });
+  toast(rule ? `Wiederholung: ${recurrenceLabel(rule)}. Beim Archivieren wird die nächste Wiederholung eingeplant.` : 'Wiederholung entfernt.');
+}
+
+function recurrenceSubmenu() {
+  const s = getSelection();
+  const current = s.items.length && s.items.every((m) => recurrenceOf(m) === recurrenceOf(s.items[0])) ? recurrenceOf(s.items[0]) : undefined;
+  return recurrenceMenuItems(current === undefined ? '__mixed__' : current, (k) => setRecurrenceFor(s.ids, k).catch(reportError));
+}
+
+// ============================================================ confetti helpers
+function rowEl(id) {
+  if (!id) return null;
+  const sel = `[data-id="${CSS.escape(id)}"]`;
+  return (kanbanActive() ? els.board.querySelector('.kb-card' + sel) : els.list.querySelector('.msg' + sel)) || null;
+}
+
+/** Big, calm celebration when the inbox of the current account is empty after an action. */
+function checkInboxZero() {
+  const f = currentFolder();
+  if (!f || f.wellKnown !== 'inbox' || list.search || list.text) return;
+  if (list.items.length === 0 && list.total === 0) celebrateEmptyInbox(els.mailview);
 }
 
 export function focusList() { if (kanbanActive()) board.focus(); else els.list.focus(); }
@@ -1167,7 +1300,7 @@ export function focusList() { if (kanbanActive()) board.focus(); else els.list.f
 // ============================================================ Kanban lanes
 /** Moves messages into `lane` (null = no lane); keeps all other categories. Undo via toast. */
 export async function setLaneFor(ids, lane) {
-  const { mailboxId } = state.current;
+  const mailboxId = mbOf(ids);
   const lanes = currentLanes();
   if (lane && !lanes.includes(lane)) { toast(`Die Lane „${lane}“ existiert nicht.`, 'error'); return; }
   const before = new Map();

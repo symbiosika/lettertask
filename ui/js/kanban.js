@@ -4,6 +4,7 @@ import { h, esc, fmtListDate, displayName, initials, avatarColor } from './util.
 import { icon } from './icons.js';
 import { chipHtml, visibleCats, laneName, isLaneCategory } from './categories.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
+import { recurrenceOf, recurrenceBadgeHtml } from './recurrence.js';
 
 export const NO_LANE = '';
 
@@ -73,7 +74,7 @@ export function createBoard(host, ctx) {
       ? `<span class="m-due" title="Auf Wiedervorlage bis ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 12)} bis ${esc(fmtDueShort(m.dueAt))}</span>`
       : esc(fmtListDate(m.receivedAt));
     const tags = visibleCats(m.categories).map((c) => chipHtml(accountId, c)).join('');
-    const icons = (m.importance === 'high' ? icon('important', 13, 'imp') : '')
+    const icons = recurrenceBadgeHtml(recurrenceOf(m), { short: true }) + (m.importance === 'high' ? icon('important', 13, 'imp') : '')
       + (m.hasAttachments ? icon('attach', 13) : '')
       + (m.flag === 'flagged' ? icon('flag', 13, 'flagged') : m.flag === 'complete' ? icon('check', 13, 'done') : '');
     el.innerHTML =
