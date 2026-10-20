@@ -412,6 +412,8 @@ pub struct AuthState {
     pub access: HashMap<String, DateTime<Utc>>,
     /// refresh token → scope
     pub refresh: HashMap<String, String>,
+    /// device code → (client_id, scope, polls so far)
+    pub device: HashMap<String, (String, String, u32)>,
 }
 
 pub struct State {

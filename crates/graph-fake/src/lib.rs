@@ -109,6 +109,7 @@ fn router(state: SharedState) -> Router {
         .route("/", get(|| async { "graph-fake: Microsoft Graph v1.0 test double. Graph at /v1.0" }))
         .route("/{tenant}/oauth2/v2.0/authorize", get(auth::authorize))
         .route("/{tenant}/oauth2/v2.0/token", post(auth::token))
+        .route("/{tenant}/oauth2/v2.0/devicecode", post(auth::devicecode))
         .route("/upload/{sid}", put(mail::upload_chunk).delete(mail::upload_cancel))
         .route("/v1.0", any(graph))
         .route("/v1.0/{*rest}", any(graph))

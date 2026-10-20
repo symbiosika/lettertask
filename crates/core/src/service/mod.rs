@@ -506,6 +506,21 @@ impl Service {
             auth::interactive_login(&self.http, &oauth, move |url| host.open_url(&url), Duration::from_secs(300))
                 .await?
         };
+        self.finish_login(tokens).await
+    }
+
+    /// OAuth config as currently configured (client ID, tenant, authority).
+    pub fn oauth_config(&self) -> OAuthConfig {
+        self.oauth()
+    }
+
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.http
+    }
+
+    /// Registers the signed-in user as account (or refreshes its token) and
+    /// performs the initial folder/inbox sync.
+    pub async fn finish_login(self: &Arc<Self>, tokens: TokenSet) -> Result<Account> {
         // Use a temporary client to learn who signed in.
         let tmp = self.make_client("pending", tokens.clone());
         let me = tmp.get("/me?$select=id,displayName,mail,userPrincipalName").await?;

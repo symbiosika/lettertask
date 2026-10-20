@@ -73,6 +73,17 @@ Das Refresh-Token liegt im Schlüsselbund des Betriebssystems (Windows Anmeldein
 macOS Schlüsselbund, Linux Secret Service); ist keiner verfügbar, in einer nur für den Benutzer
 lesbaren Datei im App-Datenverzeichnis.
 
+### Verbindung prüfen (ohne GUI)
+
+```bash
+cargo run -p devserver --bin live-check -- --client-id <GUID> --tenant <Tenant-ID>          # nur lesend
+cargo run -p devserver --bin live-check -- --client-id <GUID> --tenant <Tenant-ID> --write  # + Schreibtests
+```
+
+Anmeldung per Gerätecode (microsoft.com/devicelogin) – dafür muss in der App-Registrierung
+„Öffentliche Clientflows zulassen“ aktiviert sein. Das Werkzeug nutzt dieselbe Service-Schicht wie die
+App, gibt nur Zähler aus (keine Mailinhalte) und räumt bei `--write` alle Testobjekte wieder auf.
+
 ## Bauen
 
 Voraussetzungen: Rust ≥ 1.80, unter Linux zusätzlich
