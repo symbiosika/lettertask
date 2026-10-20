@@ -619,15 +619,31 @@ export async function welcomeDialog({ o365Only = false } = {}) {
   try { return await loginWithWait(); } catch (e) { reportError(e); return false; }
 }
 
+const SHORTCUTS = [
+  ['Allgemein', [['Strg+N', 'Neue E-Mail'], ['Strg+Umschalt+N', 'Neue Aufgabe'], ['Strg+E', 'Suchen'], ['F9', 'Senden/Empfangen'],
+    ['Strg+1', 'Mail'], ['Strg+2', 'Kalender'], ['Strg+3', 'Kontakte']]],
+  ['Nachrichten', [['Strg+R', 'Antworten'], ['Strg+Umschalt+R', 'Allen antworten'], ['Strg+F', 'Weiterleiten'],
+    ['Strg+Q', 'Als gelesen markieren'], ['Strg+U', 'Als ungelesen markieren'], ['Entf', 'Löschen']]],
+  ['Organisieren', [['E', 'Archivieren'], ['S', 'Wiedervorlage'], ['T', 'Kategorien'], ['1–9', 'In Kanban-Lane verschieben'],
+    ['Strg+Umschalt+K', 'Liste/Kanban']]],
+];
+
 export async function aboutDialog() {
+  const version = h('span.about-version', '…');
+  call('app_info', {}).then((i) => { version.textContent = `Version ${i.version}`; }).catch(() => { version.remove(); });
+  const keys = (combo) => combo.split('+').flatMap((k, i) => (i ? ['+', h('kbd', k)] : [h('kbd', k)]));
   await modal({
     title: 'Über',
-    body: h('div.confirm-body', h('span', { html: icon('mail', 40) }), h('div',
-      h('div', { style: { fontWeight: '600', fontSize: '15px' } }, 'Mail, Kalender & Kontakte'),
-      h('div', 'Fokussierter E-Mail-Client für Microsoft 365 (Graph API) und IMAP/SMTP.'),
-      h('div', { style: { marginTop: '6px', color: '#666' } }, 'Rust · Tauri · Microsoft Graph v1.0 · IMAP/SMTP'),
-      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+Umschalt+N Aufgabe · E Archivieren · S Wiedervorlage · 1–9 Kanban-Lane · Strg+Umschalt+K Liste/Kanban · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · T Kategorien · Entf löschen · Strg+E Suchen · F9 Senden/Empfangen · Strg+1 Mail · Strg+2 Kalender · Strg+3 Kontakte'))),
-    width: 480,
+    body: h('div.about',
+      h('div.about-head', h('span.about-icon', { html: icon('mail', 40) }), h('div',
+        h('div.about-name', 'Mail, Kalender & Kontakte', version),
+        h('div', 'Fokussierter E-Mail-Client für Microsoft 365 (Graph API) und IMAP/SMTP.'),
+        h('div.about-tech', 'Rust · Tauri · Microsoft Graph v1.0 · IMAP/SMTP'))),
+      h('div.about-section', 'Tastenkürzel'),
+      h('div.about-keys', SHORTCUTS.map(([group, list]) => h('div.about-group',
+        h('div.about-group-title', group),
+        list.map(([combo, label]) => h('div.about-key', h('span.about-combo', keys(combo)), h('span', label))))))),
+    width: 560,
   });
 }
 

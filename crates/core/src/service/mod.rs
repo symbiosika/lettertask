@@ -311,6 +311,7 @@ impl Service {
         let a = &args;
         match cmd {
             // ---- app / accounts ----
+            "app_info" => ok(json!({ "version": env!("CARGO_PKG_VERSION") })),
             "get_config" => ok(self.config()),
             "save_config" => ok(self.save_config(arg(a, "config")?)?),
             "list_accounts" => ok(self.list_accounts_for_ui()?),

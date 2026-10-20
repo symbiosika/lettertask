@@ -53,6 +53,24 @@ function hasRemoteIn(doc) {
 
 export function hasRemoteContent(html) { return hasRemoteIn(parseMail(html)); }
 
+/**
+ * A fixed inline `height` beats the `height:auto` below, so an image shrunk by
+ * `max-width:100%` would be squeezed horizontally. Move pixel sizes into the
+ * width/height attributes: they still give the size and aspect ratio, but the
+ * stylesheet's `height:auto` can now scale the image proportionally.
+ */
+function keepAspect(im) {
+  const px = (v) => { const m = /^(\d+(?:\.\d+)?)(px)?$/i.exec(String(v || '').trim()); return m ? m[1] : null; };
+  const sh = px(im.style.height);
+  if (!sh) return;
+  const w = px(im.style.width) || px(im.getAttribute('width'));
+  if (!w) return;
+  im.setAttribute('width', w);
+  im.setAttribute('height', sh);
+  im.style.removeProperty('width');
+  im.style.removeProperty('height');
+}
+
 /** Builds the iframe srcdoc for a mail body. */
 export function buildSrcdoc(bodyHtml, allowRemote) {
   const img = allowRemote ? "data: cid: https: http:" : "data: cid:";
@@ -68,6 +86,7 @@ export function buildSrcdoc(bodyHtml, allowRemote) {
       if (/^on/i.test(a.name) || a.name.toLowerCase() === 'target') el.removeAttribute(a.name);
     }
   }
+  for (const im of doc.querySelectorAll('img')) keepAspect(im);
   const head = doc.head;
   head.insertAdjacentHTML('afterbegin',
     `<meta charset="utf-8">` +
