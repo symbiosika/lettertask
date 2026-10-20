@@ -89,6 +89,12 @@ kbd { font-family: inherit; }
 .loading-state { padding: 48px 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--text-dim); animation: fade .2s ease .15s both; }
 .loading-state .busy { width: 22px; height: 22px; visibility: visible; animation: spin .8s linear infinite; }
 .readpane .loading-state { margin: auto; }
+/* Floating "loading" pill over a view whose content stays visible (calendar). */
+.view-loading { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 5; display: none; align-items: center; gap: 8px;
+  padding: 6px 12px; border-radius: 999px; background: var(--bg); box-shadow: 0 2px 8px rgba(0, 0, 0, .14); color: var(--text-2); font-size: 12.5px; pointer-events: none; }
+.view-loading.on { display: inline-flex; }
+.view-loading.fixed { position: fixed; top: 64px; }
+.view-loading .busy { width: 14px; height: 14px; }
 .lh-busy { width: 12px; height: 12px; margin-left: 8px; align-self: center; }
 
 /* ================================================================ action bar */
@@ -234,6 +240,9 @@ kbd { font-family: inherit; }
   position: relative; display: flex; align-items: flex-start; gap: 10px; margin: 1px 6px; padding: 9px 10px 9px 14px;
   border-radius: var(--radius); cursor: default; outline: none;
 }
+/* Rows outside the visible area skip layout and paint – keeps folders with thousands of loaded mails smooth. */
+.msglist > .msg { content-visibility: auto; contain-intrinsic-size: auto 86px; }
+.msglist.compact > .msg { contain-intrinsic-size: auto 56px; }
 .msg:hover { background: var(--hover); }
 .msg.selected { background: var(--sel); }
 .msglist:focus-within .msg.selected { background: var(--sel-strong); }
@@ -277,7 +286,7 @@ kbd { font-family: inherit; }
 .empty { padding: 48px 16px; text-align: center; color: var(--text-dim); display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .empty-ic { color: #c7ccd4; }
 .empty.reading { margin: auto; }
-.load-more { padding: 10px; text-align: center; color: var(--text-dim); font-size: 12px; }
+.load-more { padding: 10px; text-align: center; color: var(--text-dim); font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 6px; }
 
 /* categories */
 .cat-chip {

@@ -20,6 +20,8 @@ const today = { due: [], todo: [], count: 0 };
 import { openCategoryManager } from './settings.js';
 
 const PAGE = 200;
+// Kanban shows the newest mails of a folder; lanes stay small, an archive does not.
+const KANBAN_LIMIT = 1000;
 export const WK_ICON = { inbox: 'inbox', snoozed: 'snooze', drafts: 'drafts', sentitems: 'sent', deleteditems: 'trash', archive: 'archive', junkemail: 'junk', outbox: 'outbox' };
 const WK_RANK = { inbox: 0, snoozed: 1, drafts: 2, sentitems: 3, deleteditems: 4, archive: 5, junkemail: 6, outbox: 7 };
 const TOTAL_COUNT_FOLDERS = new Set(['drafts', 'outbox', 'junkemail']);
@@ -428,16 +430,15 @@ export async function selectFolder(mailboxId, folderId) {
   list.syncing = folderId;
   try { await reloadList(); } finally { if (state.current.folderId === folderId) list.fetching = false; }
   // An empty local cache (folder never opened) is not "no items" until the sync is done.
-  if (state.current.folderId === folderId && !list.items.length) renderList();
-  renderListHead();
+  if (state.current.folderId === folderId) paintLoadingState();
   // pull fresh data in the background
   call('sync_folder', { mailboxId, folderId }, { silent: true })
-    .then(() => (state.current.folderId === folderId ? reloadList() : null))
+    .then(() => (state.current.folderId === folderId ? reloadList({ ifChanged: true }) : null))
     .catch(() => {})
     .finally(() => {
       if (list.syncing !== folderId) return;
       list.syncing = null;
-      if (state.current.folderId === folderId) renderList();
+      if (state.current.folderId === folderId) paintLoadingState();
     });
 }
 
@@ -457,9 +458,16 @@ function renderListHead() {
   const title = els.head.querySelector('.folder-name');
   const count = els.head.querySelector('.lh-count');
   title.textContent = list.search ? 'Suchergebnisse' : isToday() ? 'Heute' : (f ? f.displayName : '');
-  const n = list.search ? list.search.items.length : list.total;
-  count.textContent = n ? String(n) : '';
-  count.title = list.search ? '' : `${list.total} Elemente, ${list.unread} ungelesen`;
+  // The local cache of a large folder (e.g. Archiv) holds only the newest part:
+  // without a filter the folder's server total is the honest number.
+  const fl = list.filter;
+  const unfiltered = !list.search && !isToday() && !fl.unreadOnly && !fl.flaggedOnly && !fl.category && !list.text;
+  const serverTotal = unfiltered && f && f.totalCount > list.total ? f.totalCount : 0;
+  const n = list.search ? list.search.items.length : serverTotal || list.total;
+  count.textContent = n ? n.toLocaleString('de-DE') : '';
+  count.title = list.search ? '' : serverTotal
+    ? `${serverTotal.toLocaleString('de-DE')} Elemente, davon ${list.total.toLocaleString('de-DE')} lokal geladen – ältere werden beim Scrollen nachgeladen`
+    : `${list.total} Elemente, ${list.unread} ungelesen`;
   const busy = els.head.querySelector('.lh-busy');
   if (busy) busy.classList.toggle('on', !!listLoading());
   const mb = mailboxById(state.current.mailboxId);
@@ -468,7 +476,6 @@ function renderListHead() {
   const tools = els.head.querySelector('.lh-tools');
   tools.innerHTML = '';
   const chip = (label, on, fn, testid) => h('button.chip' + (on ? '.on' : ''), { type: 'button', onclick: fn, dataset: { testid } }, label);
-  const fl = list.filter;
   if (isToday() && !list.search) {
     const d = new Date();
     tools.appendChild(h('span.today-sub', `${['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][d.getDay()]}, ${d.getDate()}.${d.getMonth() + 1}. · ${today.due.length} fällig`));
@@ -534,13 +541,26 @@ function setFilter(f) {
 }
 
 // ============================================================ list
-export async function reloadList({ keepCount = true } = {}) {
+// List requests run one after another: a reload started while a page is being
+// appended would otherwise come back with the old length and drop that page.
+let listChain = Promise.resolve();
+function serial(fn) {
+  const run = listChain.then(fn, fn);
+  listChain = run.catch(() => {});
+  return run;
+}
+
+/** keepCount: keep the loaded length. ifChanged: skip the re-render when nothing changed (event-driven reloads). */
+export function reloadList(opts = {}) { return serial(() => reloadListNow(opts)); }
+
+async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
   const { mailboxId, folderId } = state.current;
   if (!mailboxId || !folderId) { renderList(); return; }
   if (list.search) { renderList(); return; }
   if (folderId === TODAY) { await loadToday(); return; }
   const kb = kanbanActive();
-  const limit = kb ? 1000 : keepCount ? Math.max(PAGE, list.items.length) : PAGE;
+  // Event-driven reloads keep exactly what is shown; growing the list is loadMore's job.
+  const limit = kb ? KANBAN_LIMIT : !keepCount ? PAGE : ifChanged && list.items.length ? list.items.length : Math.max(PAGE, list.items.length);
   const accountId = accountOfMailbox(mailboxId);
   if (kb && !state.lanes.has(accountId)) await loadLanes(accountId);
   const res = await call('list_messages', {
@@ -549,87 +569,174 @@ export async function reloadList({ keepCount = true } = {}) {
     text: list.text || null, offset: 0, limit,
   }, { silent: true });
   if (state.current.folderId !== folderId) return;
-  list.items = res.items || [];
+  const items = res.items || [];
+  // Large folders (e.g. an archive with thousands of loaded rows) get many
+  // "mail-changed" events; nothing changed → keep the DOM as it is.
+  const same = ifChanged && list.items.length === items.length && JSON.stringify(list.items) === JSON.stringify(items);
+  list.items = items;
   list.total = res.total || 0;
   list.unread = res.unread || 0;
   list.canLoadOlder = !!res.canLoadOlder;
   const ids = new Set(list.items.map((m) => m.id));
   for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
   if (list.cursor && !ids.has(list.cursor)) list.cursor = null;
+  if (same) { paintListFooter(); renderListHead(); onCountsChanged(); return; }
   renderList();
   onCountsChanged();
 }
 
+/** Next page of the local cache, appended to the list (no full re-render). */
+function fetchNextPage(mailboxId, folderId) { return serial(() => fetchNextPageNow(mailboxId, folderId)); }
+
+async function fetchNextPageNow(mailboxId, folderId) {
+  const res = await call('list_messages', {
+    mailboxId, folderId, sortBy: list.sortBy, sortDesc: list.sortDesc,
+    unreadOnly: list.filter.unreadOnly, flaggedOnly: list.filter.flaggedOnly, category: list.filter.category,
+    text: list.text || null, offset: list.items.length, limit: PAGE,
+  }, { silent: true });
+  if (state.current.folderId !== folderId || list.search) return false;
+  const have = new Set(list.items.map((m) => m.id));
+  const added = (res.items || []).filter((m) => !have.has(m.id));
+  const from = list.items.length;
+  list.items.push(...added);
+  list.total = res.total; list.unread = res.unread ?? list.unread; list.canLoadOlder = !!res.canLoadOlder;
+  return { from, added: added.length };
+}
+
+/** Lazy loading at the end of the list: next cached page, else older mails from the server. */
 async function loadMore() {
   if (list.loading || list.search || kanbanActive() || isToday()) return;
   const { mailboxId, folderId } = state.current;
   if (list.items.length < list.total) {
     list.loading = true;
+    paintListFooter();
     try {
-      const res = await call('list_messages', {
-        mailboxId, folderId, sortBy: list.sortBy, sortDesc: list.sortDesc,
-        unreadOnly: list.filter.unreadOnly, flaggedOnly: list.filter.flaggedOnly, category: list.filter.category,
-        text: list.text || null, offset: list.items.length, limit: PAGE,
-      }, { silent: true });
-      if (state.current.folderId !== folderId) return;
-      const have = new Set(list.items.map((m) => m.id));
-      list.items.push(...(res.items || []).filter((m) => !have.has(m.id)));
-      list.total = res.total; list.canLoadOlder = !!res.canLoadOlder;
-      renderList();
-    } finally { list.loading = false; }
+      const r = await fetchNextPage(mailboxId, folderId);
+      if (r) appendRows(r.from);
+    } finally { list.loading = false; paintListFooter(); }
   } else if (list.canLoadOlder) {
     list.loading = true;
-    renderList();
+    paintListFooter();
+    let n = 0;
     try {
-      const n = await call('load_older', { mailboxId, folderId }, { silent: true });
+      n = await call('load_older', { mailboxId, folderId }, { silent: true });
       if (!n) list.canLoadOlder = false;
     } finally { list.loading = false; }
-    await reloadList();
+    if (state.current.folderId !== folderId) return;
+    // Older mails sort to the end only in the default order; otherwise reload.
+    if (n && list.sortBy === 'received' && list.sortDesc) {
+      list.loading = true;
+      try {
+        const r = await fetchNextPage(mailboxId, folderId);
+        if (r) appendRows(r.from);
+      } finally { list.loading = false; }
+    } else await reloadList();
+    paintListFooter();
   }
 }
 
 function visibleItems() { return list.search ? list.search.items : list.items; }
 
-function renderList() {
-  if (kanbanActive()) { board.render(); renderListHead(); return; }
-  const scroll = els.list.scrollTop;
-  const compact = state.config && state.config.listMode === 'compact';
+function rowContext() {
   const f = currentFolder();
-  const toMode = f && TO_FOLDERS.has(f.wellKnown) && !list.search;
   const snoozedView = f && f.wellKnown === 'snoozed' && !list.search;
-  const items = visibleItems();
-  const accountId = accountOfMailbox(state.current.mailboxId);
-  const separators = !!(state.config ? state.config.showDateSeparators ?? true : true) && list.sortBy === 'received' && !list.search && !snoozedView && !isToday();
+  return {
+    toMode: f && TO_FOLDERS.has(f.wellKnown) && !list.search,
+    snoozedView,
+    accountId: accountOfMailbox(state.current.mailboxId),
+    separators: !!(state.config ? state.config.showDateSeparators ?? true : true) && list.sortBy === 'received' && !list.search && !snoozedView && !isToday(),
+  };
+}
 
+function groupOf(m, ctx) {
+  if (isToday()) return m._section;
+  return ctx.separators ? dateGroup(m.receivedAt).key : null;
+}
+
+/** Rows for items[from…]; separators continue from the item before `from`. */
+function buildRows(items, from, ctx) {
   const frag = document.createDocumentFragment();
-  let lastGroup = null;
-  for (const m of items) {
+  let lastGroup = from > 0 ? groupOf(items[from - 1], ctx) : null;
+  for (let i = from; i < items.length; i++) {
+    const m = items[i];
     if (isToday() && m._section !== lastGroup) {
       lastGroup = m._section;
       frag.appendChild(h('div.m-sep.today-sec', { dataset: { section: m._section } }, m._section));
     }
-    if (separators) {
+    if (ctx.separators) {
       const g = dateGroup(m.receivedAt);
       if (g.key !== lastGroup) {
         lastGroup = g.key;
         frag.appendChild(h('div.m-sep', { dataset: { group: g.key } }, g.label));
       }
     }
-    frag.appendChild(msgRow(m, isToday() ? accountOfMailbox(m.mailboxId) : accountId, toMode, snoozedView || (isToday() && m._due)));
+    frag.appendChild(msgRow(m, isToday() ? accountOfMailbox(m.mailboxId) : ctx.accountId, ctx.toMode, ctx.snoozedView || (isToday() && m._due)));
   }
+  return frag;
+}
+
+function renderList() {
+  if (kanbanActive()) { board.render(); renderListHead(); return; }
+  const scroll = els.list.scrollTop;
+  const compact = state.config && state.config.listMode === 'compact';
+  const items = visibleItems();
+  const frag = buildRows(items, 0, rowContext());
   els.list.innerHTML = '';
   els.list.classList.toggle('compact', !!compact);
   els.list.appendChild(frag);
+  paintListFooter();
+  els.list.scrollTop = scroll;
+  renderListHead();
+}
+
+/** Appends the rows of list.items[from…] after a lazy-loaded page. */
+function appendRows(from) {
+  if (kanbanActive() || list.search) { renderList(); return; }
+  if (!els.list.querySelector('.msg') || from === 0) { renderList(); return; }
+  for (const el of els.list.querySelectorAll(':scope > .load-more, :scope > .empty, :scope > .loading-state')) el.remove();
+  els.list.appendChild(buildRows(list.items, from, rowContext()));
+  paintListFooter();
+  renderListHead();
+  onCountsChanged();
+}
+
+/** Loading state changed (not the data): footer + header spinner, no row rebuild. */
+function paintLoadingState() {
+  if (kanbanActive()) { board.render(); return; }
+  paintListFooter();
+  renderListHead();
+}
+
+/** Empty/loading state or the "more" footer at the end of the list. */
+function paintListFooter() {
+  if (kanbanActive()) return;
+  for (const el of els.list.querySelectorAll(':scope > .load-more, :scope > .empty, :scope > .loading-state')) el.remove();
+  const items = visibleItems();
   if (!items.length && listLoading()) {
     els.list.appendChild(h('div.loading-state', { dataset: { testid: 'list-loading' } }, h('span.busy'), h('div', 'Nachrichten werden geladen…')));
   } else if (!items.length) {
     els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : 'inbox', 40) }),
       h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : 'Keine Elemente in dieser Ansicht.')));
-  } else if (!list.search && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
-    els.list.appendChild(h('div.load-more', list.loading ? 'Weitere Elemente werden geladen…' : (list.canLoadOlder && list.items.length >= list.total ? 'Weitere Elemente auf dem Server – nach unten scrollen, um sie zu laden.' : '')));
+  } else if (!list.search && !isToday() && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
+    const foot = h('div.load-more', { dataset: { testid: 'list-more' } });
+    if (list.loading) foot.append(h('span.busy.on.inline-busy'), ' Weitere Elemente werden geladen…');
+    else foot.appendChild(h('button.linkbtn', { type: 'button', onclick: () => loadMore().catch(reportError) },
+      list.items.length < list.total ? 'Weitere Elemente anzeigen' : 'Ältere Elemente vom Server laden'));
+    els.list.appendChild(foot);
+    footObserver().observe(foot);
   }
-  els.list.scrollTop = scroll;
-  renderListHead();
+}
+
+let footObs = null;
+/** Lazy loading trigger: the footer comes near the visible area (scrolling or a short list). */
+function footObserver() {
+  if (!footObs) {
+    footObs = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting && e.target.isConnected)) loadMore().catch(reportError);
+    }, { root: els.list, rootMargin: '0px 0px 600px 0px' });
+  }
+  footObs.disconnect();
+  return footObs;
 }
 
 function msgRow(m, accountId, toMode, snoozedView) {
@@ -1243,7 +1350,7 @@ export async function onMailChanged(p) {
   const tasks = [];
   if (p && p.mailboxId) tasks.push(refreshFolders(p.mailboxId));
   if (isToday()) tasks.push(reloadList());
-  else if (p && p.mailboxId === state.current.mailboxId && (!p.folderId || p.folderId === state.current.folderId)) tasks.push(reloadList());
+  else if (p && p.mailboxId === state.current.mailboxId && (!p.folderId || p.folderId === state.current.folderId)) tasks.push(reloadList({ ifChanged: !kanbanActive() }));
   refreshTodayCount();
   await Promise.all(tasks);
 }

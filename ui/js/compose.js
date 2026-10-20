@@ -2,7 +2,7 @@
 import { call, params, closeWindow, isTauri } from './api.js';
 import { h, $, esc, fmtSize, fileToBase64, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog, showMenuAt, setPending } from './dialogs.js';
+import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { splitBtn } from './toolbar.js';
@@ -414,6 +414,7 @@ async function init() {
   if (!st.mailboxId) st.mailboxId = mailboxes()[0] && mailboxes()[0].id;
   renderForm();
   setupClose();
+  const stopPill = loadingPill(P.draftId ? 'Entwurf wird geladen…' : 'Nachricht wird vorbereitet…');
   try {
     let d;
     if (P.draftId) {
@@ -427,12 +428,14 @@ async function init() {
     applyDraft(d);
     if (renderForm.paintFrom) renderForm.paintFrom();
     await editor.setHtml(d.bodyHtml || '');
+    stopPill();
     st.dirty = !!P.to;
     // Loading takes a moment; never pull the cursor out of a field the user
     // already started typing in.
     const untouched = !document.activeElement || document.activeElement === document.body;
     if (untouched) { if ((d.to || []).length) await editor.focus(); else to.focus(); }
   } catch (e) {
+    stopPill();
     reportError(e);
     applyDraft({ id: null, mailboxId: st.mailboxId, mode: 'new', to: [], cc: [], bcc: [], subject: '', bodyHtml: '', importance: 'normal', requestReadReceipt: false, attachments: [] });
   }

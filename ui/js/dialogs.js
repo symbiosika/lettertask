@@ -222,6 +222,33 @@ export function whileWorking(b, delay = 200) {
   return () => { off(); clearTimeout(t); setPending(b, false); };
 }
 
+/**
+ * Floating "… wird geladen" pill for waits without a button to spin on (a dialog
+ * that needs server data first, a window preparing its content). Shown only if the
+ * wait takes longer than `delay`. Returns stop().
+ */
+export function loadingPill(text, delay = 300) {
+  const pill = h('div.view-loading.on.fixed', { role: 'status', dataset: { testid: 'loading-pill' } }, h('span.busy.on'), text);
+  const t = setTimeout(() => document.body.appendChild(pill), delay);
+  return () => { clearTimeout(t); pill.remove(); };
+}
+
+/**
+ * Click handler for a button that runs an async action: further clicks are ignored
+ * while it runs (also on the other buttons of `group`, e.g. Annehmen/Ablehnen), and
+ * the button shows a spinner while the backend works.
+ */
+export function busyClick(fn, group = null) {
+  return (e) => {
+    const b = e.currentTarget;
+    const lock = group || b;
+    if (lock.dataset.running) return;
+    lock.dataset.running = '1';
+    const stop = whileWorking(b);
+    Promise.resolve().then(() => fn(e)).catch(reportError).finally(() => { delete lock.dataset.running; stop(); });
+  };
+}
+
 export function field(label, input, hint) {
   return h('label.field', h('span.field-label', label), input, hint ? h('span.field-hint', hint) : null);
 }

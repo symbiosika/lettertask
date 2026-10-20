@@ -3,7 +3,7 @@
 import { call } from './api.js';
 import { h, esc, load, store } from './util.js';
 import { icon } from './icons.js';
-import { reportError, toast } from './dialogs.js';
+import { reportError, toast, whileWorking } from './dialogs.js';
 import { PRESETS, presetHex, getCategories } from './categories.js';
 import { loadCategories } from './state.js';
 
@@ -103,10 +103,15 @@ export function openTagPicker(anchor, opts) {
       sw.addEventListener('click', () => { color = p.id; pal.querySelectorAll('.pcolor').forEach((x) => x.classList.toggle('on', x === sw)); });
       pal.appendChild(sw);
     }
+    let creatingNow = false;
+    const createBtn = h('button.btn.small.primary', { type: 'button', dataset: { testid: 'tag-create' }, onclick: () => create() }, 'Erstellen & zuweisen');
     const create = async () => {
+      if (creatingNow) return;
       const n = name.value.trim();
       if (!n) { name.focus(); return; }
       if (getCategories(opts.accountId).some((c) => c.displayName.toLowerCase() === n.toLowerCase())) { toast('Eine Kategorie mit diesem Namen existiert bereits.', 'error'); return; }
+      creatingNow = true;
+      const stop = createBtn ? whileWorking(createBtn) : () => {};
       try {
         await call('create_category', { accountId: opts.accountId, displayName: n, color });
         await loadCategories(opts.accountId);
@@ -114,14 +119,14 @@ export function openTagPicker(anchor, opts) {
         await opts.onToggle(n, true);
         countTagUse([n]);
         renderFooter(); renderList();
-      } catch (e) { reportError(e); }
+      } catch (e) { reportError(e); } finally { creatingNow = false; stop(); }
     };
     name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); creating = false; renderFooter(); input.focus(); } });
     footer.append(
       h('div.tagpop-new', name, pal,
         h('div.tagpop-newbtns',
           h('button.btn.small', { type: 'button', onclick: () => { creating = false; renderFooter(); } }, 'Abbrechen'),
-          h('button.btn.small.primary', { type: 'button', dataset: { testid: 'tag-create' }, onclick: create }, 'Erstellen & zuweisen'))),
+          createBtn)),
     );
     setTimeout(() => name.focus(), 0);
   }

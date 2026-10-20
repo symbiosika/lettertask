@@ -2,7 +2,7 @@
 import { call, openWindow } from './api.js';
 import { h, esc, initials, avatarColor, debounce, load, store, EMAIL_RE } from './util.js';
 import { icon } from './icons.js';
-import { modal, confirmDialog, reportError, toast, showMenu } from './dialogs.js';
+import { modal, confirmDialog, reportError, toast, showMenu, busyClick } from './dialogs.js';
 import { state, mailboxes } from './state.js';
 import { isImap, kindLabel } from './accounts.js';
 import { makeSplitter } from './mail.js';
@@ -165,7 +165,7 @@ function renderDetail() {
   const name = c.displayName || c.emails[0] || '(ohne Namen)';
   const acc = state.accounts.find((a) => a.id === c.accountId);
   const role = [c.jobTitle, c.company].filter(Boolean).join(' · ');
-  const btn = (label, ic, fn, opts = {}) => h('button.btn.small' + (opts.primary ? '.primary' : ''), { type: 'button', disabled: !!opts.disabled, dataset: { testid: opts.testid || '' }, html: icon(ic, 15) + ' ' + esc(label), onclick: () => Promise.resolve(fn()).catch(reportError) });
+  const btn = (label, ic, fn, opts = {}) => h('button.btn.small' + (opts.primary ? '.primary' : ''), { type: 'button', disabled: !!opts.disabled, dataset: { testid: opts.testid || '' }, html: icon(ic, 15) + ' ' + esc(label), onclick: busyClick(fn) });
   const section = (title, ic, rows) => (rows.length ? h('div.ct-sec', h('div.ct-sec-title', { html: icon(ic, 15) + `<span>${esc(title)}</span>` }), ...rows) : null);
   const card = h('div.ct-card',
     h('div.ct-hero',

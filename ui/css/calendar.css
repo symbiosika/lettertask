@@ -1,5 +1,5 @@
 /* Calendar module. */
-.calview { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+.calview { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; }
 .cal-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .mc-nav { border: 0; background: transparent; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); color: var(--text-2); padding: 0; }
 .mc-nav:hover { background: var(--hover); color: var(--text); }

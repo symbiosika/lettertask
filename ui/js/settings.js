@@ -2,7 +2,7 @@
 import { call } from './api.js';
 import { h, esc, toLocalIso, load, store } from './util.js';
 import { icon } from './icons.js';
-import { modal, confirmDialog, reportError, toast, field } from './dialogs.js';
+import { modal, confirmDialog, reportError, toast, field, busyClick, loadingPill } from './dialogs.js';
 import { PRESETS, presetHex, textOn, getCategories, setCategories } from './categories.js';
 import { state, loadCategories, loadLanes, lanesOf } from './state.js';
 import { LANE_NAME_RE } from './categories.js';
@@ -279,10 +279,10 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
   };
   const reloadAccounts = async () => { state.accounts = (await call('list_accounts', {}, { silent: true })) || []; };
   const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + ' Konto hinzufügen…' });
-  add.addEventListener('click', async () => {
+  add.addEventListener('click', busyClick(async () => {
     const acc = await addAccountFlow();
     if (acc) { await reloadAccounts(); selected = acc.id; render(); }
-  });
+  }));
   const adv = h('details.welcome-adv.acc-adv',
     h('summary', 'Microsoft-365-Anmeldung (App-Registrierung)'),
     builtin ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
@@ -367,7 +367,7 @@ export async function openCategoryManager(accountId) {
     h('div', { style: { display: 'flex', gap: '10px' } },
       h('div', { style: { flex: '1' } }, listEl),
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-        h('button.btn', { type: 'button', dataset: { testid: 'cat-new' }, onclick: async () => {
+        h('button.btn', { type: 'button', dataset: { testid: 'cat-new' }, onclick: busyClick(async () => {
           try {
             const r = await categoryEditor({ title: 'Neue Kategorie hinzufügen' });
             if (!r) return;
@@ -376,14 +376,14 @@ export async function openCategoryManager(accountId) {
             selected = created && created.id;
             await refresh();
           } catch (e) { reportError(e); }
-        } }, 'Neu…'),
+        }) }, 'Neu…'),
         h('button.btn', { type: 'button', onclick: () => { const c = getCategories(accountId).find((x) => x.id === selected); if (c) editColor(c).catch(reportError); } }, 'Farbe…'),
-        h('button.btn', { type: 'button', onclick: async () => {
+        h('button.btn', { type: 'button', onclick: busyClick(async () => {
           const c = getCategories(accountId).find((x) => x.id === selected);
           if (!c) return;
           if (!(await confirmDialog(`Möchten Sie die Kategorie „${c.displayName}" wirklich löschen? Elemente behalten den Kategorienamen, er wird jedoch ohne Farbe angezeigt.`, { danger: true, ok: 'Ja', cancel: 'Nein' }))) return;
           try { await call('delete_category', { accountId, id: c.id }); selected = null; await refresh(); } catch (e) { reportError(e); }
-        } }, 'Löschen'),
+        }) }, 'Löschen'),
       ),
     ),
   );
@@ -396,7 +396,9 @@ export async function openCategoryManager(accountId) {
 export async function openAutoReply(accountId) {
   accountId = accountId || (state.accounts[0] && state.accounts[0].id);
   if (!accountId) return;
-  const ar = await call('get_auto_reply', { accountId });
+  const stop = loadingPill('Abwesenheitsnotiz wird geladen…');
+  let ar;
+  try { ar = await call('get_auto_reply', { accountId }); } finally { stop(); }
   const mode = h('div',
     h('label.checkrow', h('input', { type: 'radio', name: 'ar', value: 'disabled', checked: ar.status === 'disabled' }), 'Keine automatischen Antworten senden'),
     h('label.checkrow', h('input', { type: 'radio', name: 'ar', value: 'on', checked: ar.status !== 'disabled' }), 'Automatische Antworten senden'),

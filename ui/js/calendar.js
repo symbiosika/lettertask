@@ -5,7 +5,7 @@ import {
   WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName,
 } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog, showMenu } from './dialogs.js';
+import { modal, reportError, toast, confirmDialog, showMenu, busyClick } from './dialogs.js';
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
 import { isImap } from './accounts.js';
@@ -35,7 +35,8 @@ export function initCalendar({ navHost, contentHost, onCounts }) {
   els.nav = navHost;
   els.view = h('div.calview.hidden#calview');
   els.body = h('div.cal-body');
-  els.view.append(els.body);
+  els.loading = h('div.view-loading', { dataset: { testid: 'cal-loading' }, role: 'status' }, h('span.busy.on'), 'Termine werden geladen…');
+  els.view.append(els.body, els.loading);
   contentHost.appendChild(els.view);
   setInterval(() => { if (!els.view.classList.contains('hidden')) paintNowLine(); }, 60000);
 }
@@ -71,6 +72,15 @@ function range() {
 
 export async function refresh() {
   const token = ++cal.loadToken;
+  // Pill over the grid while the events of the shown range load (only if it takes a moment).
+  const slow = setTimeout(() => { if (token === cal.loadToken) els.loading.classList.add('on'); }, 200);
+  try { await loadRange(token); } finally {
+    clearTimeout(slow);
+    if (token === cal.loadToken) els.loading.classList.remove('on');
+  }
+}
+
+async function loadRange(token) {
   if (!cal.calendars.size) await loadCalendars();
   const { start, end } = range();
   const results = await Promise.all(calAccounts().map(async (a) => {
@@ -489,9 +499,9 @@ function showPeek(ev, anchor) {
   const actions = h('div.peek-actions');
   if (!ev.isOrganizer && !ev.isCancelled) {
     actions.append(
-      h('button.btn.small', { html: icon('accept', 12) + ' Annehmen', onclick: () => respond(ev, 'accept') }),
-      h('button.btn.small', { html: icon('tentative', 12) + ' Vorbehalt', onclick: () => respond(ev, 'tentativelyAccept') }),
-      h('button.btn.small', { html: icon('decline', 12) + ' Ablehnen', onclick: () => respond(ev, 'decline') }),
+      h('button.btn.small', { html: icon('accept', 12) + ' Annehmen', onclick: busyClick(() => respond(ev, 'accept'), actions) }),
+      h('button.btn.small', { html: icon('tentative', 12) + ' Vorbehalt', onclick: busyClick(() => respond(ev, 'tentativelyAccept'), actions) }),
+      h('button.btn.small', { html: icon('decline', 12) + ' Ablehnen', onclick: busyClick(() => respond(ev, 'decline'), actions) }),
     );
   }
   actions.append(h('span.spacer'),

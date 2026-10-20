@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { openApp, folder, popupFrom } = require('./helpers');
+const { openApp, folder, popupFrom, select } = require('./helpers');
 
 /** Holds back one backend command until release() is called; counts the calls. */
 async function holdCommand(context, cmd) {
@@ -60,4 +60,30 @@ test('Aktionsbutton zeigt einen Spinner, solange die Aktion läuft', async ({ pa
   expect(hold.calls).toBe(1);
   hold.release();
   await expect(archive).not.toHaveClass(/pending/);
+});
+
+test('Kalender zeigt beim Laden der Termine einen Hinweis', async ({ page, context }) => {
+  await openApp(page);
+  const hold = await holdCommand(context, 'list_events');
+  await page.locator('[data-testid=nav-calendar]').click();
+  await expect(page.locator('[data-testid=cal-loading]')).toBeVisible();
+  hold.release();
+  await expect(page.locator('[data-testid=cal-loading]')).toBeHidden();
+  await expect(page.locator('.timegrid .ev').first()).toBeVisible();
+});
+
+test('Besprechungsanfrage: Antwort lässt sich nicht doppelt senden', async ({ page, context }) => {
+  await openApp(page);
+  await select(page, 'Einladung: Präsentation Angebot Northwind');
+  const bar = page.locator('#readpane .infobar.meeting');
+  await expect(bar).toBeVisible();
+  const hold = await holdCommand(context, 'respond_event');
+  const accept = bar.locator('.btn', { hasText: 'Annehmen' });
+  await accept.click();
+  await expect(accept).toHaveClass(/pending/);
+  await accept.click();
+  await bar.locator('.btn', { hasText: 'Ablehnen' }).click();
+  expect(hold.calls).toBe(1);
+  hold.release();
+  await expect(accept).not.toHaveClass(/pending/);
 });

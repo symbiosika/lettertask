@@ -3,7 +3,7 @@
 import { call, params, closeWindow, isTauri } from './api.js';
 import { h, $ } from './util.js';
 import { icon } from './icons.js';
-import { reportError, toast, confirmDialog } from './dialogs.js';
+import { reportError, toast, confirmDialog, setPending } from './dialogs.js';
 import { createEditor } from './editor.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById } from './state.js';
 import { duePicker } from './due.js';
@@ -54,6 +54,7 @@ async function create() {
   if (d.error) { toast(d.error, 'error'); return; }
   st.busy = true;
   createBtn.disabled = true;
+  setPending(createBtn, true);
   try {
     await call('create_task', { mailboxId: st.mailboxId, subject: text, bodyHtml: editor.getHtml(), due: d.date ? d.date.toISOString() : null, recurrence: repeat.value || null });
     broadcast({ type: 'task-created', subject: text, due: d.date ? due.label() : null });
@@ -62,6 +63,7 @@ async function create() {
   } finally {
     st.busy = false;
     createBtn.disabled = false;
+    setPending(createBtn, false);
   }
 }
 
