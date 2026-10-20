@@ -140,7 +140,7 @@ impl Service {
         OAuthConfig {
             authority: self.opts.authority.clone(),
             tenant: if c.tenant.trim().is_empty() {
-                "organizations".into()
+                builtin_tenant().to_string()
             } else {
                 c.tenant.trim().to_string()
             },
