@@ -26,6 +26,8 @@ const TABS = [
   ['snooze', 'Wiedervorlage', 'snooze'],
   ['kanban', 'Kanban', 'kanban'],
   ['accounts', 'Konten', 'user'],
+  ['m365', 'Microsoft 365', 'building'],
+  ['google', 'Google', 'google'],
 ];
 const TAB_ALIASES = { compose: 'signatures', account: 'accounts' };
 
@@ -183,12 +185,12 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const lanes = state.accounts.length ? lanesPanel(accountId) : null;
   const kbPane = select([['bottom', 'Unten (unter dem Board)'], ['right', 'Rechts']], c.kanbanReadingPane || 'bottom');
   kbPane.name = 'kanbanReadingPane';
-  const accounts = accountsPanel({ clientId, tenant, googleId, googleSecret, builtin: !!c.builtinClientId, builtinGoogle: !!c.builtinGoogleClient, demo: !!c.demo, initialAccountId: accountId });
+  const accounts = accountsPanel({ initialAccountId: accountId });
 
   const panels = {
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
-      field('Automatisch synchronisieren alle', h('span.inline', interval, h('span.dim', 'Sekunden'))),
+      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden'))),
       h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null),
     reading: h('div.set-panel',
@@ -212,6 +214,23 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       lanes ? lanes.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.'),
       field('Lesebereich im Kanban', kbPane)),
     accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),
+    m365: h('div.set-panel',
+      h('h3', 'Microsoft 365'),
+      h('p.note', c.builtinClientId
+        ? 'Diese Version enthält bereits eine App-Registrierung für die Anmeldung bei Microsoft 365. Eigene Werte sind nur für Sonderfälle nötig, etwa wenn Ihre Organisation eine eigene App-Registrierung vorschreibt.'
+        : 'Für die Anmeldung bei Microsoft 365 wird eine App-Registrierung (Client-ID) benötigt.'),
+      c.demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
+      field('Anwendungs-ID (Client-ID)', clientId),
+      field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'),
+      h('p.note', 'Änderungen gelten für neue Anmeldungen. Bereits angemeldete Konten bleiben angemeldet.')),
+    google: h('div.set-panel', { dataset: { testid: 'google-panel' } },
+      h('h3', 'Google'),
+      c.builtinGoogleClient
+        ? h('p.note', 'Diese Version enthält bereits einen Google-OAuth-Client für „Mit Google anmelden“. Eigene Werte sind nur für Sonderfälle nötig.')
+        : h('div', h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp()),
+      field('Client-ID', googleId),
+      field('Clientschlüssel', googleSecret, 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'),
+      h('p.note', 'Änderungen gelten für neue Anmeldungen. Bereits angemeldete Konten melden Sie unter Konten mit „Erneut mit Google anmelden“ neu an.')),
   };
   const nav = h('div.set-nav', { role: 'tablist' });
   const content = h('div.set-content');
@@ -228,7 +247,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   show(panels[initialTab] ? initialTab : 'general');
 
   const res = await modal({
-    title: 'Einstellungen', body: h('div.settings', nav, content), width: 760, className: 'settings-modal',
+    title: 'Einstellungen', body: h('div.settings', nav, content), width: 880, className: 'settings-modal',
     buttons: [{ label: 'Speichern', value: 'ok', primary: true, id: 'settings-ok' }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: async () => {
       const iv = parseInt(interval.value, 10);
@@ -255,7 +274,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
 }
 
 // ---------------------------------------------------------------- accounts tab
-function accountsPanel({ clientId, tenant, googleId, googleSecret, builtin, builtinGoogle, demo, initialAccountId }) {
+function accountsPanel({ initialAccountId }) {
   let selected = initialAccountId || (state.accounts[0] && state.accounts[0].id);
   const listEl = h('div.acc-list', { role: 'listbox', dataset: { testid: 'acc-list' } });
   const detailHost = h('div.acc-detail-host');
@@ -302,19 +321,13 @@ function accountsPanel({ clientId, tenant, googleId, googleSecret, builtin, buil
     const acc = await addAccountFlow();
     if (acc) { await reloadAccounts(); selected = acc.id; render(); }
   }));
-  const adv = h('details.welcome-adv.acc-adv',
-    h('summary', 'Microsoft-365-Anmeldung (App-Registrierung)'),
-    builtin ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
-    demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
-    field('Anwendungs-ID (Client-ID)', clientId),
-    field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'));
-  const googleAdv = h('details.welcome-adv.acc-adv', { dataset: { testid: 'google-adv' } },
-    h('summary', 'Google-Anmeldung (OAuth-Client)'),
-    builtinGoogle ? h('p.note', 'Diese Version enthält bereits einen Google-OAuth-Client. Eigene Werte sind nur für Sonderfälle nötig.') : googleClientHelp(),
-    field('Client-ID', googleId),
-    field('Clientschlüssel', googleSecret, 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'));
   render();
-  return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add, state.accounts.length > 1 ? h('p.note.acc-hint', 'Reihenfolge und Kontobild werden sofort übernommen.') : null), detailHost), adv, googleAdv) };
+  // List on top, details below in the full width (side by side was too narrow
+  // for the server settings).
+  return { el: h('div.acc-panel',
+    h('div.acc-side', listEl,
+      h('div.acc-side-foot', add, state.accounts.length > 1 ? h('span.note.acc-hint', 'Reihenfolge und Kontobild werden sofort übernommen.') : null)),
+    detailHost) };
 }
 
 async function removeAccount(acc) {

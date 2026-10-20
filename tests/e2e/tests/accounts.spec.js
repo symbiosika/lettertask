@@ -71,12 +71,11 @@ test('Konto hinzufügen: Google fragt nach dem OAuth-Client, Gmail-Adresse im IM
   await expect(page.locator('.modal-overlay')).toHaveCount(0);
 });
 
-test('Einstellungen › Konten: Google-OAuth-Client speichern', async ({ page }) => {
+test('Einstellungen › Google: OAuth-Client speichern', async ({ page }) => {
   await openApp(page);
   await page.locator('[data-testid=app-menu]').click();
   await page.locator('[data-testid=menu-settings]').click();
-  await page.locator('[data-testid=settings-tab-accounts]').click();
-  await page.locator('[data-testid=google-adv] summary').click();
+  await page.locator('[data-testid=settings-tab-google]').click();
   await page.locator('input[name=googleClientId]').fill('123-e2e.apps.googleusercontent.com');
   await page.locator('input[name=googleClientSecret]').fill('e2e-secret');
   await page.locator('#settings-ok').click();
@@ -86,8 +85,7 @@ test('Einstellungen › Konten: Google-OAuth-Client speichern', async ({ page })
   // reset for the other tests
   await page.locator('[data-testid=app-menu]').click();
   await page.locator('[data-testid=menu-settings]').click();
-  await page.locator('[data-testid=settings-tab-accounts]').click();
-  await page.locator('[data-testid=google-adv] summary').click();
+  await page.locator('[data-testid=settings-tab-google]').click();
   await page.locator('input[name=googleClientId]').fill('');
   await page.locator('input[name=googleClientSecret]').fill('');
   await page.locator('#settings-ok').click();

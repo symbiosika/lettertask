@@ -408,8 +408,22 @@ textarea.input { height: auto; min-height: 70px; resize: vertical; padding: 8px 
 .field-hint { grid-column: 2; color: var(--text-dim); font-size: 11.5px; margin-top: -6px; }
 .lbl { display: block; margin-bottom: 6px; color: var(--text-2); }
 .checkrow { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
-.checkrow input { accent-color: var(--accent); width: 15px; height: 15px; }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
+/* Own checkbox: the native one draws its check mark off-centre in WebKitGTK. */
+input[type=checkbox]:not(.cal-check) {
+  appearance: none; -webkit-appearance: none; flex: none; margin: 0; width: 16px; height: 16px;
+  border: 1.5px solid var(--border-strong); border-radius: 4px; background: var(--bg);
+  display: inline-grid; place-content: center; cursor: pointer; vertical-align: middle;
+}
+input[type=checkbox]:not(.cal-check)::before {
+  content: ''; width: 9px; height: 5px; border: 2px solid #fff; border-top: 0; border-right: 0;
+  transform: translateY(-1px) rotate(-45deg); opacity: 0;
+}
+input[type=checkbox]:not(.cal-check):checked { background: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:not(.cal-check):checked::before { opacity: 1; }
+input[type=checkbox]:not(.cal-check):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=checkbox]:not(.cal-check):disabled { opacity: .5; cursor: default; }
+input[type=radio] { margin: 0; flex: none; width: 15px; height: 15px; }
 fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px 12px; margin: 10px 0; }
 legend { color: var(--text-2); padding: 0 6px; font-weight: 600; }
 .inline { display: inline-flex; align-items: center; gap: 8px; }
@@ -557,8 +571,6 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .srv-head .ico { color: var(--accent); }
 .srv-grid { display: grid; grid-template-columns: 92px 1fr; gap: 8px 10px; align-items: center; }
 .srv-grid .input { width: 100%; min-width: 0; }
-.srv-hostrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.srv-hostrow select.input { flex: 1; min-width: 0; }
 .srv-port { width: 74px !important; flex: none; }
 .srv-warn { display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; color: #8a5a00; font-size: 11.5px; line-height: 1.35; }
 .test-panel { display: flex; align-items: flex-start; gap: 12px; padding-top: 2px; }
@@ -571,9 +583,11 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .inline-busy { position: static; visibility: visible; display: inline-block; width: 14px; height: 14px; }
 
 /* settings: accounts tab */
-.acc-cols { display: flex; gap: 14px; min-height: 300px; }
-.acc-side { flex: none; width: 210px; display: flex; flex-direction: column; gap: 8px; }
-.acc-list { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; flex: 1; overflow: auto; }
+.acc-panel { display: flex; flex-direction: column; gap: 16px; }
+.acc-side { display: flex; flex-direction: column; gap: 8px; }
+.acc-side-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.acc-hint { margin: 0; }
+.acc-list { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; max-height: 190px; overflow: auto; }
 .acc-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: var(--radius-sm); cursor: pointer; }
 .acc-item:hover { background: var(--hover); }
 .acc-item.selected { background: var(--sel); }
@@ -582,17 +596,15 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .acc-e { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-none { padding: 10px; }
 .acc-detail-host { flex: 1; min-width: 0; }
-.acc-detail { display: flex; flex-direction: column; gap: 12px; }
+.acc-detail { display: flex; flex-direction: column; gap: 14px; border-top: 1px solid var(--border); padding-top: 16px; }
 .acc-head { display: flex; align-items: center; gap: 14px; }
 .acc-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .acc-avatar-edit { display: flex; gap: 6px; margin-top: 6px; }
 .acc-order { display: flex; flex-direction: column; margin-left: 2px; }
 .acc-order .icon-btn.sm { width: 20px; height: 16px; }
 .acc-name { font-weight: 600; font-size: 14px; }
-.acc-detail .srv-pair { grid-template-columns: 1fr; }
-.acc-actions { display: flex; align-items: center; gap: 8px; }
-.acc-adv { margin-top: 14px; }
-.acc-adv .field { grid-template-columns: 170px 1fr; }
+.acc-detail .wiz-grid { max-width: 520px; }
+.acc-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* settings: signatures */
 .sig-panel { display: flex; flex-direction: column; gap: 12px; }

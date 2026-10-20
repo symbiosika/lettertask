@@ -111,7 +111,7 @@ function renderForm() {
   bccRow = row('Bcc', bcc);
   ccRow.classList.add('hidden'); bccRow.classList.add('hidden');
   remind = reminderRow();
-  form.append(toRow, ccRow, bccRow, remind.el, row('Betreff', subject));
+  form.append(toRow, ccRow, bccRow, row('Betreff', subject), remind.el);
 
   attList = $('#atts');
 

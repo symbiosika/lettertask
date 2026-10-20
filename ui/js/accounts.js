@@ -53,7 +53,8 @@ export function serverEditor(kind, initial = {}) {
     h('div.srv-head', { html: icon(kind === 'imap' ? 'inbox' : 'send', 16) + `<span>${kind === 'imap' ? 'Posteingang (IMAP)' : 'Postausgang (SMTP)'}</span>` }),
     h('div.srv-grid',
       h('label.srv-l', 'Server'), host,
-      h('label.srv-l', 'Sicherheit'), h('div.srv-hostrow', sec, h('span.dim', 'Port'), port),
+      h('label.srv-l', 'Sicherheit'), sec,
+      h('label.srv-l', 'Port'), port,
       h('label.srv-l', 'Benutzername'), user),
     warn);
   return {
