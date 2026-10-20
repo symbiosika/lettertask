@@ -35,30 +35,48 @@ impl Service {
     // ---- folders ----
 
     pub(crate) async fn sync_folders(&self, mailbox_id: &str) -> Result<Vec<Folder>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_sync_folders(mailbox_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
-        let root_id = c
-            .get(&format!("{prefix}/mailFolders/msgfolderroot?$select=id"))
-            .await
-            .ok()
-            .and_then(|v| v["id"].as_str().map(str::to_string));
-
-        // Resolve well-known folder ids (some may not exist, e.g. archive).
-        let wk: Vec<(String, String)> = stream::iter(WELL_KNOWN.iter().map(|n| n.to_string()).collect::<Vec<_>>())
-            .map(|name: String| {
-                let c = c.clone();
-                let prefix = prefix.clone();
-                async move {
-                    c.get(&format!("{prefix}/mailFolders/{name}?$select=id"))
-                        .await
-                        .ok()
-                        .and_then(|v| v["id"].as_str().map(|id| (id.to_string(), name)))
-                }
-            })
-            .buffer_unordered(PARALLEL)
-            .filter_map(|x| async move { x })
-            .collect()
-            .await;
+        let known: Vec<(String, String)> = self
+            .store
+            .list_folders(mailbox_id)?
+            .into_iter()
+            .filter_map(|f| f.well_known.map(|w| (f.id, w)))
+            .collect();
+        let root_key = format!("rootfolder|{mailbox_id}");
+        let cached_root = self.store.kv_get(&root_key)?;
+        let (root_id, wk) = if known.iter().any(|(_, w)| w == "inbox") && cached_root.is_some() {
+            (cached_root, known)
+        } else {
+            let root_id = c
+                .get(&format!("{prefix}/mailFolders/msgfolderroot?$select=id"))
+                .await
+                .ok()
+                .and_then(|v| v["id"].as_str().map(str::to_string));
+            if let Some(r) = &root_id {
+                self.store.kv_set(&root_key, r)?;
+            }
+            // Resolve well-known folder ids (some may not exist, e.g. archive).
+            let wk: Vec<(String, String)> = stream::iter(WELL_KNOWN.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .map(|name: String| {
+                    let c = c.clone();
+                    let prefix = prefix.clone();
+                    async move {
+                        c.get(&format!("{prefix}/mailFolders/{name}?$select=id"))
+                            .await
+                            .ok()
+                            .and_then(|v| v["id"].as_str().map(|id| (id.to_string(), name)))
+                    }
+                })
+                .buffer_unordered(PARALLEL)
+                .filter_map(|x| async move { x })
+                .collect()
+                .await;
+            (root_id, wk)
+        };
 
         // Breadth-first over the folder hierarchy.
         let mut out = Vec::new();
@@ -81,7 +99,10 @@ impl Service {
                     .iter()
                     .find(|(wid, _)| *wid == id)
                     .map(|(_, n)| n.to_string());
-                let f = convert::folder(&v, mailbox_id, root_id.as_deref(), well_known);
+                let mut f = convert::folder(&v, mailbox_id, root_id.as_deref(), well_known);
+                if f.well_known.is_none() && self.is_snooze_folder(mailbox_id, &f)? {
+                    f.well_known = Some("snoozed".into());
+                }
                 if f.child_folder_count > 0 {
                     queue.push(format!(
                         "{prefix}/mailFolders/{}/childFolders?$top=250",
@@ -96,6 +117,9 @@ impl Service {
     }
 
     pub(crate) async fn create_folder(&self, mailbox_id: &str, parent_id: Option<&str>, name: &str) -> Result<Folder> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_create_folder(mailbox_id, parent_id, name).await;
+        }
         let name = name.trim();
         if name.is_empty() {
             return Err(Error::invalid("Ordnername darf nicht leer sein."));
@@ -120,6 +144,9 @@ impl Service {
     }
 
     pub(crate) async fn rename_folder(&self, mailbox_id: &str, folder_id: &str, name: &str) -> Result<Folder> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_rename_folder(mailbox_id, folder_id, name).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let name = name.trim();
         if name.is_empty() {
@@ -141,6 +168,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_folder(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_delete_folder(mailbox_id, folder_id).await;
+        }
         if let Some(f) = self.store.get_folder(mailbox_id, folder_id)? {
             if f.well_known.is_some() {
                 return Err(Error::invalid("Standardordner können nicht gelöscht werden."));
@@ -157,6 +187,9 @@ impl Service {
     }
 
     pub(crate) async fn mark_folder_read(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_mark_folder_read(mailbox_id, folder_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let unread = c
             .get_all(
@@ -190,6 +223,9 @@ impl Service {
     }
 
     pub(crate) async fn empty_folder(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_empty_folder(mailbox_id, folder_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let all = c
             .get_all(
@@ -251,6 +287,9 @@ impl Service {
 
     /// Delta sync of one folder. `quiet` suppresses new-mail notifications.
     pub(crate) async fn sync_folder(&self, mailbox_id: &str, folder_id: &str, quiet: bool) -> Result<SyncResult> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_sync_folder(mailbox_id, folder_id, quiet).await;
+        }
         let lock = self.folder_lock(mailbox_id, folder_id);
         let _g = lock.lock().await;
         let (mb, c) = self.mailbox(mailbox_id)?;
@@ -263,7 +302,12 @@ impl Service {
             }
             other => other?,
         };
-        let (result, new_unread) = res;
+        let (result, mut new_unread) = res;
+        if !initial && !new_unread.is_empty() && self.is_inbox(mailbox_id, folder_id) {
+            // Rule chain runs before the new mails are announced to the UI.
+            let moved = self.apply_inbox_rules(mailbox_id, &new_unread).await;
+            new_unread.retain(|m| !moved.contains(&m.id));
+        }
         if initial {
             // Fill up folders whose recent window is sparse (e.g. Archive).
             let page = self.store.list_messages(&ListQuery {
@@ -306,6 +350,16 @@ impl Service {
             self.host.notify(&title, &first.subject);
         }
         Ok(result)
+    }
+
+    pub(crate) fn is_inbox(&self, mailbox_id: &str, folder_id: &str) -> bool {
+        self.store
+            .get_folder(mailbox_id, folder_id)
+            .ok()
+            .flatten()
+            .and_then(|f| f.well_known)
+            .as_deref()
+            == Some("inbox")
     }
 
     async fn run_delta(
@@ -403,6 +457,9 @@ impl Service {
     }
 
     pub(crate) async fn load_older(&self, mailbox_id: &str, folder_id: &str) -> Result<i64> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_load_older(mailbox_id, folder_id).await;
+        }
         let lock = self.folder_lock(mailbox_id, folder_id);
         let _g = lock.lock().await;
         let (mb, c) = self.mailbox(mailbox_id)?;
@@ -444,7 +501,12 @@ impl Service {
         mailbox_id: &str,
         text: &str,
         folder_id: Option<&str>,
+        field: &str,
+        has_attachments: bool,
     ) -> Result<Vec<MessageSummary>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_search(mailbox_id, text, folder_id, field, has_attachments).await;
+        }
         let text = text.trim();
         if text.is_empty() {
             return Ok(vec![]);
@@ -454,8 +516,7 @@ impl Service {
             Some(f) => format!("{}/mailFolders/{}/messages", mb.graph_prefix(), seg(f)),
             None => format!("{}/messages", mb.graph_prefix()),
         };
-        // KQL phrase: quotes inside the term are not allowed.
-        let term = format!("\"{}\"", text.replace('"', " "));
+        let term = format!("\"{}\"", kql(text, field, has_attachments));
         let path = format!("{base}?$search={}&$select={}&$top=100", enc(&term), MESSAGE_SUMMARY_SELECT);
         let page = c.get(&path).await?;
         let mut out: Vec<MessageSummary> = page["value"]
@@ -473,6 +534,9 @@ impl Service {
     // ---- single message ----
 
     pub(crate) async fn get_message(&self, mailbox_id: &str, message_id: &str) -> Result<MessageDetail> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_get_message(mailbox_id, message_id).await;
+        }
         let (mb, c) = match self.mailbox(mailbox_id) {
             Ok(x) => x,
             Err(e) => {
@@ -589,6 +653,9 @@ impl Service {
     }
 
     pub(crate) async fn get_message_source(&self, mailbox_id: &str, message_id: &str) -> Result<String> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_message_source(mailbox_id, message_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let bytes = c
             .get_bytes(&format!("{}/messages/{}/$value", mb.graph_prefix(), seg(message_id)))
@@ -598,7 +665,7 @@ impl Service {
 
     // ---- bulk updates ----
 
-    async fn patch_many(&self, mb: &Mailbox, c: &Arc<GraphClient>, ids: &[String], body: Value) -> Result<()> {
+    pub(crate) async fn patch_many(&self, mb: &Mailbox, c: &Arc<GraphClient>, ids: &[String], body: Value) -> Result<()> {
         let prefix = mb.graph_prefix();
         stream::iter(ids.to_vec())
             .map(|id| {
@@ -613,7 +680,7 @@ impl Service {
         Ok(())
     }
 
-    fn update_cached(&self, mailbox_id: &str, ids: &[String], f: impl Fn(&mut MessageSummary)) -> Result<HashSet<String>> {
+    pub(crate) fn update_cached(&self, mailbox_id: &str, ids: &[String], f: impl Fn(&mut MessageSummary)) -> Result<HashSet<String>> {
         let mut folders = HashSet::new();
         for id in ids {
             if let Some(mut m) = self.store.get_summary(mailbox_id, id)? {
@@ -646,6 +713,9 @@ impl Service {
     }
 
     pub(crate) async fn set_read(&self, mailbox_id: &str, ids: &[String], is_read: bool) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_set_read(mailbox_id, ids, is_read).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         self.patch_many(&mb, &c, ids, json!({"isRead": is_read})).await?;
         let folders = self.update_cached(mailbox_id, ids, |m| m.is_read = is_read)?;
@@ -654,6 +724,9 @@ impl Service {
     }
 
     pub(crate) async fn set_flag(&self, mailbox_id: &str, ids: &[String], flag: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_set_flag(mailbox_id, ids, flag).await;
+        }
         if !matches!(flag, "notFlagged" | "flagged" | "complete") {
             return Err(Error::invalid("Ungültige Kennzeichnung"));
         }
@@ -666,6 +739,9 @@ impl Service {
     }
 
     pub(crate) async fn set_categories(&self, mailbox_id: &str, ids: &[String], categories: &[String]) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_set_categories(mailbox_id, ids, categories).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         self.patch_many(&mb, &c, ids, json!({"categories": categories}))
             .await?;
@@ -674,7 +750,17 @@ impl Service {
         Ok(())
     }
 
-    pub(crate) async fn move_messages(&self, mailbox_id: &str, ids: &[String], dest: &str, copy: bool) -> Result<()> {
+    /// Moves/copies messages; returns `(old id, new id)` pairs (Graph assigns new ids).
+    pub(crate) async fn move_messages(
+        &self,
+        mailbox_id: &str,
+        ids: &[String],
+        dest: &str,
+        copy: bool,
+    ) -> Result<Vec<(String, String)>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_move(mailbox_id, ids, dest, copy).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let action = if copy { "copy" } else { "move" };
@@ -689,7 +775,11 @@ impl Service {
             .try_collect()
             .await?;
         let mut folders = HashSet::from([dest.to_string()]);
+        let mut mapping = Vec::new();
         for (old_id, v) in results {
+            if let Some(new_id) = v["id"].as_str() {
+                mapping.push((old_id.clone(), new_id.to_string()));
+            }
             if !copy {
                 if let Some(old) = self.store.get_summary(mailbox_id, &old_id)? {
                     self.store.adjust_folder_counts(
@@ -711,10 +801,13 @@ impl Service {
             }
         }
         self.emit_folders(mailbox_id, folders);
-        Ok(())
+        Ok(mapping)
     }
 
     pub(crate) async fn delete_messages(&self, mailbox_id: &str, ids: &[String], permanent: bool) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_delete(mailbox_id, ids, permanent).await;
+        }
         let deleted = self.store.folder_by_well_known(mailbox_id, "deleteditems")?;
         let (mut to_move, mut to_delete) = (Vec::new(), Vec::new());
         for id in ids {
@@ -773,6 +866,9 @@ impl Service {
         attachment_id: &str,
         action: &str,
     ) -> Result<Option<String>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_download_attachment(mailbox_id, message_id, attachment_id, action).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let meta = c
@@ -826,6 +922,31 @@ impl Service {
     }
 }
 
+/// Builds the KQL expression for `$search` (without the surrounding quotes,
+/// which Graph requires around the whole value).
+pub(crate) fn kql(text: &str, field: &str, has_attachments: bool) -> String {
+    let clean: String = text
+        .chars()
+        .map(|c| if matches!(c, '"' | '\\' | '(' | ')') { ' ' } else { c })
+        .collect();
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    let prop = match field {
+        "from" => Some("from"),
+        "to" => Some("to"),
+        "subject" => Some("subject"),
+        "body" => Some("body"),
+        _ => None,
+    };
+    let mut q = match prop {
+        Some(p) => words.iter().map(|w| format!("{p}:{w}")).collect::<Vec<_>>().join(" "),
+        None => words.join(" "),
+    };
+    if has_attachments {
+        q.push_str(" hasAttachments:true");
+    }
+    q.trim().to_string()
+}
+
 pub(crate) fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -845,7 +966,14 @@ pub(crate) fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_filename;
+    use super::{kql, sanitize_filename};
+
+    #[test]
+    fn builds_kql() {
+        assert_eq!(kql("Rechnung März", "all", false), "Rechnung März");
+        assert_eq!(kql("anna \"x\"", "from", false), "from:anna from:x");
+        assert_eq!(kql("Angebot", "subject", true), "subject:Angebot hasAttachments:true");
+    }
 
     #[test]
     fn filenames_are_safe() {

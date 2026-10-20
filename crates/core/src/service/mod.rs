@@ -3,7 +3,15 @@
 mod calendar;
 mod categories;
 mod compose;
+mod contacts;
+mod imap_account;
+mod imap_compose;
+mod imap_mail;
+mod lanes;
 mod mail;
+mod signatures;
+mod snooze;
+mod tasks;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -42,6 +50,8 @@ pub struct Service {
     folder_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     sync_all_lock: tokio::sync::Mutex<()>,
     last_sync: RwLock<Option<String>>,
+    /// Cached IMAP sessions of IMAP accounts.
+    pub(crate) imap: crate::imap::conn::Pool,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -62,9 +72,7 @@ impl Service {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         config.demo = opts.demo;
-        if opts.demo && config.client_id.is_empty() {
-            config.client_id = "demo-client".into();
-        }
+        Self::apply_defaults(&mut config, opts.demo);
         let http = reqwest::Client::builder()
             .user_agent(concat!("OutlookClone/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(120))
@@ -81,6 +89,7 @@ impl Service {
             folder_locks: Default::default(),
             sync_all_lock: tokio::sync::Mutex::new(()),
             last_sync: RwLock::new(None),
+            imap: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -180,21 +189,15 @@ impl Service {
             "save_config" => ok(self.save_config(arg(a, "config")?)?),
             "list_accounts" => ok(self.store.list_accounts()?),
             "add_account" => ok(self.add_account().await?),
+            "discover_imap" => ok(self.discover_imap(&arg::<String>(a, "email")?).await),
+            "test_imap_account" => ok(self.test_imap_account(&arg(a, "input")?).await),
+            "add_imap_account" => ok(self.add_imap_account(arg(a, "input")?).await?),
+            "update_imap_account" => ok(self
+                .update_imap_account(&arg::<String>(a, "accountId")?, arg(a, "input")?)
+                .await?),
+            "get_imap_account" => ok(self.get_imap_account(&arg::<String>(a, "accountId")?)?),
             "remove_account" => {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
-                ok(Value::Null)
-            }
-            "add_shared_mailbox" => ok(self
-                .add_shared_mailbox(&arg::<String>(a, "accountId")?, &arg::<String>(a, "address")?)
-                .await?),
-            "remove_mailbox" => {
-                let id: String = arg(a, "mailboxId")?;
-                let mb = self.store.get_mailbox(&id)?;
-                if mb.is_primary() {
-                    return Err(Error::invalid("Das Hauptpostfach kann nur mit dem Konto entfernt werden."));
-                }
-                self.store.delete_mailbox(&id)?;
-                self.emit("accounts-changed", json!({}));
                 ok(Value::Null)
             }
             "set_active_folder" => {
@@ -258,6 +261,8 @@ impl Service {
                     &arg::<String>(a, "mailboxId")?,
                     &arg::<String>(a, "text")?,
                     arg::<Option<String>>(a, "folderId")?.as_deref(),
+                    &arg::<Option<String>>(a, "field")?.unwrap_or_else(|| "all".into()),
+                    arg::<Option<bool>>(a, "hasAttachments")?.unwrap_or(false),
                 )
                 .await?),
             "get_message" => ok(self
@@ -300,6 +305,25 @@ impl Service {
                     true,
                 )
                 .await?;
+                ok(Value::Null)
+            }
+            "archive_messages" => {
+                self.archive_messages(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "snooze_messages" => {
+                self.snooze_messages(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    &arg::<String>(a, "until")?,
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "unsnooze_messages" => {
+                self.unsnooze_messages(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?)
+                    .await?;
                 ok(Value::Null)
             }
             "delete_messages" => {
@@ -349,6 +373,65 @@ impl Service {
                 .await?),
 
             // ---- categories ----
+            // ---- inbox zero ----
+            "create_task" => ok(self
+                .create_task(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "subject")?,
+                    &arg::<Option<String>>(a, "bodyHtml")?.unwrap_or_default(),
+                    arg::<Option<String>>(a, "due")?.as_deref(),
+                    arg::<Option<String>>(a, "recurrence")?.as_deref(),
+                )
+                .await?),
+            "set_recurrence" => {
+                self.set_recurrence(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    arg::<Option<String>>(a, "recurrence")?.as_deref(),
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "list_today" => ok(self.list_today()?),
+            "get_focus" => ok(json!({"until": self.focus_until().map(|u| u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))})),
+            "set_focus" => ok(self.set_focus(arg::<Option<i64>>(a, "minutes")?.unwrap_or(0))?),
+            "get_lanes" => ok(self.get_lanes(&arg::<String>(a, "accountId")?)?),
+            "save_lanes" => ok(self
+                .save_lanes(&arg::<String>(a, "accountId")?, &arg::<Vec<String>>(a, "lanes")?)
+                .await?),
+            "set_lane" => {
+                self.set_lane(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    arg::<Option<String>>(a, "lane")?.as_deref(),
+                )
+                .await?;
+                ok(Value::Null)
+            }
+
+            // ---- signatures ----
+            "get_signatures" => ok(self.get_signatures(&arg::<String>(a, "accountId")?)?),
+            "save_signatures" => ok(self.save_signatures(&arg::<String>(a, "accountId")?, arg(a, "settings")?)?),
+
+            // ---- contacts ----
+            "list_contacts" => ok(self.list_contacts(
+                arg::<Option<String>>(a, "query")?.as_deref(),
+                arg::<Option<String>>(a, "accountId")?.as_deref(),
+                arg::<Option<String>>(a, "source")?.as_deref(),
+                arg::<Option<i64>>(a, "offset")?.unwrap_or(0),
+                arg::<Option<i64>>(a, "limit")?.unwrap_or(500),
+            )?),
+            "get_contact" => ok(self.get_contact(&arg::<String>(a, "id")?)?),
+            "sync_contacts" => ok(self.sync_contacts(&arg::<String>(a, "accountId")?).await?),
+            "create_contact" => ok(self
+                .create_contact(&arg::<String>(a, "accountId")?, arg(a, "input")?)
+                .await?),
+            "update_contact" => ok(self.update_contact(&arg::<String>(a, "id")?, arg(a, "input")?).await?),
+            "delete_contact" => {
+                self.delete_contact(&arg::<String>(a, "id")?).await?;
+                ok(Value::Null)
+            }
+
             "list_categories" => ok(self.list_categories(&arg::<String>(a, "accountId")?).await?),
             "create_category" => ok(self
                 .create_category(
@@ -411,7 +494,7 @@ impl Service {
             // ---- host ----
             "open_window" => {
                 let kind: String = arg(a, "kind")?;
-                if !matches!(kind.as_str(), "compose" | "message" | "event") {
+                if !matches!(kind.as_str(), "compose" | "message" | "event" | "task") {
                     return Err(Error::invalid("Unbekannter Fenstertyp"));
                 }
                 let params: HashMap<String, Value> = arg::<Option<_>>(a, "params")?.unwrap_or_default();
@@ -463,11 +546,36 @@ impl Service {
 
     // ---- config & accounts ----
 
+    /// Fills values the user left empty: built-in client ID, snooze options.
+    fn apply_defaults(c: &mut Config, demo: bool) {
+        let builtin = builtin_client_id();
+        c.builtin_client_id = !demo && !builtin.is_empty();
+        if demo && c.client_id.is_empty() {
+            c.client_id = "demo-client".into();
+        }
+        if c.client_id.trim().is_empty() && !builtin.is_empty() {
+            c.client_id = builtin.to_string();
+        }
+        if c.tenant.trim().is_empty() {
+            c.tenant = builtin_tenant().to_string();
+        }
+        if c.snooze_options.is_empty() {
+            c.snooze_options = default_snooze_options();
+        }
+        if !matches!(c.kanban_reading_pane.as_str(), "bottom" | "right") {
+            c.kanban_reading_pane = "bottom".into();
+        }
+        if !matches!(c.list_mode.as_str(), "comfortable" | "compact") {
+            c.list_mode = "comfortable".into();
+        }
+    }
+
     fn save_config(&self, mut c: Config) -> Result<Config> {
         c.demo = self.opts.demo;
         if self.opts.demo {
             c.client_id = "demo-client".into();
         }
+        Self::apply_defaults(&mut c, self.opts.demo);
         c.sync_interval_secs = c.sync_interval_secs.clamp(15, 3600);
         let changed_auth = {
             let cur = self.config.read().unwrap();
@@ -506,6 +614,21 @@ impl Service {
             auth::interactive_login(&self.http, &oauth, move |url| host.open_url(&url), Duration::from_secs(300))
                 .await?
         };
+        self.finish_login(tokens).await
+    }
+
+    /// OAuth config as currently configured (client ID, tenant, authority).
+    pub fn oauth_config(&self) -> OAuthConfig {
+        self.oauth()
+    }
+
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.http
+    }
+
+    /// Registers the signed-in user as account (or refreshes its token) and
+    /// performs the initial folder/inbox sync.
+    pub async fn finish_login(self: &Arc<Self>, tokens: TokenSet) -> Result<Account> {
         // Use a temporary client to learn who signed in.
         let tmp = self.make_client("pending", tokens.clone());
         let me = tmp.get("/me?$select=id,displayName,mail,userPrincipalName").await?;
@@ -553,42 +676,12 @@ impl Service {
 
     fn remove_account(&self, account_id: &str) -> Result<()> {
         self.store.delete_account(account_id)?;
+        self.store.delete_account_contacts(account_id)?;
         self.opts.token_store.delete(account_id);
+        self.forget_imap_account(account_id);
         self.clients.write().unwrap().remove(account_id);
         self.emit("accounts-changed", json!({}));
         Ok(())
-    }
-
-    async fn add_shared_mailbox(self: &Arc<Self>, account_id: &str, address: &str) -> Result<Mailbox> {
-        let address = address.trim().to_lowercase();
-        if !address.contains('@') {
-            return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse angeben."));
-        }
-        let client = self.client(account_id)?;
-        let mb = Mailbox {
-            id: format!("{account_id}|{address}"),
-            account_id: account_id.to_string(),
-            address: address.clone(),
-            display_name: address.clone(),
-            kind: "shared".into(),
-        };
-        // Verify access before storing.
-        client
-            .get(&format!("{}/mailFolders/inbox?$select=id", mb.graph_prefix()))
-            .await
-            .map_err(|e| match e {
-                Error::Graph { status: 403 | 404, .. } => Error::invalid(format!(
-                    "Kein Zugriff auf das Postfach {address}. Sind Sie dafür berechtigt (Vollzugriff)?"
-                )),
-                other => other,
-            })?;
-        self.store.upsert_mailbox(&mb)?;
-        self.sync_folders(&mb.id).await?;
-        if let Some(inbox) = self.store.folder_by_well_known(&mb.id, "inbox")? {
-            let _ = self.sync_folder(&mb.id, &inbox.id, true).await;
-        }
-        self.emit("accounts-changed", json!({}));
-        Ok(mb)
     }
 
     // ---- background sync ----
@@ -611,11 +704,21 @@ impl Service {
         self.emit_status("syncing", "Senden/Empfangen…");
         let mut errors = Vec::new();
         let mut offline = false;
+        for acc in &accounts {
+            if let Err(e) = self.sync_contacts(&acc.id).await {
+                offline |= e.is_network();
+                errors.push(format!("{} (Kontakte): {e}", acc.email));
+            }
+        }
         for mb in accounts.iter().flat_map(|a| a.mailboxes.iter()) {
             if let Err(e) = self.sync_folders(&mb.id).await {
                 offline |= e.is_network();
                 errors.push(format!("{}: {e}", mb.address));
                 continue;
+            }
+            if let Err(e) = self.process_due_snoozes(&mb.id).await {
+                offline |= e.is_network();
+                errors.push(format!("{}: {e}", mb.address));
             }
             let mut targets = Vec::new();
             if let Ok(Some(inbox)) = self.store.folder_by_well_known(&mb.id, "inbox") {
@@ -649,9 +752,20 @@ impl Service {
         tokio::spawn(async move {
             // Small delay so the UI is up before the first sync.
             tokio::time::sleep(Duration::from_secs(2)).await;
+            let mut focus_active = false;
             loop {
                 let Some(s) = svc.upgrade() else { return };
-                s.sync_all(true).await;
+                // Fokuszeit pauses the automatic fetch; when it ends, sync once.
+                match s.focus_until() {
+                    Some(_) => focus_active = true,
+                    None => {
+                        if focus_active {
+                            focus_active = false;
+                            s.emit("focus-changed", json!({"until": null}));
+                        }
+                        s.sync_all(true).await;
+                    }
+                }
                 let wait = s.config().sync_interval_secs.max(15);
                 drop(s);
                 tokio::time::sleep(Duration::from_secs(wait)).await;
@@ -662,10 +776,7 @@ impl Service {
     /// Demo mode: sign in automatically when no account exists yet.
     pub async fn ensure_demo_account(self: &Arc<Self>) -> Result<()> {
         if self.opts.demo && self.store.list_accounts()?.is_empty() {
-            let acc = self.add_account().await?;
-            let _ = self
-                .add_shared_mailbox(&acc.id, "datenschutz@contoso.example")
-                .await;
+            self.add_account().await?;
         }
         Ok(())
     }
@@ -673,6 +784,9 @@ impl Service {
     // ---- mailbox settings ----
 
     async fn get_auto_reply(&self, account_id: &str) -> Result<AutoReply> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Abwesenheitsnotizen sind nur für Microsoft-365-Konten verfügbar."));
+        }
         let c = self.client(account_id)?;
         let v = c
             .get_h(
@@ -684,6 +798,9 @@ impl Service {
     }
 
     async fn set_auto_reply(&self, account_id: &str, a: AutoReply) -> Result<AutoReply> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Abwesenheitsnotizen sind nur für Microsoft-365-Konten verfügbar."));
+        }
         let c = self.client(account_id)?;
         c.patch(
             "/me/mailboxSettings",

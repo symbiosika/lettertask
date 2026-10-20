@@ -209,28 +209,38 @@ fn unsupported_filter(s: &str) -> GErr {
     )
 }
 
+/// KQL subset: bare words (subject/body/from/to/attachment names), and
+/// `from:` `to:` `subject:` `body:` `hasAttachments:true|false` restrictions.
 fn search_matches(m: &Msg, terms: &[String]) -> bool {
     let j = &m.json;
-    let mut hay = String::new();
-    for p in ["/subject", "/bodyPreview", "/body/content", "/from/emailAddress/name", "/from/emailAddress/address"] {
-        if let Some(s) = j.pointer(p).and_then(Value::as_str) {
-            hay.push_str(&s.to_lowercase());
-            hay.push(' ');
+    let text = |p: &str| j.pointer(p).and_then(Value::as_str).unwrap_or("").to_lowercase();
+    let recipients = || {
+        let mut s = String::new();
+        for key in ["toRecipients", "ccRecipients"] {
+            for r in j[key].as_array().into_iter().flatten() {
+                s.push_str(&email_addr(r));
+                s.push(' ');
+                s.push_str(&r.pointer("/emailAddress/name").and_then(Value::as_str).unwrap_or("").to_lowercase());
+                s.push(' ');
+            }
         }
-    }
-    for key in ["toRecipients", "ccRecipients"] {
-        for r in j[key].as_array().into_iter().flatten() {
-            hay.push_str(&email_addr(r));
-            hay.push(' ');
-            hay.push_str(&r.pointer("/emailAddress/name").and_then(Value::as_str).unwrap_or("").to_lowercase());
-            hay.push(' ');
-        }
-    }
+        s
+    };
+    let from = format!("{} {}", text("/from/emailAddress/name"), text("/from/emailAddress/address"));
+    let body = format!("{} {}", text("/bodyPreview"), text("/body/content"));
+    let mut all = format!("{} {} {} {}", text("/subject"), body, from, recipients());
     for a in &m.attachments {
-        hay.push_str(&a.name.to_lowercase());
-        hay.push(' ');
+        all.push_str(&a.name.to_lowercase());
+        all.push(' ');
     }
-    terms.iter().all(|t| hay.contains(t.as_str()))
+    terms.iter().all(|t| match t.split_once(':') {
+        Some(("from", v)) => from.contains(v),
+        Some(("to", v)) => recipients().contains(v),
+        Some(("subject", v)) => text("/subject").contains(v),
+        Some(("body", v)) => body.contains(v),
+        Some(("hasattachments", v)) => (v == "true") == m.attachments.iter().any(|a| !a.is_inline),
+        _ => all.contains(t.as_str()),
+    })
 }
 
 fn render_msg(mb: &Mailbox, m: &Msg, req: &Req) -> Value {
@@ -321,9 +331,26 @@ fn build_message(mb: &Mailbox, body: &Value, draft: bool) -> Result<(Value, Vec<
     Ok((json, atts))
 }
 
+/// `PR_MESSAGE_FLAGS` (0x0E07) given on creation, like Exchange: bit 0x1 = read,
+/// bit 0x8 = unsent (draft). Lets clients import non-draft messages into any folder.
+fn message_flags(body: &Value) -> Option<i64> {
+    body["singleValueExtendedProperties"]
+        .as_array()?
+        .iter()
+        .find(|p| p["id"].as_str().is_some_and(|id| id.eq_ignore_ascii_case("Integer 0x0E07")))
+        .and_then(|p| p["value"].as_str().and_then(|v| v.parse().ok()).or(p["value"].as_i64()))
+}
+
 fn create_message(mb: &mut Mailbox, folder_id: &str, req: &Req) -> GResult {
     let body = req.json()?;
-    let (json, atts) = build_message(mb, &body, true)?;
+    let flags = message_flags(&body);
+    let (mut json, atts) = build_message(mb, &body, flags.is_none_or(|f| f & 8 != 0))?;
+    if let Some(f) = flags {
+        json["isRead"] = json!(f & 1 != 0);
+        if f & 8 == 0 {
+            json["sentDateTime"] = json["receivedDateTime"].clone();
+        }
+    }
     let m = Msg { id: new_id("AAMkAD"), folder_id: folder_id.to_string(), json, received: Utc::now(), attachments: atts, event_id: None };
     let id = mb.insert(m);
     created(mb.messages[&id].render())

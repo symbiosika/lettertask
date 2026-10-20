@@ -1,9 +1,16 @@
 name: CI
 
+# Runs for pull requests and the main branches only – pushes to work
+# branches (checkpoints of unfinished work) do not trigger CI.
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [develop, main]
   pull_request:
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,7 +23,9 @@ jobs:
       - name: Linux-Abhängigkeiten
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libssl-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libssl-dev dovecot-imapd
+          # Only the binary is needed; the tests start private instances.
+          sudo systemctl stop dovecot || true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -28,6 +37,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Linux-Abhängigkeiten (D-Bus für den Schlüsselbund)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4

@@ -24,11 +24,9 @@ pub const SCOPES: &[&str] = &[
     "profile",
     "User.Read",
     "Mail.ReadWrite",
-    "Mail.ReadWrite.Shared",
     "Mail.Send",
-    "Mail.Send.Shared",
     "Calendars.ReadWrite",
-    "Calendars.ReadWrite.Shared",
+    "Contacts.ReadWrite",
     "MailboxSettings.ReadWrite",
     "People.Read",
 ];
@@ -197,6 +195,81 @@ pub async fn refresh(http: &reqwest::Client, cfg: &OAuthConfig, refresh_token: &
     .await
 }
 
+/// Device authorization grant: the user enters `user_code` at
+/// `verification_uri` on any device. Works where no local browser redirect is
+/// possible (remote sessions, terminals).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    #[serde(default = "default_expires")]
+    pub expires_in: u64,
+    #[serde(default = "default_interval")]
+    pub interval: u64,
+    #[serde(default)]
+    pub message: String,
+}
+
+fn default_expires() -> u64 {
+    900
+}
+fn default_interval() -> u64 {
+    5
+}
+
+pub async fn start_device_code(http: &reqwest::Client, cfg: &OAuthConfig) -> Result<DeviceCode> {
+    if cfg.client_id.trim().is_empty() {
+        return Err(Error::Auth("Keine Client-ID konfiguriert.".into()));
+    }
+    let scope = OAuthConfig::scope_string();
+    let resp = http
+        .post(cfg.endpoint("devicecode"))
+        .form(&[("client_id", cfg.client_id.as_str()), ("scope", scope.as_str())])
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        let err: TokenError = serde_json::from_str(&body).unwrap_or(TokenError {
+            error: status.to_string(),
+            error_description: body.clone(),
+        });
+        let desc = err.error_description.lines().next().unwrap_or("").to_string();
+        return Err(Error::Auth(format!("{} {}", err.error, desc).trim().to_string()));
+    }
+    serde_json::from_str(&body).map_err(|e| Error::Auth(format!("Ungültige Device-Code-Antwort: {e}")))
+}
+
+/// Polls the token endpoint until the user completed the device login.
+pub async fn poll_device_code(http: &reqwest::Client, cfg: &OAuthConfig, dc: &DeviceCode) -> Result<TokenSet> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(dc.expires_in);
+    let mut interval = dc.interval.max(1);
+    loop {
+        tokio::time::sleep(Duration::from_secs(interval)).await;
+        if std::time::Instant::now() > deadline {
+            return Err(Error::Auth("Der Anmeldecode ist abgelaufen.".into()));
+        }
+        let res = token_request(
+            http,
+            cfg,
+            &[
+                ("client_id", cfg.client_id.as_str()),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", dc.device_code.as_str()),
+            ],
+            None,
+        )
+        .await;
+        match res {
+            Ok(t) => return Ok(t),
+            Err(Error::Auth(msg)) if msg.starts_with("authorization_pending") => continue,
+            Err(Error::Auth(msg)) if msg.starts_with("slow_down") => interval += 5,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 const SUCCESS_PAGE: &str = "<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><title>Anmeldung</title></head>\
 <body style=\"font-family:Segoe UI,sans-serif;padding:40px\"><h2>Anmeldung erfolgreich</h2>\
 <p>Sie können dieses Browserfenster jetzt schließen und zur Anwendung zurückkehren.</p></body></html>";
@@ -345,6 +418,32 @@ mod tests {
         assert_eq!(q["redirect_uri"], "http://localhost:1234");
         assert!(q["scope"].contains("offline_access"));
         assert!(q["scope"].contains("Mail.ReadWrite"));
+    }
+
+    #[tokio::test]
+    async fn device_code_flow_against_fake() {
+        let fake = graph_fake::spawn(graph_fake::FakeOptions { seed_demo: false, now: Utc::now() }).await;
+        let cfg = OAuthConfig {
+            authority: fake.base_url.clone(),
+            tenant: "organizations".into(),
+            client_id: "test-client".into(),
+        };
+        let http = reqwest::Client::new();
+        let dc = start_device_code(&http, &cfg).await.unwrap();
+        assert!(!dc.user_code.is_empty());
+        let t = poll_device_code(&http, &cfg, &dc).await.unwrap();
+        assert!(!t.access_token.is_empty());
+        assert!(!t.refresh_token.is_empty());
+        let me: serde_json::Value = http
+            .get(format!("{}/v1.0/me", fake.base_url))
+            .bearer_auth(&t.access_token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(me["mail"], "max.mustermann@contoso.example");
     }
 
     #[tokio::test]

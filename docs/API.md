@@ -17,17 +17,35 @@ All JSON keys are **camelCase**. Timestamps are ISO-8601 UTC strings with `Z`
 
 ```ts
 Address      { name: string, address: string }
-Account      { id: string, email: string, displayName: string, mailboxes: Mailbox[] }
-Mailbox      { id: string, accountId: string, address: string, displayName: string, kind: "primary" | "shared" }
+Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[] }
+               // kind "imap": no calendar, no mailbox settings (auto reply); categories are local
+               // (stored as IMAP keywords on messages), "Wiedervorlage" times are kept locally.
+ServerSettings { host: string, port: number, security: "ssl"|"starttls"|"none", username: string }
+ImapAccountInput { email: string, displayName: string, imap: ServerSettings, smtp: ServerSettings,
+                   password: string, smtpPassword: string|null /* null = same as IMAP */ }
+Signature    { id: string, name: string, html: string }
+SignatureSettings { signatures: Signature[], defaultId: string|null,
+                    useOnNew: bool /* default true */, useOnReply: bool /* default true */,
+                    useOnForward: bool /* default false */ }
+Contact      { id: string, accountId: string, source: "o365"|"local"|"collected",
+               displayName: string, givenName: string, surname: string,
+               emails: string[], company: string, jobTitle: string,
+               phones: { kind: "business"|"mobile"|"home", number: string }[], notes: string,
+               readOnly: bool }
+ContactInput { displayName, givenName, surname, emails: string[], company, jobTitle,
+               phones: {kind, number}[], notes }
+Mailbox      { id: string, accountId: string, address: string, displayName: string, kind: "primary" }
 Folder       { id: string, mailboxId: string, parentId: string|null, displayName: string,
-               wellKnown: "inbox"|"drafts"|"sentitems"|"deleteditems"|"archive"|"junkemail"|"outbox"|null,
+               wellKnown: "inbox"|"drafts"|"sentitems"|"deleteditems"|"archive"|"junkemail"|"outbox"|"snoozed"|null,
                unreadCount: number, totalCount: number, childFolderCount: number }
 MessageSummary {
   id, mailboxId, folderId, conversationId: string,
   subject: string, from: Address|null, to: Address[], receivedAt: string,
   isRead: bool, isDraft: bool, importance: "low"|"normal"|"high",
   flag: "notFlagged"|"flagged"|"complete", hasAttachments: bool,
-  categories: string[], preview: string
+  categories: string[], preview: string,
+  dueAt: string|null,  // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
+  recurrence: string|null // "monthly" etc., from the hidden "[#…]" category
 }
 Attachment   { id, name, contentType: string, size: number, isInline: bool, contentId: string|null }
 MessageDetail = MessageSummary & {
@@ -73,14 +91,29 @@ Draft {
   importance: "low"|"normal"|"high", requestReadReceipt: bool, attachments: Attachment[]
 }
 DraftInput = Draft (without attachments) & {
-  newAttachments: { name, contentType, contentBase64 }[], removedAttachmentIds: string[]
+  newAttachments: { name, contentType, contentBase64 }[], removedAttachmentIds: string[],
+  remindAt?: string|null   // "Erinnerung an mich": ISO UTC. After sending, a reminder mail
+                           // ("Nachfassen: <subject>", to = original recipients, replyTo = them,
+                           // body = sent text) is created directly in "Wiedervorlage", due at remindAt.
 }
 Config {
   clientId: string, tenant: string /* "organizations" default */, syncIntervalSecs: number,
-  loadRemoteImages: bool, signatureHtml: string, readingPane: "right"|"bottom"|"off",
-  markReadDelaySecs: number /* -1 = never automatically */, listMode: "columns"|"compact",
-  demo: bool /* read-only: running against the built-in demo server */
+  loadRemoteImages: bool, readingPane: "right"|"bottom"|"off",
+  markReadDelaySecs: number /* -1 = never automatically */, listMode: "comfortable"|"compact",
+  showDateSeparators: bool /* thin "Heute / Gestern / Älter" separators in the list */,
+  snoozeOptions: SnoozeOption[] /* entries of the "Wiedervorlage" dropdown, editable in settings */,
+  demo: bool /* read-only: running against the built-in demo server */,
+  builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" */
 }
+SnoozeOption { label: string, rule: string }
+// Kanban lanes are categories named "[K_<lane>]" (LANE_PREFIX "[K_", suffix "]").
+// The UI hides them everywhere except the Kanban board. Lane names: letters, digits,
+// space, "-" and "_", 1–30 chars, unique per account.
+// Config also has: kanbanReadingPane: "bottom"|"right" (default "bottom").
+// rule grammar (evaluated in the UI, local time):  "<base>@HH:MM"
+//   base = "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
+// defaults: Morgen 8 Uhr = tomorrow@08:00, Übermorgen 8 Uhr = days:2@08:00, Am Wochenende = weekend@08:00,
+//           Nächste Woche = nextWeek@08:00, In 14 Tagen = days:14@08:00, In 30 Tagen = days:30@08:00
 AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage: string,
             externalReplyMessage: string, scheduledStart: string|null, scheduledEnd: string|null,
             externalAudience: "none"|"contactsOnly"|"all" }
@@ -94,10 +127,13 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `get_config` | `{}` | `Config` |
 | `save_config` | `{ config: Config }` | `Config` |
 | `list_accounts` | `{}` | `Account[]` |
-| `add_account` | `{}` | `Account` — opens system browser, waits for login (up to 5 min) |
+| `add_account` | `{}` | `Account` — Microsoft 365: opens system browser, waits for login (up to 5 min) |
+| `discover_imap` | `{ email }` | `{ imap: ServerSettings, smtp: ServerSettings, source: "ispdb"\|"autoconfig"\|"guess" }` — Thunderbird ISPDB / autoconfig lookup, else guesses (imap./smtp.<domain>) |
+| `test_imap_account` | `{ input: ImapAccountInput }` | `{ imapOk: bool, smtpOk: bool, imapError: string\|null, smtpError: string\|null }` |
+| `add_imap_account` | `{ input: ImapAccountInput }` | `Account` — verifies IMAP+SMTP login first, password goes to the OS keychain |
+| `update_imap_account` | `{ accountId, input: ImapAccountInput }` | `Account` (password "" = keep the stored one) |
+| `get_imap_account` | `{ accountId }` | `ImapAccountInput` with password "" |
 | `remove_account` | `{ accountId }` | `null` |
-| `add_shared_mailbox` | `{ accountId, address }` | `Mailbox` |
-| `remove_mailbox` | `{ mailboxId }` | `null` |
 | `set_active_folder` | `{ mailboxId, folderId }` | `null` — background sync also syncs this folder |
 | `sync_all` | `{}` | `null` — "Senden/Empfangen": folders + inbox + active folder of every mailbox |
 
@@ -114,13 +150,17 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `list_messages` | `{ mailboxId, folderId, sortBy: "received"\|"from"\|"subject"\|"importance"\|"flag"\|"attachments"\|"categories", sortDesc: bool, unreadOnly: bool, flaggedOnly: bool, category: string\|null, text: string\|null, offset: number, limit: number }` | `{ items: MessageSummary[], total: number, unread: number, canLoadOlder: bool }` — from local cache; `text` filters subject/from/preview locally |
 | `sync_folder` | `{ mailboxId, folderId }` | `{ added, updated, removed }` |
 | `load_older` | `{ mailboxId, folderId }` | `number` loaded (0 = nothing older) |
-| `search_messages` | `{ mailboxId, text, folderId: string\|null }` | `MessageSummary[]` (server side search, max 100) |
+| `search_messages` | `{ mailboxId, text, folderId: string\|null, field?: "all"\|"from"\|"to"\|"subject"\|"body", hasAttachments?: bool }` | `MessageSummary[]` (server side search, max 100; folderId null = all folders) |
+| `archive_messages` | `{ mailboxId, ids }` | `null` — move to the Archive folder (created if missing) |
+| `snooze_messages` | `{ mailboxId, ids, until: ISO UTC }` | `null` — "Auf Wiedervorlage": moves to folder "Wiedervorlage" (Folder.wellKnown = "snoozed"), stores the time as follow-up due date; the background sync moves it back to the inbox (unread) when due and emits `new-mail` |
+| `unsnooze_messages` | `{ mailboxId, ids }` | `null` — back to the inbox now |
 | `get_message` | `{ mailboxId, messageId }` | `MessageDetail` |
 | `set_read` | `{ mailboxId, ids: string[], isRead: bool }` | `null` |
 | `set_flag` | `{ mailboxId, ids, flag }` | `null` |
 | `set_categories` | `{ mailboxId, ids, categories: string[] }` | `null` (replaces the list) |
 | `move_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `copy_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
+| `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)": a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" → Posteingang (unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
 | `get_message_source` | `{ mailboxId, messageId }` | `string` (MIME source, for "Quelltext anzeigen") |
@@ -131,7 +171,59 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `save_draft` | `{ draft: DraftInput }` | `Draft` (creates server draft when id is null) |
 | `send_draft` | `{ draft: DraftInput }` | `null` |
 | `discard_draft` | `{ mailboxId, draftId: string\|null }` | `null` |
-| `suggest_recipients` | `{ mailboxId, query }` | `Address[]` (max 10) |
+| `suggest_recipients` | `{ mailboxId, query }` | `Address[]` (max 10; local contacts first, then O365 People API, then known senders) |
+
+`create_draft` inserts the account's default signature according to SignatureSettings
+(`useOnNew` / `useOnReply` for reply+replyAll / `useOnForward`). The signature is wrapped in
+`<div class="signature" data-signature-id="…">…</div>` so the compose window can swap it.
+
+### Inbox rules (automatic, before display)
+New mails arriving in the inbox pass a rule chain during sync **before** `mail-changed` is emitted;
+matched mails are moved server-side and never show up in the inbox list. Rule 1: mails from
+yourself to yourself whose subject contains a due token are snoozed accordingly:
+`#heute` (today 17:00, or +1h if later), `#morgen`, `#übermorgen`, `#wochenende`, `#nächstewoche`,
+`#<N>t` / `#<N>d` (in N days), `#<N>w` (in N weeks) — times per the matching snooze option or 08:00.
+Event `rules-applied` `{ mailboxId, count, subjects: string[] }` after mails were moved.
+
+### Kanban lanes (per account)
+| `get_lanes` | `{ accountId }` | `string[]` lane names in order |
+| `save_lanes` | `{ accountId, lanes: string[] }` | `string[]` — validates names, creates missing "[K_…]" categories (O365 master categories / IMAP local), deletes categories of removed lanes and strips them from cached messages; renaming = remove + add |
+| `set_lane` | `{ mailboxId, ids, lane: string\|null }` | `null` — replaces any "[K_…]" category on the messages, keeps all other categories; null = no lane |
+
+### Follow-ups resolve themselves ("Nachfassen erledigt sich selbst")
+Reminder mails from `remindAt` carry a hidden category `"[F_<10 hex>]"` (hash of the sent mail's
+thread id). When a reply from someone else arrives in that thread, the inbox rule chain archives the
+reminder (wherever it is: Wiedervorlage or inbox) and emits `followup-resolved`
+`{ mailboxId, subject, from }`. "[F_…]" categories are hidden in the UI like lane categories.
+
+### Recurring tasks ("Wiederkehrend")
+Hidden category on the mail: `"[#daily]"`, `"[#weekdays]"`, `"[#weekly]"`, `"[#biweekly]"`, `"[#monthly]"`,
+`"[#quarterly]"`, `"[#yearly]"`. Fixed rhythm: when such a mail is **archived**, a copy (same subject,
+body, categories) is placed in "Wiedervorlage" due at the next occurrence after its due time (missed
+occurrences are skipped; without due time the anchor is "now"); the event `recurrence-scheduled`
+`{ mailboxId, subject, due }` follows. Recurring mails keep their dueAt when they return to the inbox.
+| `create_task` | gains optional `recurrence: "daily"\|"weekdays"\|"weekly"\|"biweekly"\|"monthly"\|"quarterly"\|"yearly"\|null` |
+| `set_recurrence` | `{ mailboxId, ids, recurrence: string\|null }` | `null` |
+MessageSummary gains `recurrence: string|null` (derived from the hidden category).
+
+### Heute
+| `list_today` | `{}` | `{ due: MessageSummary[], todo: { accountId, lane: string, items: MessageSummary[] }[] }` — all mails of all accounts whose dueAt is before the end of today (local time; snoozed and returned ones), plus per account the mails in its FIRST Kanban lane |
+
+### Fokuszeit
+| `get_focus` | `{}` | `{ until: ISO\|null }` |
+| `set_focus` | `{ minutes: number }` | `{ until: ISO\|null }` — 0 ends focus time. While active the background sync is paused (no auto fetch, no notifications, due snoozes are not returned); `sync_all` (manual "Senden/Empfangen") still works. Event `focus-changed` `{ until }`; when it expires the backend emits `focus-changed` `{ until: null }` and syncs once. |
+
+### Signatures (per account, stored locally)
+| `get_signatures` | `{ accountId }` | `SignatureSettings` |
+| `save_signatures` | `{ accountId, settings: SignatureSettings }` | `SignatureSettings` (ids are generated for new entries with id "") |
+
+### Contacts (local cache; O365 contacts synced via delta, sent-to addresses collected automatically)
+| `list_contacts` | `{ query: string\|null, accountId: string\|null, offset, limit }` | `{ items: Contact[], total }` sorted by displayName |
+| `get_contact` | `{ id }` | `Contact` |
+| `sync_contacts` | `{ accountId }` | `{ added, updated, removed }` (also part of background sync) |
+| `create_contact` | `{ accountId, input: ContactInput }` | `Contact` (O365 account → created in Outlook; IMAP → local) |
+| `update_contact` | `{ id, input: ContactInput }` | `Contact` (collected contacts become local ones) |
+| `delete_contact` | `{ id }` | `null` |
 
 ### Categories (per account – Outlook master category list)
 | `list_categories` | `{ accountId }` | `Category[]` |
@@ -164,6 +256,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `calendar-changed` | `{ accountId: string }` |
 | `accounts-changed` | `{}` |
 | `categories-changed` | `{ accountId: string }` |
+| `contacts-changed` | `{}` |
 | `new-mail` | `{ mailboxId, count, from: string, subject: string }` |
 
 Windows opened with `open_window` are separate pages that use the same API; changes they make are

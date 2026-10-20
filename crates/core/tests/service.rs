@@ -94,16 +94,14 @@ impl Ctx {
 }
 
 #[tokio::test]
-async fn login_creates_account_with_shared_mailbox_and_folder_tree() {
+async fn login_creates_account_and_folder_tree() {
     let ctx = setup().await;
     let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
     assert_eq!(accounts.len(), 1);
     let acc = &accounts[0];
     assert_eq!(acc.email, ME);
-    assert_eq!(acc.mailboxes.len(), 2);
+    assert_eq!(acc.mailboxes.len(), 1);
     assert_eq!(acc.mailboxes[0].kind, "primary");
-    assert_eq!(acc.mailboxes[1].kind, "shared");
-    assert_eq!(acc.mailboxes[1].address, "datenschutz@contoso.example");
 
     let folders = ctx.folders(&ctx.account).await;
     let order: Vec<_> = folders.iter().filter_map(|f| f.well_known.clone()).collect();
@@ -115,9 +113,6 @@ async fn login_creates_account_with_shared_mailbox_and_folder_tree() {
     assert_eq!(alpha.parent_id.as_deref(), Some(projekte.id.as_str()));
     // Top level folders have no parent (root is hidden).
     assert!(inbox.parent_id.is_none());
-
-    let shared = ctx.folders(&acc.mailboxes[1].id).await;
-    assert!(shared.iter().any(|f| f.well_known.as_deref() == Some("inbox")));
 }
 
 #[tokio::test]
@@ -350,10 +345,11 @@ async fn delta_picks_up_server_side_changes() {
 #[tokio::test]
 async fn compose_send_with_large_attachment_and_reply() {
     let ctx = setup().await;
-    let _: Config = call(
+    let _: SignatureSettings = call(
         &ctx.svc,
-        "save_config",
-        json!({"config": {"signatureHtml": "<p>Viele Grüße<br>Max</p>", "syncIntervalSecs": 60}}),
+        "save_signatures",
+        json!({"accountId": ctx.account, "settings": {"signatures": [{"id": "", "name": "Standard", "html": "<p>Viele Grüße<br>Max</p>"}],
+            "defaultId": null, "useOnNew": true, "useOnReply": true, "useOnForward": false}}),
     )
     .await;
     let draft: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "new"})).await;
@@ -626,13 +622,6 @@ async fn unknown_commands_and_bad_args_are_errors() {
     assert!(call_err(&ctx.svc, "list_folders", json!({})).await.contains("mailboxId"));
     let err = call_err(&ctx.svc, "open_url", json!({"url": "file:///etc/passwd"})).await;
     assert!(err.contains("http"));
-    let err = call_err(
-        &ctx.svc,
-        "add_shared_mailbox",
-        json!({"accountId": ctx.account, "address": "gibtsnicht@contoso.example"}),
-    )
-    .await;
-    assert!(err.contains("Kein Zugriff"), "{err}");
 }
 
 #[tokio::test]
@@ -673,4 +662,521 @@ async fn meeting_invitation_links_to_event() {
     .await;
     let ev: EventDetail = call(&ctx.svc, "get_event", json!({"accountId": ctx.account, "eventId": event_id})).await;
     assert_eq!(ev.event.response_status, "tentativelyAccepted");
+}
+
+#[tokio::test]
+async fn config_has_snooze_defaults() {
+    let ctx = setup().await;
+    let c: Config = call(&ctx.svc, "get_config", json!({})).await;
+    assert_eq!(c.snooze_options.len(), 6);
+    assert_eq!(c.snooze_options[0].rule, "tomorrow@08:00");
+    assert!(c.show_date_separators);
+    // Saving an empty list restores the defaults; custom lists persist.
+    let mut c2 = c.clone();
+    c2.snooze_options = vec![SnoozeOption { label: "In 3 Tagen".into(), rule: "days:3@09:00".into() }];
+    let saved: Config = call(&ctx.svc, "save_config", json!({"config": c2})).await;
+    assert_eq!(saved.snooze_options.len(), 1);
+    let mut c3 = saved.clone();
+    c3.snooze_options.clear();
+    let saved: Config = call(&ctx.svc, "save_config", json!({"config": c3})).await;
+    assert_eq!(saved.snooze_options.len(), 6);
+}
+
+#[tokio::test]
+async fn archive_moves_to_archive_folder() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let archive = ctx.folder("archive").await;
+    let m = ctx.list(&inbox.id).await.items[0].clone();
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [m.id]})).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|x| x.id == m.id));
+    assert!(ctx.list(&archive.id).await.items.iter().any(|x| x.subject == m.subject));
+}
+
+#[tokio::test]
+async fn snooze_and_return_to_inbox() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let a = page.items[0].clone();
+    let b = page.items[1].clone();
+    let until = (chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339();
+    let later = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [a.id], "until": until})).await;
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [b.id], "until": later})).await;
+
+    // Folder "Wiedervorlage" exists, sorted right after the inbox.
+    let folders = ctx.folders(&ctx.account).await;
+    assert_eq!(folders[1].well_known.as_deref(), Some("snoozed"));
+    assert_eq!(folders[1].display_name, "Wiedervorlage");
+    let snoozed = folders[1].clone();
+    let in_snooze = ctx.list(&snoozed.id).await;
+    assert_eq!(in_snooze.total, 2);
+    assert!(in_snooze.items.iter().all(|m| m.due_at.is_some()));
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.id == a.id || m.id == b.id));
+
+    // A fresh sync of the folder keeps the due times (they live on the server).
+    let _: Value = ctx.svc.dispatch("set_active_folder", json!({"mailboxId": ctx.account, "folderId": snoozed.id})).await.unwrap();
+    // Time passes → background sync returns only the due one, unread.
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    ctx.svc.sync_all(true).await;
+    let back = ctx.list(&inbox.id).await;
+    let returned = back.items.iter().find(|m| m.subject == a.subject).expect("returned to inbox");
+    assert!(!returned.is_read);
+    assert_eq!(returned.flag, "notFlagged");
+    assert!(returned.due_at.is_none());
+    assert_eq!(ctx.list(&snoozed.id).await.total, 1);
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, p)| e == "new-mail" && p["subject"] == a.subject));
+
+    // Manual unsnooze.
+    let still = ctx.list(&snoozed.id).await.items[0].clone();
+    let _: Value = call(&ctx.svc, "unsnooze_messages", json!({"mailboxId": ctx.account, "ids": [still.id]})).await;
+    assert_eq!(ctx.list(&snoozed.id).await.total, 0);
+    assert!(ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == b.subject && !m.is_read));
+
+    // Past times are rejected.
+    let past = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let err = call_err(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [a.id], "until": past})).await;
+    assert!(err.contains("Vergangenheit"));
+}
+
+#[tokio::test]
+async fn search_by_field_and_attachments() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let m = page.items.iter().find(|m| m.has_attachments).unwrap().clone();
+    let sender = m.from.clone().unwrap();
+    let last_name = sender.name.split_whitespace().last().unwrap().to_string();
+    let by_from: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": last_name, "folderId": null, "field": "from"}),
+    )
+    .await;
+    assert!(!by_from.is_empty());
+    assert!(by_from.iter().all(|x| x.from.as_ref().unwrap().name.contains(&last_name)
+        || x.from.as_ref().unwrap().address.to_lowercase().contains(&last_name.to_lowercase())));
+    let with_att: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": last_name, "folderId": null, "field": "from", "hasAttachments": true}),
+    )
+    .await;
+    assert!(with_att.iter().all(|x| x.has_attachments));
+    assert!(with_att.iter().any(|x| x.id == m.id));
+    let word = m.subject.split_whitespace().max_by_key(|w| w.len()).unwrap().to_string();
+    let by_subject: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": word, "folderId": inbox.id, "field": "subject"}),
+    )
+    .await;
+    assert!(by_subject.iter().any(|x| x.id == m.id));
+    let wrong_field: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": word, "folderId": inbox.id, "field": "to"}),
+    )
+    .await;
+    assert!(!wrong_field.iter().any(|x| x.id == m.id));
+}
+
+#[tokio::test]
+async fn reply_keeps_inline_images_editable_and_embedded() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let mut source = None;
+    for m in &page.items {
+        let d: MessageDetail = call(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": m.id})).await;
+        if d.body_html.contains("data:image/png;base64,") {
+            source = Some(m.clone());
+            break;
+        }
+    }
+    let source = source.expect("message with inline image");
+    let reply: Draft = call(
+        &ctx.svc,
+        "create_draft",
+        json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": source.id}),
+    )
+    .await;
+    // Editor sees a renderable image, no broken cid: and no attachment chip for it.
+    assert!(!reply.body_html.contains("cid:"));
+    assert!(reply.body_html.contains("#cid="));
+    assert!(reply.attachments.iter().all(|a| !a.is_inline));
+    // Saving converts back: the server draft references the inline attachment again.
+    let input = json!({"id": reply.id, "mailboxId": ctx.account, "mode": "reply", "to": reply.to,
+        "cc": [], "bcc": [], "subject": reply.subject, "bodyHtml": format!("<p>Danke!</p>{}", reply.body_html),
+        "importance": "normal", "requestReadReceipt": false, "newAttachments": [], "removedAttachmentIds": []});
+    let _: Draft = call(&ctx.svc, "save_draft", json!({"draft": input})).await;
+    let fake = ctx.fake.as_ref().unwrap();
+    let raw = fake.state.message("me", reply.id.as_deref().unwrap()).expect("draft on server");
+    let body = raw["body"]["content"].as_str().unwrap();
+    assert!(body.contains("cid:"), "server body must use cid: references");
+    assert!(!body.contains("#cid="));
+    assert!(!body.contains("data:image/png"));
+}
+
+#[tokio::test]
+async fn signatures_per_account_and_mode() {
+    let ctx = setup().await;
+    let empty: SignatureSettings = call(&ctx.svc, "get_signatures", json!({"accountId": ctx.account})).await;
+    assert!(empty.signatures.is_empty());
+    assert!(empty.use_on_new && empty.use_on_reply && !empty.use_on_forward);
+    let saved: SignatureSettings = call(
+        &ctx.svc,
+        "save_signatures",
+        json!({"accountId": ctx.account, "settings": {"signatures": [
+            {"id": "", "name": "Kurz", "html": "<p>MM</p>"},
+            {"id": "", "name": "Lang", "html": "<p>Max Mustermann<br>Contoso GmbH</p>"}
+        ], "defaultId": null, "useOnNew": true, "useOnReply": true, "useOnForward": false}}),
+    )
+    .await;
+    assert_eq!(saved.signatures.len(), 2);
+    assert!(saved.signatures.iter().all(|s| !s.id.is_empty()));
+    // No valid default given → the first one becomes default.
+    assert_eq!(saved.default_id.as_deref(), Some(saved.signatures[0].id.as_str()));
+    let mut settings = saved.clone();
+    settings.default_id = Some(saved.signatures[1].id.clone());
+    let saved: SignatureSettings = call(&ctx.svc, "save_signatures", json!({"accountId": ctx.account, "settings": settings})).await;
+    let lang = saved.signatures[1].id.clone();
+
+    let new: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "new"})).await;
+    assert!(new.body_html.contains("Contoso GmbH"));
+    assert!(new.body_html.contains(&format!("data-signature-id=\"{lang}\"")));
+
+    let inbox = ctx.folder("inbox").await;
+    let src = ctx.list(&inbox.id).await.items[0].clone();
+    let reply: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": src.id})).await;
+    assert!(reply.body_html.contains("class=\"signature\""));
+    let fwd: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "forward", "sourceMessageId": src.id})).await;
+    assert!(!fwd.body_html.contains("class=\"signature\""), "no signature on forwards by default");
+
+    // Flags are honoured.
+    let mut s2 = saved.clone();
+    s2.use_on_new = false;
+    s2.use_on_forward = true;
+    let _: SignatureSettings = call(&ctx.svc, "save_signatures", json!({"accountId": ctx.account, "settings": s2})).await;
+    let new: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "new"})).await;
+    assert!(!new.body_html.contains("signature"));
+    let fwd: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "forward", "sourceMessageId": src.id})).await;
+    assert!(fwd.body_html.contains("Contoso GmbH"));
+    for d in [reply, fwd] {
+        let _: Value = call(&ctx.svc, "discard_draft", json!({"mailboxId": ctx.account, "draftId": d.id})).await;
+    }
+    assert!(call_err(&ctx.svc, "save_signatures", json!({"accountId": "nope", "settings": {}})).await.contains("Konto"));
+}
+
+#[tokio::test]
+async fn contacts_sync_crud_and_lookup() {
+    let ctx = setup().await;
+    let r: SyncResult = call(&ctx.svc, "sync_contacts", json!({"accountId": ctx.account})).await;
+    assert!(r.added >= 10, "{r:?}");
+    let all: ContactPage = call(&ctx.svc, "list_contacts", json!({"query": null, "accountId": null})).await;
+    assert_eq!(all.total, r.added);
+    let names: Vec<String> = all.items.iter().map(|c| c.display_name.to_lowercase()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    // Search by company and by name parts.
+    let erika: ContactPage = call(&ctx.svc, "list_contacts", json!({"query": "fabrikam"})).await;
+    assert_eq!(erika.total, 1);
+    let c0 = erika.items[0].clone();
+    assert_eq!(c0.source, "o365");
+    assert!(!c0.phones.is_empty());
+
+    // Lookup while writing: contacts come first.
+    let sugg: Vec<Address> = call(&ctx.svc, "suggest_recipients", json!({"mailboxId": ctx.account, "query": "fabrik"})).await;
+    assert_eq!(sugg[0].address, c0.emails[0]);
+
+    // Create → appears in Outlook (fake) and locally.
+    let created: Contact = call(
+        &ctx.svc,
+        "create_contact",
+        json!({"accountId": ctx.account, "input": {"givenName": "Paula", "surname": "Neu", "emails": ["paula@example.org"],
+            "company": "Beispiel AG", "phones": [{"kind": "mobile", "number": "+49 170 1234567"}]}}),
+    )
+    .await;
+    assert_eq!(created.display_name, "Paula Neu");
+    let fake = ctx.fake.as_ref().unwrap();
+    let token = fake.issue_token();
+    let http = reqwest::Client::new();
+    let server: Value = http.get(format!("{}/v1.0/me/contacts", fake.base_url)).bearer_auth(&token)
+        .query(&[("$top", "100")]).send().await.unwrap().json().await.unwrap();
+    assert!(server["value"].as_array().unwrap().iter().any(|c| c["displayName"] == "Paula Neu"));
+
+    let updated: Contact = call(
+        &ctx.svc,
+        "update_contact",
+        json!({"id": created.id, "input": {"givenName": "Paula", "surname": "Neumann", "emails": ["paula@example.org"], "jobTitle": "CEO"}}),
+    )
+    .await;
+    assert_eq!(updated.display_name, "Paula Neumann");
+    assert_eq!(updated.job_title, "CEO");
+
+    // Changes made elsewhere arrive via delta.
+    let gid = c0.id.split_once('|').unwrap().1.to_string();
+    http.delete(format!("{}/v1.0/me/contacts/{}", fake.base_url, urlencoding::encode(&gid)))
+        .bearer_auth(&token).send().await.unwrap().error_for_status().unwrap();
+    http.post(format!("{}/v1.0/me/contacts", fake.base_url)).bearer_auth(&token)
+        .json(&json!({"displayName": "Von Handy", "emailAddresses": [{"address": "handy@example.org"}]}))
+        .send().await.unwrap().error_for_status().unwrap();
+    let r: SyncResult = call(&ctx.svc, "sync_contacts", json!({"accountId": ctx.account})).await;
+    assert_eq!((r.added, r.removed), (1, 1), "{r:?}");
+    assert!(ctx.svc.dispatch("get_contact", json!({"id": c0.id})).await.is_err());
+
+    let _: Value = call(&ctx.svc, "delete_contact", json!({"id": updated.id})).await;
+    let left: ContactPage = call(&ctx.svc, "list_contacts", json!({"query": "paula"})).await;
+    assert_eq!(left.total, 0);
+    assert!(call_err(&ctx.svc, "create_contact", json!({"accountId": ctx.account, "input": {"emails": ["kaputt"]}})).await.contains("Ungültige"));
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, _)| e == "contacts-changed"));
+}
+
+#[tokio::test]
+async fn sent_recipients_are_collected() {
+    let ctx = setup().await;
+    let input = json!({"id": null, "mailboxId": ctx.account, "mode": "new",
+        "to": [{"name": "Neuer Kunde", "address": "kunde@neu.example"}], "cc": [], "bcc": [],
+        "subject": "Hallo", "bodyHtml": "<p>Hi</p>", "importance": "normal", "requestReadReceipt": false,
+        "newAttachments": [], "removedAttachmentIds": []});
+    let _: Value = call(&ctx.svc, "send_draft", json!({"draft": input})).await;
+    let collected: ContactPage = call(&ctx.svc, "list_contacts", json!({"source": "collected"})).await;
+    assert_eq!(collected.total, 1);
+    assert_eq!(collected.items[0].display_name, "Neuer Kunde");
+    let sugg: Vec<Address> = call(&ctx.svc, "suggest_recipients", json!({"mailboxId": ctx.account, "query": "neuer"})).await;
+    assert_eq!(sugg[0].address, "kunde@neu.example");
+    // Turning it into a real contact.
+    let c: Contact = call(
+        &ctx.svc,
+        "update_contact",
+        json!({"id": collected.items[0].id, "input": {"displayName": "Neuer Kunde", "emails": ["kunde@neu.example"], "company": "Neu GmbH"}}),
+    )
+    .await;
+    assert_eq!(c.source, "local");
+    let collected: ContactPage = call(&ctx.svc, "list_contacts", json!({"source": "collected"})).await;
+    assert_eq!(collected.total, 0);
+}
+
+#[tokio::test]
+async fn tasks_are_created_directly_in_place() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    // "Sofort": unread, non-draft, from and to myself, in the inbox.
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Angebot an Alpha schreiben", "bodyHtml": "<p>bis Freitag</p>", "due": null}),
+    )
+    .await;
+    assert_eq!(t.folder_id, inbox.id);
+    assert!(!t.is_read && !t.is_draft);
+    assert_eq!(t.from.as_ref().unwrap().address, ME);
+    assert_eq!(t.to[0].address, ME);
+    assert!(ctx.list(&inbox.id).await.items.iter().any(|m| m.id == t.id));
+    // With a due date: straight into "Wiedervorlage", read, due set – also on the server.
+    let due = (chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+    let t2: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Steuer vorbereiten", "bodyHtml": "", "due": due}),
+    )
+    .await;
+    let snoozed = ctx.folder("snoozed").await;
+    assert_eq!(t2.folder_id, snoozed.id);
+    assert!(t2.is_read && !t2.is_draft && t2.due_at.is_some());
+    let raw = ctx.fake.as_ref().unwrap().state.message("me", &t2.id).unwrap();
+    assert_eq!(raw["isDraft"], false);
+    assert_eq!(raw["flag"]["flagStatus"], "flagged");
+    // Never shows up in the inbox.
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == "Steuer vorbereiten"));
+    assert!(call_err(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": " ", "due": null})).await.contains("Betreff"));
+}
+
+#[tokio::test]
+async fn send_with_reminder_creates_follow_up() {
+    let ctx = setup().await;
+    let remind = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let input = json!({"id": null, "mailboxId": ctx.account, "mode": "new",
+        "to": [{"name": "Erika Beispiel", "address": "erika@fabrikam.example"}], "cc": [], "bcc": [],
+        "subject": "Bitte Rechnung prüfen", "bodyHtml": "<p>Anbei die Rechnung.</p>", "importance": "normal",
+        "requestReadReceipt": false, "newAttachments": [], "removedAttachmentIds": [], "remindAt": remind});
+    let _: Value = call(&ctx.svc, "send_draft", json!({"draft": input})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let items = ctx.list(&snoozed.id).await.items;
+    let r = items.iter().find(|m| m.subject == "Nachfassen: Bitte Rechnung prüfen").expect("reminder");
+    assert!(r.due_at.is_some());
+    assert_eq!(r.to[0].address, "erika@fabrikam.example");
+    // Reply goes to the original recipient.
+    let reply: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": r.id})).await;
+    assert_eq!(reply.to[0].address, "erika@fabrikam.example");
+    let d: MessageDetail = call(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": r.id})).await;
+    assert!(d.body_html.contains("Anbei die Rechnung"));
+}
+
+#[tokio::test]
+async fn inbox_rules_snooze_self_mails_before_display() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let fake = ctx.fake.as_ref().unwrap();
+    let token = fake.issue_token();
+    let http = reqwest::Client::new();
+    for subject in ["Angebot prüfen #morgen", "Normale Mail an mich"] {
+        http.post(format!("{}/v1.0/me/sendMail", fake.base_url))
+            .bearer_auth(&token)
+            .json(&json!({"message": {"subject": subject, "body": {"contentType": "text", "content": "x"},
+                "toRecipients": [{"emailAddress": {"address": ME}}]}, "saveToSentItems": false}))
+            .send().await.unwrap().error_for_status().unwrap();
+    }
+    ctx.sync(&inbox.id).await;
+    let in_inbox = ctx.list(&inbox.id).await.items;
+    assert!(!in_inbox.iter().any(|m| m.subject.contains("#morgen")), "rule must move it before display");
+    assert!(in_inbox.iter().any(|m| m.subject == "Normale Mail an mich"));
+    let snoozed = ctx.folder("snoozed").await;
+    let s = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.subject.contains("#morgen")).unwrap();
+    let due = chrono::DateTime::parse_from_rfc3339(s.due_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Local);
+    assert_eq!(due.date_naive(), chrono::Local::now().date_naive() + chrono::Duration::days(1));
+    let events = ctx.host.events.lock().unwrap();
+    assert!(events.iter().any(|(e, p)| e == "rules-applied" && p["count"] == 1));
+    // The moved mail does not trigger a new-mail notification.
+    assert!(!events.iter().any(|(e, p)| e == "new-mail" && p["subject"].as_str().unwrap_or("").contains("#morgen")));
+}
+
+#[tokio::test]
+async fn kanban_lanes_as_hidden_categories() {
+    let ctx = setup().await;
+    let bad = call_err(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["To[Do]"]})).await;
+    assert!(bad.contains("Ungültiger Lane-Name"));
+    let lanes: Vec<String> = call(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["ToDo", "Warten auf", "Review"]})).await;
+    assert_eq!(lanes, ["ToDo", "Warten auf", "Review"]);
+    let cats: Vec<Category> = call(&ctx.svc, "list_categories", json!({"accountId": ctx.account})).await;
+    assert!(cats.iter().any(|c| c.display_name == "[K_ToDo]"));
+    assert!(cats.iter().any(|c| c.display_name == "[K_Warten auf]"));
+
+    let inbox = ctx.folder("inbox").await;
+    let m = ctx.list(&inbox.id).await.items.into_iter().find(|m| !m.categories.is_empty()).unwrap();
+    let other = m.categories.clone();
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "ToDo"})).await;
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "Review"})).await;
+    let after = ctx.list(&inbox.id).await.items.into_iter().find(|x| x.id == m.id).unwrap();
+    let mut expect = other.clone();
+    expect.push("[K_Review]".into());
+    assert_eq!(after.categories, expect, "other categories kept, only one lane");
+    let raw = ctx.fake.as_ref().unwrap().state.message("me", &m.id).unwrap();
+    assert!(raw["categories"].as_array().unwrap().iter().any(|c| c == "[K_Review]"));
+    assert!(call_err(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "Gibtsnicht"})).await.contains("existiert nicht"));
+
+    // Removing a lane deletes its category and strips it from mails.
+    let lanes: Vec<String> = call(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["ToDo", "Warten auf"]})).await;
+    assert_eq!(lanes.len(), 2);
+    let after = ctx.list(&inbox.id).await.items.into_iter().find(|x| x.id == m.id).unwrap();
+    assert_eq!(after.categories, other);
+    let cats: Vec<Category> = call(&ctx.svc, "list_categories", json!({"accountId": ctx.account})).await;
+    assert!(!cats.iter().any(|c| c.display_name == "[K_Review]"));
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": null})).await;
+    let got: Vec<String> = call(&ctx.svc, "get_lanes", json!({"accountId": ctx.account})).await;
+    assert_eq!(got, ["ToDo", "Warten auf"]);
+    let c: Config = call(&ctx.svc, "get_config", json!({})).await;
+    assert_eq!(c.kanban_reading_pane, "bottom");
+}
+
+#[tokio::test]
+async fn follow_up_resolves_itself_when_reply_arrives() {
+    let ctx = setup().await;
+    let remind = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let input = json!({"id": null, "mailboxId": ctx.account, "mode": "new",
+        "to": [{"name": "Erika Beispiel", "address": "erika@fabrikam.example"}], "cc": [], "bcc": [],
+        "subject": "Angebot freigeben?", "bodyHtml": "<p>Bitte bis Freitag.</p>", "importance": "normal",
+        "requestReadReceipt": false, "newAttachments": [], "removedAttachmentIds": [], "remindAt": remind});
+    let _: Value = call(&ctx.svc, "send_draft", json!({"draft": input})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let reminder = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.subject == "Nachfassen: Angebot freigeben?").unwrap();
+    assert!(reminder.categories.iter().any(|c| c.starts_with("[F_")));
+
+    // Erika answers in the same thread.
+    let fake = ctx.fake.as_ref().unwrap();
+    let sent = fake.state.sent_messages("me").into_iter().find(|m| m["subject"] == "Angebot freigeben?").unwrap();
+    fake.state.inject_incoming("me", "inbox", json!({
+        "subject": "AW: Angebot freigeben?", "conversationId": sent["conversationId"], "isRead": false,
+        "from": {"emailAddress": {"name": "Erika Beispiel", "address": "erika@fabrikam.example"}},
+    }));
+    let inbox = ctx.folder("inbox").await;
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&snoozed.id).await.items.iter().any(|m| m.id == reminder.id), "reminder must be resolved");
+    let archive = ctx.folder("archive").await;
+    ctx.sync(&archive.id).await;
+    assert!(ctx.list(&archive.id).await.items.iter().any(|m| m.subject == "Nachfassen: Angebot freigeben?"));
+    assert!(ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == "AW: Angebot freigeben?"));
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, p)| e == "followup-resolved" && p["from"] == "Erika Beispiel"));
+}
+
+#[tokio::test]
+async fn recurring_task_reschedules_on_archive() {
+    let ctx = setup().await;
+    let due = (chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339();
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Monatsabschluss", "bodyHtml": "<p>Belege</p>", "due": due, "recurrence": "monthly"}),
+    )
+    .await;
+    assert_eq!(t.recurrence.as_deref(), Some("monthly"));
+    assert!(t.categories.contains(&"[#monthly]".to_string()));
+    // Due → back in the inbox, keeps its due time (anchor of the rhythm).
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    ctx.svc.sync_all(true).await;
+    let inbox = ctx.folder("inbox").await;
+    let back = ctx.list(&inbox.id).await.items.into_iter().find(|m| m.subject == "Monatsabschluss").unwrap();
+    assert!(!back.is_read);
+    assert!(back.due_at.is_some());
+    // Done → archived, next occurrence one month later waits in Wiedervorlage.
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [back.id]})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let next = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.subject == "Monatsabschluss").expect("next occurrence");
+    assert_eq!(next.recurrence.as_deref(), Some("monthly"));
+    let d0 = chrono::DateTime::parse_from_rfc3339(back.due_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Local);
+    let d1 = chrono::DateTime::parse_from_rfc3339(next.due_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Local);
+    assert!(d1 > d0 + chrono::Duration::days(27) && d1 < d0 + chrono::Duration::days(32), "{d0} → {d1}");
+    assert_eq!(d1.time().format("%H:%M").to_string(), d0.time().format("%H:%M").to_string());
+    // Turning recurrence off.
+    let _: Value = call(&ctx.svc, "set_recurrence", json!({"mailboxId": ctx.account, "ids": [next.id], "recurrence": null})).await;
+    let n = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.id == next.id).unwrap();
+    assert!(n.recurrence.is_none());
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, _)| e == "recurrence-scheduled"));
+}
+
+#[tokio::test]
+async fn today_view_and_focus_time() {
+    let ctx = setup().await;
+    let _: Vec<String> = call(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["ToDo", "Warten"]})).await;
+    let inbox = ctx.folder("inbox").await;
+    let m = ctx.list(&inbox.id).await.items[0].clone();
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "ToDo"})).await;
+    let soon = (chrono::Utc::now() + chrono::Duration::minutes(2)).to_rfc3339();
+    let later = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let _: MessageSummary = call(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": "Gleich fällig", "due": soon})).await;
+    let _: MessageSummary = call(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": "Später", "due": later})).await;
+    let today: Value = call(&ctx.svc, "list_today", json!({})).await;
+    let due: Vec<String> = today["due"].as_array().unwrap().iter().map(|m| m["subject"].as_str().unwrap().to_string()).collect();
+    // "Gleich fällig" is due today unless the test runs right before midnight.
+    let tomorrow_starts_in = (chrono::Local::now().date_naive() + chrono::Duration::days(1))
+        .and_hms_opt(0, 0, 0).unwrap().and_local_timezone(chrono::Local).unwrap() - chrono::Local::now();
+    if tomorrow_starts_in > chrono::Duration::minutes(3) {
+        assert!(due.contains(&"Gleich fällig".to_string()), "{due:?}");
+    }
+    assert!(!due.contains(&"Später".to_string()));
+    assert_eq!(today["todo"][0]["lane"], "ToDo");
+    assert_eq!(today["todo"][0]["items"][0]["id"], m.id.as_str());
+
+    // Fokuszeit pauses the automatic fetch, manual sync still works.
+    let f: Value = call(&ctx.svc, "set_focus", json!({"minutes": 60})).await;
+    assert!(f["until"].is_string());
+    let g: Value = call(&ctx.svc, "get_focus", json!({})).await;
+    assert_eq!(g["until"], f["until"]);
+    let _: Value = call(&ctx.svc, "set_focus", json!({"minutes": 0})).await;
+    let g: Value = call(&ctx.svc, "get_focus", json!({})).await;
+    assert!(g["until"].is_null());
+    assert!(ctx.host.events.lock().unwrap().iter().filter(|(e, _)| e == "focus-changed").count() >= 2);
 }

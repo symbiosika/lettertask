@@ -7,10 +7,12 @@
 
 mod auth;
 mod calendar;
+mod contacts;
 mod mail;
 mod misc;
 mod png;
 mod seed;
+pub mod smtp;
 mod state;
 mod util;
 
@@ -109,6 +111,7 @@ fn router(state: SharedState) -> Router {
         .route("/", get(|| async { "graph-fake: Microsoft Graph v1.0 test double. Graph at /v1.0" }))
         .route("/{tenant}/oauth2/v2.0/authorize", get(auth::authorize))
         .route("/{tenant}/oauth2/v2.0/token", post(auth::token))
+        .route("/{tenant}/oauth2/v2.0/devicecode", post(auth::devicecode))
         .route("/upload/{sid}", put(mail::upload_chunk).delete(mail::upload_cancel))
         .route("/v1.0", any(graph))
         .route("/v1.0/{*rest}", any(graph))
@@ -209,6 +212,7 @@ fn dispatch(st: &SharedState, req: &Req) -> util::GResult {
         "mailFolders" | "messages" | "sendMail" => mail::handle(&mut s, idx, rest, req),
         "calendars" | "calendar" | "events" | "calendarView" => calendar::handle(&mut s.mailboxes[idx], rest, req),
         "people" | "outlook" | "mailboxSettings" => misc::handle(&mut s.mailboxes[idx], rest, req),
+        "contacts" => contacts::handle(&mut s.mailboxes[idx], rest, req),
         other => Err(GErr::new(
             StatusCode::BAD_REQUEST,
             "BadRequest",

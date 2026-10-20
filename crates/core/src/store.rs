@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS messages (
     has_att INTEGER NOT NULL DEFAULT 0,
     categories_json TEXT NOT NULL DEFAULT '[]',
     preview TEXT NOT NULL DEFAULT '',
+    due_at TEXT,
     PRIMARY KEY (mailbox_id, id)
 );
 CREATE INDEX IF NOT EXISTS messages_folder ON messages(mailbox_id, folder_id, received);
@@ -85,6 +86,15 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (account_id, calendar_id, id)
 );
 CREATE INDEX IF NOT EXISTS events_range ON events(account_id, calendar_id, start, end);
+CREATE TABLE IF NOT EXISTS contacts (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    search TEXT NOT NULL,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS contacts_name ON contacts(display_name COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -95,12 +105,13 @@ CREATE TABLE IF NOT EXISTS kv (
 fn well_known_rank(w: Option<&str>) -> i32 {
     match w {
         Some("inbox") => 0,
-        Some("drafts") => 1,
-        Some("sentitems") => 2,
-        Some("deleteditems") => 3,
-        Some("archive") => 4,
-        Some("junkemail") => 5,
-        Some("outbox") => 6,
+        Some("snoozed") => 1,
+        Some("drafts") => 2,
+        Some("sentitems") => 3,
+        Some("deleteditems") => 4,
+        Some("archive") => 5,
+        Some("junkemail") => 6,
+        Some("outbox") => 7,
         _ => 100,
     }
 }
@@ -117,6 +128,13 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        // Migrations for caches created by older versions.
+        let has_due: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='due_at'")?
+            .exists([])?;
+        if !has_due {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN due_at TEXT")?;
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -161,8 +179,10 @@ impl Store {
         let mut st = c.prepare("SELECT id,email,display_name FROM accounts ORDER BY created, email")?;
         let mut accounts: Vec<Account> = st
             .query_map([], |r| {
+                let id: String = r.get(0)?;
                 Ok(Account {
-                    id: r.get(0)?,
+                    kind: if crate::imap::is_imap_id(&id) { "imap" } else { "o365" }.into(),
+                    id,
                     email: r.get(1)?,
                     display_name: r.get(2)?,
                     mailboxes: vec![],
@@ -250,8 +270,8 @@ impl Store {
             "INSERT INTO folders(mailbox_id,id,parent_id,display_name,well_known,unread,total,child_count)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(mailbox_id,id) DO UPDATE SET parent_id=excluded.parent_id,
-               display_name=excluded.display_name, unread=excluded.unread, total=excluded.total,
-               child_count=excluded.child_count",
+               display_name=excluded.display_name, well_known=excluded.well_known,
+               unread=excluded.unread, total=excluded.total, child_count=excluded.child_count",
             params![
                 f.mailbox_id,
                 f.id,
@@ -377,14 +397,14 @@ impl Store {
         {
             let mut st = tx.prepare(
                 "INSERT INTO messages(mailbox_id,id,folder_id,conversation_id,subject,from_name,from_addr,
-                   to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                   to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(mailbox_id,id) DO UPDATE SET folder_id=excluded.folder_id,
                    conversation_id=excluded.conversation_id, subject=excluded.subject,
                    from_name=excluded.from_name, from_addr=excluded.from_addr, to_json=excluded.to_json,
                    received=excluded.received, is_read=excluded.is_read, is_draft=excluded.is_draft,
                    importance=excluded.importance, flag=excluded.flag, has_att=excluded.has_att,
-                   categories_json=excluded.categories_json, preview=excluded.preview",
+                   categories_json=excluded.categories_json, preview=excluded.preview, due_at=excluded.due_at",
             )?;
             for m in msgs {
                 let (fname, faddr) = m
@@ -408,7 +428,8 @@ impl Store {
                     m.flag,
                     m.has_attachments,
                     serde_json::to_string(&m.categories)?,
-                    m.preview
+                    m.preview,
+                    m.due_at
                 ])?;
             }
         }
@@ -563,6 +584,31 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Messages of a mailbox (any folder) carrying a category.
+    pub fn messages_with_category(&self, mailbox_id: &str, category: &str) -> Result<Vec<MessageSummary>> {
+        let pattern = format!("%{}%", serde_json::to_string(category)?);
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND categories_json LIKE ?2 ORDER BY received DESC"
+        ))?;
+        let rows = st.query_map(params![mailbox_id, pattern], message_row)?;
+        Ok(rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|m| m.categories.iter().any(|x| x == category))
+            .collect())
+    }
+
+    /// Messages of a mailbox with a due time before `ts` (RFC3339 UTC).
+    pub fn messages_due_before(&self, mailbox_id: &str, ts: &str) -> Result<Vec<MessageSummary>> {
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND due_at IS NOT NULL AND due_at < ?2 ORDER BY due_at"
+        ))?;
+        let rows = st.query_map(params![mailbox_id, ts], message_row)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // ---- message bodies ----
 
     pub fn put_detail(&self, d: &MessageDetail) -> Result<()> {
@@ -672,6 +718,105 @@ impl Store {
         Ok(())
     }
 
+    // ---- contacts ----
+
+    pub fn upsert_contact(&self, c: &Contact) -> Result<()> {
+        let search = format!(
+            "{} {} {} {} {}",
+            c.display_name,
+            c.given_name,
+            c.surname,
+            c.emails.join(" "),
+            c.company
+        )
+        .to_lowercase();
+        self.c().execute(
+            "INSERT OR REPLACE INTO contacts(id,account_id,source,display_name,search,json) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![c.id, c.account_id, c.source, c.display_name, search, serde_json::to_string(c)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_contact(&self, id: &str) -> Result<()> {
+        self.c().execute("DELETE FROM contacts WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn delete_account_contacts(&self, account_id: &str) -> Result<()> {
+        self.c()
+            .execute("DELETE FROM contacts WHERE account_id=?1", params![account_id])?;
+        Ok(())
+    }
+
+    pub fn get_contact(&self, id: &str) -> Result<Option<Contact>> {
+        let json: Option<String> = self
+            .c()
+            .query_row("SELECT json FROM contacts WHERE id=?1", params![id], |r| r.get(0))
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    /// Contacts matching all words of `query` (name, emails, company).
+    /// `source` filters by "o365" | "local" | "collected".
+    pub fn list_contacts(
+        &self,
+        query: Option<&str>,
+        account_id: Option<&str>,
+        source: Option<&str>,
+        offset: i64,
+        limit: i64,
+    ) -> Result<ContactPage> {
+        let words: Vec<String> = query
+            .unwrap_or("")
+            .split_whitespace()
+            .map(|w| format!("%{}%", w.to_lowercase().replace('%', "\\%").replace('_', "\\_")))
+            .collect();
+        let mut sql = String::from("FROM contacts WHERE (?1 IS NULL OR account_id=?1) AND (?2 IS NULL OR source=?2)");
+        for i in 0..words.len() {
+            sql.push_str(&format!(" AND search LIKE ?{} ESCAPE '\\'", i + 3));
+        }
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            account_id.map(|s| s.to_string().into()).unwrap_or(rusqlite::types::Value::Null),
+            source.map(|s| s.to_string().into()).unwrap_or(rusqlite::types::Value::Null),
+        ];
+        values.extend(words.into_iter().map(rusqlite::types::Value::from));
+        let c = self.c();
+        let total: i64 = c.query_row(
+            &format!("SELECT COUNT(*) {sql}"),
+            rusqlite::params_from_iter(values.iter()),
+            |r| r.get(0),
+        )?;
+        let limit = if limit <= 0 { 500 } else { limit };
+        let mut st = c.prepare(&format!(
+            "SELECT json {sql} ORDER BY CASE source WHEN 'collected' THEN 1 ELSE 0 END, display_name COLLATE NOCASE LIMIT {limit} OFFSET {}",
+            offset.max(0)
+        ))?;
+        let rows = st.query_map(rusqlite::params_from_iter(values.iter()), |r| r.get::<_, String>(0))?;
+        let mut items = Vec::new();
+        for j in rows {
+            if let Ok(ct) = serde_json::from_str(&j?) {
+                items.push(ct);
+            }
+        }
+        Ok(ContactPage { items, total })
+    }
+
+    /// True if any contact already has this e-mail address.
+    pub fn contact_with_email(&self, email: &str) -> Result<bool> {
+        let pattern = format!("%{}%", email.to_lowercase());
+        let found: Option<String> = self
+            .c()
+            .query_row(
+                "SELECT json FROM contacts WHERE search LIKE ?1",
+                params![pattern],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found
+            .and_then(|j| serde_json::from_str::<Contact>(&j).ok())
+            .is_some_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(email))))
+    }
+
     // ---- kv ----
 
     pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
@@ -690,9 +835,15 @@ impl Store {
     }
 }
 
-const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview";
+const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at";
 
 fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
+    let mut m = message_row_raw(r)?;
+    m.recurrence = recurrence_of(&m.categories);
+    Ok(m)
+}
+
+fn message_row_raw(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     let from_name: String = r.get(5)?;
     let from_addr: String = r.get(6)?;
     let to_json: String = r.get(7)?;
@@ -720,6 +871,8 @@ fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
         has_attachments: r.get(13)?,
         categories: serde_json::from_str(&cat_json).unwrap_or_default(),
         preview: r.get(15)?,
+        due_at: r.get(16)?,
+        recurrence: None,
     })
 }
 
@@ -770,6 +923,8 @@ mod tests {
             has_attachments: false,
             categories: cats.iter().map(|s| s.to_string()).collect(),
             preview: String::new(),
+            due_at: None,
+            recurrence: None,
         }
     }
 

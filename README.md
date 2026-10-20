@@ -1,82 +1,100 @@
-# Outlook Classic – E-Mail & Kalender für Microsoft 365
+# Outlook Classic – fokussiertes Mailprogramm für Microsoft 365 und IMAP
 
-Ein Desktop-Mailprogramm in **Rust** (Tauri 2), das sich bewusst am **klassischen Outlook / eM Client**
-orientiert: Ordnerbaum links, Nachrichtenliste mit Spalten in der Mitte, Lesebereich rechts,
-Navigationsschaltflächen (E-Mail / Kalender) unten links, Statusleiste – dicht und übersichtlich.
+Ein Desktop-Mailprogramm in **Rust** (Tauri 2) für konzentriertes Arbeiten nach dem
+**Inbox-Zero-Prinzip**: Das Postfach ist die Aufgabenliste. Die Oberfläche orientiert sich an
+eM Client – ruhig, schlicht, eine Mail = ein Eintrag (keine Konversations-Gruppierung).
 
-Es spricht ausschließlich die **Microsoft Graph API** (EWS wird von Microsoft abgeschaltet).
+Microsoft-365-Postfächer werden ausschließlich über die **Microsoft Graph API** angebunden
+(EWS wird von Microsoft abgeschaltet), andere Anbieter über **IMAP/SMTP**.
 
 ## Funktionen
 
 **E-Mail**
-- Mehrere Konten, zusätzlich **freigegebene Postfächer** (`/users/{adresse}`)
-- Vollständiger Ordnerbaum inkl. Unterordner, Favoriten, Ungelesen-Zähler
-- Ordner anlegen / umbenennen / löschen, „Alle als gelesen markieren“, „Ordner leeren“
-- Spaltenliste (Wichtigkeit, Anhang, Von, Betreff, Erhalten, Kategorien, Kennzeichnung), sortierbar,
-  Spaltenbreiten veränderbar, Gruppierung nach Datum (Heute, Gestern, Letzte Woche …), optional
-  zweizeilige eM-Client-Ansicht
-- Filter: Alle / Ungelesen / Gekennzeichnet / Kategorie, Schnellfilter lokal, Serversuche (Enter)
-- Lesebereich rechts, unten oder aus; Nachricht im eigenen Fenster per Doppelklick
-- HTML-Mails in einem **abgeschotteten WebView-iframe** (keine Skripte, CSP); externe Bilder werden
-  standardmäßig blockiert („Bilder herunterladen“), Inline-Bilder (`cid:`) werden aufgelöst
-- Antworten, Allen antworten, Weiterleiten (serverseitige Entwürfe → korrekte Konversationen),
-  Signatur, Rich-Text-Editor, Cc/Bcc mit Adressvorschlägen (People-API + bekannte Absender),
-  Wichtigkeit, Lesebestätigung, Anhänge (große Anhänge > 3 MB per Upload-Session), Entwürfe
-- Verschieben/Kopieren (auch Drag & Drop), Löschen (in „Gelöschte Elemente“ bzw. endgültig),
-  Gelesen/Ungelesen, Kennzeichnung (Kennzeichnen / Erledigt), Quelltext anzeigen
-- **Kategorien**: Outlook-Masterkategorien mit allen 25 Farben – zuweisen, anlegen, Farbe ändern,
-  löschen; farbige Anzeige in Liste, Lesebereich und Kalender
-- Abwesenheitsnotiz (intern/extern, zeitgesteuert)
-- Hintergrund-Synchronisation per **Delta-Abfragen**, Desktop-Benachrichtigung bei neuer Mail,
-  lokaler **SQLite-Cache** (schnelles Sortieren, Offline-Lesen)
-- Tastenkürzel wie in Outlook: Strg+N, Strg+R, Strg+Umschalt+R, Strg+F, Strg+Q/U, Entf, F9 …
+- Konten: **Microsoft 365** (Login im Browser inkl. MFA) und **IMAP/SMTP** mit automatischer
+  Servererkennung (Thunderbird-Datenbank, autoconfig) und Verbindungstest
+- Aktionsleiste: **Neu ▾** (E-Mail / Termin / Aufgabe), Antworten, Allen antworten, Weiterleiten,
+  Archivieren, **Auf Wiedervorlage ▾**, Löschen
+- Suche oben mit Bereich (aktueller Ordner / alle Ordner), Feld (Von, An, Betreff, Text),
+  „Nur mit Anhang“ und letzten Suchen
+- Liste mit Avatar, Vorschau und Tags; Lesebereich rechts, unten oder aus; HTML-Mails in einem
+  **abgeschotteten WebView-iframe** (keine Skripte, CSP), externe Bilder erst auf Klick
+- **Tags** (Outlook-Kategorien mit allen 25 Farben) oben rechts in der Mail – bis zu 20 direkt
+  wählbar, Taste **T**
+- Verfassen im eM-Client-Stil: Signatur ▾, Cc & Bcc, Rich-Text, Anhänge (auch > 3 MB),
+  Adressvorschläge aus Kontakten
+- **Signaturen pro Konto**: Liste mit Standard, einstellbar für Neu / Antworten / Weiterleiten
+- **Kontakte**: Outlook-Kontakte werden lokal synchronisiert, Adressen von Empfängern automatisch
+  gesammelt; eigener Kontakte-Bereich
+- Abwesenheitsnotiz, Ordnerverwaltung, Drag & Drop, Offline-Lesen dank lokalem SQLite-Cache,
+  Hintergrund-Synchronisation per Delta-Abfragen, Desktop-Benachrichtigungen
 
-**Kalender**
-- Ansichten Tag / Arbeitswoche / Woche / Monat, Datumsnavigator, mehrere Kalender mit Farben
-- Termine und Besprechungen anlegen/bearbeiten/löschen, Teilnehmer, Teams-Besprechung,
-  Erinnerung, „Anzeigen als“, Kategorien, Vertraulichkeit, Serien (täglich/wöchentlich/monatlich/jährlich)
-- Einladungen annehmen / mit Vorbehalt / ablehnen – auch direkt aus der Einladungs-Mail
+**Inbox Zero**
+- **Auf Wiedervorlage**: Mail verschwindet in den Ordner „Wiedervorlage“ und kommt zum gewählten
+  Zeitpunkt ungelesen zurück. Zeitpunkte konfigurierbar (Standard: Morgen 8 Uhr, Übermorgen,
+  Am Wochenende, Nächste Woche, In 14 / 30 Tagen). Der Termin liegt auf dem Server
+  (M365: Nachverfolgung, IMAP: Schlagwort) und gilt damit geräteübergreifend.
+- **Aufgabe (Mail)**: Mail an sich selbst mit Fälligkeit („Sofort“ oder Wiedervorlage) – direkt
+  serverseitig angelegt, erscheint auf keinem Gerät vorzeitig; optional **wiederkehrend**
+  (täglich … jährlich, fester Rhythmus beim Archivieren)
+- **Erinnerung an mich** beim Senden: Nachfass-Mail in der Wiedervorlage; sie **erledigt sich
+  selbst**, sobald der Empfänger im selben Verlauf antwortet
+- **Regeln vor der Anzeige**: Mails an sich selbst mit `#morgen`, `#heute`, `#wochenende`,
+  `#nächstewoche`, `#14t`, `#2w` … im Betreff landen sofort auf Wiedervorlage (Aufgaben vom Handy)
+- **Kanban**-Ansicht mit Lanes pro Konto (versteckte Kategorien `[K_<Lane>]`, alte Clients bleiben
+  kompatibel), Drag & Drop, Lesebereich unten oder rechts
+- **Heute**: alles heute Fällige plus die erste Kanban-Lane
+- **Fokuszeit** (1–4 h): automatischer Abruf pausiert, manueller Abruf bleibt möglich
+- Triage per Tastatur: **E** archivieren, **S** Wiedervorlage, **1–9** Lane; schlichtes Konfetti
+  bei erledigten Aufgaben
 
-## Schnellstart ohne Microsoft-Konto (Demo-Modus)
+**Kalender** (Microsoft 365)
+- Tag / Arbeitswoche / Woche / Monat, mehrere Kalender, Termine und Besprechungen mit Teilnehmern,
+  Teams-Besprechung, Serien; Einladungen annehmen / mit Vorbehalt / ablehnen
+
+Versteckte Kategorien, die die App verwendet: `[K_…]` Kanban-Lane, `[#monthly]` usw. Wiederholung,
+`[F_…]` Nachfass-Verknüpfung. Sie werden in der Oberfläche nicht als Tags angezeigt.
+
+## Schnellstart ohne Konto (Demo-Modus)
 
 ```bash
-cargo run -p outlook-clone -- --demo
+cargo run -p outlook-clone -- --demo          # Desktop-App
+cargo run -p devserver -- --demo --port 8080  # oder im Browser: http://127.0.0.1:8080
 ```
 
-Der Demo-Modus startet einen eingebauten Fake-Graph-Server mit Beispieldaten (Mails, Ordner,
-Kategorien, Kalender) und meldet sich automatisch an. Alles ist bedienbar, nichts verlässt den Rechner.
-
-Alternativ im Browser (Entwicklung): `cargo run -p devserver -- --demo --port 8080` → http://127.0.0.1:8080
+Ein eingebauter Fake-Graph-Server liefert Beispieldaten; nichts verlässt den Rechner.
 
 ## Mit Microsoft 365 verwenden
 
-### 1. App in Entra ID (Azure AD) registrieren – einmalig, ca. 3 Minuten
+Die App-Registrierung von Symbiosika (Client-ID und Mandant) ist fest eingebaut – Anmelden genügt.
+Das ist unbedenklich: Desktop-Apps sind öffentliche Clients ohne Geheimnis, beide IDs sind
+öffentliche Kennungen. Mit dem fest eingebauten Mandanten können sich Konten dieses Tenants
+anmelden; unter Einstellungen › Konten › Erweitert lassen sich Client-ID und Mandant ändern.
+Für eigene Builds: `OUTLOOK_CLASSIC_CLIENT_ID=<guid> OUTLOOK_CLASSIC_TENANT=<guid|organizations> cargo build`.
 
-1. https://entra.microsoft.com → **Anwendungen › App-Registrierungen › Neue Registrierung**
-2. Name z. B. „Outlook Classic“, *Unterstützte Kontotypen*: „Nur Konten in diesem Organisationsverzeichnis“
-   (oder mehrinstanzenfähig, wenn mehrere Tenants genutzt werden sollen)
-3. **Umleitungs-URI**: Plattform **„Öffentlicher Client/nativ (mobil und Desktop)“**, URI `http://localhost`
-4. Nach dem Anlegen unter **Authentifizierung** „Öffentliche Clientflows zulassen“ → **Ja**
-5. Unter **API-Berechtigungen › Microsoft Graph › Delegierte Berechtigungen** hinzufügen:
-   `User.Read`, `Mail.ReadWrite`, `Mail.ReadWrite.Shared`, `Mail.Send`, `Mail.Send.Shared`,
-   `Calendars.ReadWrite`, `Calendars.ReadWrite.Shared`, `MailboxSettings.ReadWrite`, `People.Read`,
+**Anforderungen an die App-Registrierung** (Entra ID › App-Registrierungen):
+1. Plattform **„Mobile und Desktopanwendungen“**, Umleitungs-URI `http://localhost`
+2. Authentifizierung: **„Öffentliche Clientflows zulassen“ → Ja** (für den Gerätecode-Login)
+3. Delegierte Microsoft-Graph-Berechtigungen: `User.Read`, `Mail.ReadWrite`, `Mail.Send`,
+   `Calendars.ReadWrite`, `Contacts.ReadWrite`, `MailboxSettings.ReadWrite`, `People.Read`,
    `offline_access`, `openid`, `profile` – danach **„Administratorzustimmung erteilen“**
-6. Die **Anwendungs-ID (Client-ID)** kopieren (und ggf. die Verzeichnis-ID/Tenant-ID)
 
-### 2. Anmelden
+Login: Authorization Code Flow mit PKCE und Loopback-Redirect. Das Refresh-Token liegt im
+Schlüsselbund des Betriebssystems (Windows Anmeldeinformationsverwaltung, macOS Schlüsselbund,
+Linux Secret Service), sonst in einer nur für den Benutzer lesbaren Datei. IMAP-Passwörter ebenso.
 
-App starten → im Willkommensdialog Client-ID und Tenant (`organizations`, Tenant-ID oder Domain)
-eintragen → **Anmelden**. Der Standardbrowser öffnet die Microsoft-Anmeldung (inkl. MFA);
-danach kehrt man automatisch zur App zurück (Authorization Code Flow mit PKCE, Loopback-Redirect).
+### Verbindung prüfen (ohne Oberfläche)
 
-Das Refresh-Token liegt im Schlüsselbund des Betriebssystems (Windows Anmeldeinformationsverwaltung,
-macOS Schlüsselbund, Linux Secret Service); ist keiner verfügbar, in einer nur für den Benutzer
-lesbaren Datei im App-Datenverzeichnis.
+```bash
+cargo run -p devserver --bin live-check              # nur lesend, Login per Gerätecode
+cargo run -p devserver --bin live-check -- --write   # zusätzlich Schreibtests (räumt auf)
+```
+
+Nutzt dieselbe Service-Schicht wie die App und gibt nur Zähler aus, keine Mailinhalte.
 
 ## Bauen
 
 Voraussetzungen: Rust ≥ 1.80, unter Linux zusätzlich
-`libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libssl-dev`.
+`libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev`.
 
 ```bash
 cargo build --release -p outlook-clone          # Binärdatei: target/release/outlook-clone
@@ -84,7 +102,7 @@ cargo install tauri-cli --version "^2"          # einmalig, für Installer
 cd src-tauri && cargo tauri build               # MSI/NSIS (Windows), DMG (macOS), deb/AppImage (Linux)
 ```
 
-Fertige Installer für Windows, macOS und Linux baut auch der GitHub-Workflow `release.yml`
+Installer für Windows, macOS und Linux baut auch der GitHub-Workflow `release.yml`
 (manuell auslösbar oder per Tag `v*`).
 
 ## Architektur
@@ -92,9 +110,9 @@ Fertige Installer für Windows, macOS und Linux baut auch der GitHub-Workflow `r
 ```
 ui/                    Oberfläche (HTML/CSS/ES-Module, kein Build-Schritt), läuft im WebView
 src-tauri/             Tauri-Shell: Fenster, Dialoge, Benachrichtigungen, ein Befehl `call`
-crates/core/           mailcore: OAuth (PKCE), Graph-Client, Delta-Sync, SQLite-Cache, Service-API
-crates/graph-fake/     zustandsbehafteter Fake von Microsoft Graph (Tests + Demo-Modus)
-crates/devserver/      dieselbe Service-API über HTTP/SSE – für Browser-Entwicklung und E2E-Tests
+crates/core/           mailcore: OAuth, Graph- und IMAP/SMTP-Anbindung, Sync, SQLite-Cache, Service-API
+crates/graph-fake/     zustandsbehafteter Fake von Microsoft Graph + SMTP-Sink (Tests, Demo-Modus)
+crates/devserver/      dieselbe Service-API über HTTP/SSE (Browser-Entwicklung, E2E-Tests, live-check)
 docs/API.md            Vertrag zwischen Oberfläche und Backend
 tests/e2e/             Playwright-Tests der Oberfläche gegen den Dev-Server
 ```
@@ -102,6 +120,16 @@ tests/e2e/             Playwright-Tests der Oberfläche gegen den Dev-Server
 ## Tests
 
 ```bash
-cargo test --workspace                 # Kern + Fake-Server (inkl. Login, Delta, Senden, Kalender)
-cd tests/e2e && npm ci && npx playwright test   # UI-Ende-zu-Ende (startet den Dev-Server selbst)
+cargo test --workspace     # Kern, Fake-Server, IMAP gegen echtes Dovecot (übersprungen, wenn nicht installiert)
+cd tests/e2e && npm ci && npx playwright install chromium && npx playwright test   # Oberfläche Ende-zu-Ende
 ```
+
+Die IMAP-Tests starten einen privaten Dovecot (`apt install dovecot-imapd`). Die E2E-Tests bauen und
+starten den Dev-Server selbst, jedes Mal mit frischen Demodaten. Der Playwright-Testrunner braucht
+Node.js; unter Bun allein läuft er nicht (er beendet sich ohne Ausgabe).
+
+### Oberfläche starten (ohne Node/Bun)
+
+Die Oberfläche in `ui/` hat keinen Build-Schritt, das Rust-Backend liefert sie aus. Weder Bun noch
+npm sind nötig (siehe Schnellstart). Änderungen an `ui/` werden im Browser-Modus mit einem Neuladen
+der Seite (F5) sichtbar.

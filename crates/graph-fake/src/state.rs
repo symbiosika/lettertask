@@ -234,6 +234,10 @@ pub struct Mailbox {
     pub events: HashMap<String, Ev>,
     pub auto_reply: Value,
     pub people: Vec<Value>,
+    /// Outlook contacts: (last change seq, contact json).
+    pub contacts: Vec<(u64, Value)>,
+    /// Deleted contacts: (seq, id) – for delta queries.
+    pub contact_tombstones: Vec<(u64, String)>,
 }
 
 impl Mailbox {
@@ -283,6 +287,8 @@ impl Mailbox {
                 "scheduledEndDateTime": { "dateTime": crate::util::graph_dt((now + Duration::days(1)).naive_utc()), "timeZone": "UTC" }
             }),
             people: Vec::new(),
+            contacts: Vec::new(),
+            contact_tombstones: Vec::new(),
         }
     }
 
@@ -412,6 +418,8 @@ pub struct AuthState {
     pub access: HashMap<String, DateTime<Utc>>,
     /// refresh token → scope
     pub refresh: HashMap<String, String>,
+    /// device code → (client_id, scope, polls so far)
+    pub device: HashMap<String, (String, String, u32)>,
 }
 
 pub struct State {

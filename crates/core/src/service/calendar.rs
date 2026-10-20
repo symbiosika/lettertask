@@ -17,6 +17,9 @@ fn utc_header() -> [(&'static str, String); 1] {
 
 impl Service {
     pub(crate) async fn list_calendars(&self, account_id: &str) -> Result<Vec<Calendar>> {
+        if crate::imap::is_imap_id(account_id) {
+            return Ok(vec![]);
+        }
         let c = self.client(account_id)?;
         match c
             .get_all(
@@ -47,6 +50,9 @@ impl Service {
         start: &str,
         end: &str,
     ) -> Result<Vec<Event>> {
+        if crate::imap::is_imap_id(account_id) {
+            return Ok(vec![]);
+        }
         let start = convert::normalize_utc(start);
         let end = convert::normalize_utc(end);
         if start.is_empty() || end.is_empty() || start >= end {
@@ -121,6 +127,9 @@ impl Service {
     }
 
     pub(crate) async fn get_event(&self, account_id: &str, event_id: &str) -> Result<EventDetail> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
+        }
         let c = self.client(account_id)?;
         let (v, event) = self.fetch_event(&c, account_id, event_id).await?;
         Ok(EventDetail {
@@ -140,6 +149,9 @@ impl Service {
     }
 
     pub(crate) async fn create_event(&self, account_id: &str, calendar_id: &str, input: EventInput) -> Result<Event> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
+        }
         Self::validate_event(&input)?;
         let c = self.client(account_id)?;
         let mut body = convert::event_input_to_graph(&input);
@@ -163,6 +175,9 @@ impl Service {
     }
 
     pub(crate) async fn update_event(&self, account_id: &str, event_id: &str, input: EventInput) -> Result<Event> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
+        }
         Self::validate_event(&input)?;
         let c = self.client(account_id)?;
         let (_, existing) = self.fetch_event(&c, account_id, event_id).await?;
@@ -203,6 +218,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_event(&self, account_id: &str, event_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
+        }
         let c = self.client(account_id)?;
         c.delete(&format!("/me/events/{}", seg(event_id))).await?;
         self.store.delete_event(account_id, event_id)?;
@@ -218,6 +236,9 @@ impl Service {
         comment: &str,
         send_response: bool,
     ) -> Result<()> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
+        }
         if !matches!(response, "accept" | "tentativelyAccept" | "decline") {
             return Err(Error::invalid("Ungültige Antwort"));
         }

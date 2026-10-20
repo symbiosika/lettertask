@@ -1,4 +1,5 @@
-//! Microsoft Entra v2.0 authorize/token endpoints (authorization code + PKCE, refresh).
+//! Microsoft Entra v2.0 authorize/token/devicecode endpoints (authorization code + PKCE,
+//! device code, refresh).
 
 use std::collections::HashMap;
 
@@ -106,6 +107,23 @@ pub async fn token(State(st): State<SharedState>, Path(_tenant): Path<String>, F
             }
             scope
         }
+        Some("urn:ietf:params:oauth:grant-type:device_code") => {
+            let dc = f.get("device_code").cloned().unwrap_or_default();
+            let Some(entry) = s.auth.device.get_mut(&dc) else {
+                return oauth_error("expired_token", "AADSTS70019: Verification code expired.", &[70019]);
+            };
+            if f.get("client_id") != Some(&entry.0) {
+                return oauth_error("invalid_client", "AADSTS700016: client_id does not match the device code request.", &[700016]);
+            }
+            // Like a real user, "sign in" only after the client polled once.
+            entry.2 += 1;
+            if entry.2 < 2 {
+                return oauth_error("authorization_pending", "AADSTS70016: OAuth 2.0 device flow error. Authorization is pending.", &[70016]);
+            }
+            let scope = entry.1.clone();
+            s.auth.device.remove(&dc);
+            scope
+        }
         Some("refresh_token") => {
             let rt = f.get("refresh_token").map(String::as_str).unwrap_or("");
             match s.auth.refresh.get(rt) {
@@ -127,6 +145,26 @@ pub async fn token(State(st): State<SharedState>, Path(_tenant): Path<String>, F
         "ext_expires_in": 3600,
         "access_token": access,
         "refresh_token": refresh,
+    }))
+    .into_response()
+}
+
+/// `POST /{tenant}/oauth2/v2.0/devicecode`
+pub async fn devicecode(State(st): State<SharedState>, Path(_tenant): Path<String>, Form(f): Form<HashMap<String, String>>) -> Response {
+    let Some(client_id) = f.get("client_id").filter(|c| !c.is_empty()).cloned() else {
+        return oauth_error("invalid_request", "AADSTS900144: The request body must contain the following parameter: 'client_id'.", &[900144]);
+    };
+    let scope = f.get("scope").cloned().unwrap_or_default();
+    let device_code = format!("fake-dc-{}", uuid::Uuid::new_v4().simple());
+    let user_code = uuid::Uuid::new_v4().simple().to_string()[..9].to_uppercase();
+    st.lock().auth.device.insert(device_code.clone(), (client_id, scope, 0));
+    axum::Json(json!({
+        "user_code": user_code,
+        "device_code": device_code,
+        "verification_uri": "https://microsoft.com/devicelogin",
+        "expires_in": 900,
+        "interval": 1,
+        "message": format!("To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code {user_code} to authenticate."),
     }))
     .into_response()
 }

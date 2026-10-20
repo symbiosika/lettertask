@@ -102,6 +102,11 @@ pub fn message_summary(v: &Value, mailbox_id: &str, fallback_folder: &str) -> Me
         has_attachments: v["hasAttachments"].as_bool().unwrap_or(false),
         categories: string_list(v, "categories"),
         preview: s(v, "bodyPreview"),
+        due_at: v["flag"]
+            .get("dueDateTime")
+            .filter(|d| !s(d, "dateTime").is_empty())
+            .map(dt_tz),
+        recurrence: recurrence_of(&string_list(v, "categories")),
     }
 }
 
@@ -402,8 +407,9 @@ mod tests {
             "from": {"emailAddress": {"name": "A", "address": "a@x"}},
             "toRecipients": [{"emailAddress": {"name": "B", "address": "b@x"}}],
             "receivedDateTime": "2026-10-15T14:40:00Z", "isRead": false,
-            "importance": "high", "flag": {"flagStatus": "flagged"},
+            "importance": "high",
             "hasAttachments": true, "categories": ["Info"], "bodyPreview": "…",
+            "flag": {"flagStatus": "flagged", "dueDateTime": {"dateTime": "2026-10-21T06:00:00.0000000", "timeZone": "UTC"}},
             "parentFolderId": "f1"
         });
         let m = message_summary(&v, "mb", "other");
@@ -412,6 +418,7 @@ mod tests {
         assert!(!m.is_read);
         assert_eq!(m.flag, "flagged");
         assert_eq!(m.categories, vec!["Info"]);
+        assert_eq!(m.due_at.as_deref(), Some("2026-10-21T06:00:00Z"));
     }
 
     #[test]

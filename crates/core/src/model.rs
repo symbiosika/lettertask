@@ -17,6 +17,9 @@ pub struct Account {
     pub id: String,
     pub email: String,
     pub display_name: String,
+    /// "o365" | "imap" (derived from the id prefix).
+    #[serde(default)]
+    pub kind: String,
     pub mailboxes: Vec<Mailbox>,
 }
 
@@ -77,7 +80,23 @@ pub struct MessageSummary {
     pub has_attachments: bool,
     pub categories: Vec<String>,
     pub preview: String,
+    /// Follow-up due time (UTC); for snoozed mails the "Wiedervorlage" time.
+    #[serde(default)]
+    pub due_at: Option<String>,
+    /// Recurrence rule of a recurring task ("monthly", …), from the hidden "[#…]" category.
+    #[serde(default)]
+    pub recurrence: Option<String>,
 }
+
+/// Recurrence encoded in a hidden category "[#<rule>]".
+pub fn recurrence_of(categories: &[String]) -> Option<String> {
+    categories.iter().find_map(|c| {
+        let r = c.strip_prefix("[#")?.strip_suffix(']')?;
+        RECURRENCES.contains(&r).then(|| r.to_string())
+    })
+}
+
+pub const RECURRENCES: &[&str] = &["daily", "weekdays", "weekly", "biweekly", "monthly", "quarterly", "yearly"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -336,6 +355,9 @@ pub struct DraftInput {
     pub new_attachments: Vec<NewAttachment>,
     #[serde(default)]
     pub removed_attachment_ids: Vec<String>,
+    /// "Erinnerung an mich" after sending (ISO UTC).
+    #[serde(default)]
+    pub remind_at: Option<String>,
 }
 
 fn new_mode() -> String {
@@ -349,26 +371,73 @@ pub struct Config {
     pub tenant: String,
     pub sync_interval_secs: u64,
     pub load_remote_images: bool,
-    pub signature_html: String,
     pub reading_pane: String,
     pub mark_read_delay_secs: i64,
     pub list_mode: String,
+    pub show_date_separators: bool,
+    pub snooze_options: Vec<SnoozeOption>,
+    pub kanban_reading_pane: String,
     /// Read-only for the UI: set when running against the demo server.
     pub demo: bool,
+    /// Read-only for the UI: a client ID was compiled into this build.
+    pub builtin_client_id: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeOption {
+    pub label: String,
+    /// `<base>@HH:MM`, base = tomorrow | days:N | weekend | nextWeek (evaluated by the UI).
+    pub rule: String,
+}
+
+/// App registration of Symbiosika in Entra ID. Desktop apps are public
+/// clients (no secret), so client and tenant id are not confidential.
+/// Other builds can override both via `OUTLOOK_CLASSIC_CLIENT_ID` /
+/// `OUTLOOK_CLASSIC_TENANT` at compile time.
+const SYMBIOSIKA_CLIENT_ID: &str = "c0bb40f0-6019-427c-bbfb-01c552e44257";
+const SYMBIOSIKA_TENANT_ID: &str = "be11db5c-df94-439f-b934-4c3240c9d1ad";
+
+pub fn builtin_client_id() -> &'static str {
+    option_env!("OUTLOOK_CLASSIC_CLIENT_ID").map(str::trim).unwrap_or(SYMBIOSIKA_CLIENT_ID)
+}
+
+pub fn builtin_tenant() -> &'static str {
+    option_env!("OUTLOOK_CLASSIC_TENANT").map(str::trim).unwrap_or(SYMBIOSIKA_TENANT_ID)
+}
+
+pub fn default_snooze_options() -> Vec<SnoozeOption> {
+    [
+        ("Morgen 8 Uhr", "tomorrow@08:00"),
+        ("Übermorgen 8 Uhr", "days:2@08:00"),
+        ("Am Wochenende 8 Uhr", "weekend@08:00"),
+        ("Nächste Woche", "nextWeek@08:00"),
+        ("In 14 Tagen", "days:14@08:00"),
+        ("In 30 Tagen", "days:30@08:00"),
+    ]
+    .into_iter()
+    .map(|(label, rule)| SnoozeOption {
+        label: label.into(),
+        rule: rule.into(),
+    })
+    .collect()
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             client_id: String::new(),
-            tenant: "organizations".into(),
+            tenant: builtin_tenant().into(),
             sync_interval_secs: 60,
             load_remote_images: false,
-            signature_html: String::new(),
             reading_pane: "right".into(),
             mark_read_delay_secs: 2,
-            list_mode: "columns".into(),
+            list_mode: "comfortable".into(),
+            show_date_separators: true,
+            snooze_options: default_snooze_options(),
+            kanban_reading_pane: "bottom".into(),
             demo: false,
+            builtin_client_id: false,
         }
     }
 }
@@ -424,4 +493,89 @@ impl Default for ListQuery {
             limit: 200,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Signature {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub html: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SignatureSettings {
+    pub signatures: Vec<Signature>,
+    pub default_id: Option<String>,
+    pub use_on_new: bool,
+    pub use_on_reply: bool,
+    pub use_on_forward: bool,
+}
+
+impl Default for SignatureSettings {
+    fn default() -> Self {
+        SignatureSettings {
+            signatures: vec![],
+            default_id: None,
+            use_on_new: true,
+            use_on_reply: true,
+            use_on_forward: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Phone {
+    /// "business" | "mobile" | "home"
+    #[serde(default = "business")]
+    pub kind: String,
+    #[serde(default)]
+    pub number: String,
+}
+
+fn business() -> String {
+    "business".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Contact {
+    pub id: String,
+    pub account_id: String,
+    /// "o365" | "local" | "collected"
+    pub source: String,
+    pub display_name: String,
+    pub given_name: String,
+    pub surname: String,
+    pub emails: Vec<String>,
+    pub company: String,
+    pub job_title: String,
+    pub phones: Vec<Phone>,
+    pub notes: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ContactInput {
+    pub display_name: String,
+    pub given_name: String,
+    pub surname: String,
+    pub emails: Vec<String>,
+    pub company: String,
+    pub job_title: String,
+    pub phones: Vec<Phone>,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPage {
+    pub items: Vec<Contact>,
+    pub total: i64,
 }

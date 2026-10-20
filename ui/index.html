@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mail</title>
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/focus.css">
+  <link rel="stylesheet" href="css/calendar.css">
+  <link rel="stylesheet" href="css/contacts.css">
+</head>
+<body class="app">
+  <header class="topbar" id="topbar"></header>
+  <div class="actionbar" id="toolbar" role="toolbar" aria-label="Aktionen"></div>
+  <div class="main">
+    <aside class="sidebar" id="navpane">
+      <div class="sb-title" id="nav-title">Mail</div>
+      <div class="sb-scroll" id="folder-tree"></div>
+      <div class="sb-scroll hidden" id="cal-nav"></div>
+      <div class="sb-scroll hidden" id="contacts-nav"></div>
+      <div class="sb-status" id="statusbar"></div>
+      <nav class="sb-nav" id="nav-buttons" aria-label="Module"></nav>
+    </aside>
+    <div class="splitter" id="nav-split"></div>
+    <div class="content" id="content"></div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
