@@ -448,6 +448,17 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); background: #fafafb; }
 .confirm-body { display: flex; gap: 14px; align-items: flex-start; line-height: 1.5; }
 .confirm-body > span:first-child { color: var(--accent); }
+.about-head { display: flex; gap: 14px; align-items: flex-start; line-height: 1.5; }
+.about-icon { color: var(--accent); }
+.about-name { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-weight: 600; font-size: 15px; }
+.about-version { font-size: 12px; font-weight: 500; color: var(--text-dim); background: var(--canvas); border: 1px solid var(--border); border-radius: 10px; padding: 0 8px; }
+.about-tech { margin-top: 4px; color: var(--text-dim); }
+.about-section { margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--border); font-weight: 600; }
+.about-keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 24px; }
+.about-group-title { margin-bottom: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+.about-key { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.about-combo { display: inline-flex; align-items: center; gap: 2px; flex: none; order: 2; color: var(--text-dim); font-size: 11px; }
+.about-combo kbd { font-size: 11px; color: var(--text-2); background: var(--bg); border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; line-height: 17px; }
 
 /* settings */
 .settings-modal .modal-body { padding: 0; }

@@ -131,6 +131,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 ### App / accounts
 | cmd | args | result |
 |-----|------|--------|
+| `app_info` | `{}` | `{ version: string }` |
 | `get_config` | `{}` | `Config` |
 | `save_config` | `{ config: Config }` | `Config` |
 | `list_accounts` | `{}` | `Account[]` |
