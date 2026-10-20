@@ -80,6 +80,16 @@ kbd { font-family: inherit; }
 .busy { width: 16px; height: 16px; border: 2px solid var(--accent-weak-2); border-top-color: var(--accent); border-radius: 50%; visibility: hidden; }
 .busy.on { visibility: visible; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Spinner inside a button while its action runs; it takes the place of the leading icon. */
+.btn-spin { flex: none; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; opacity: .75; animation: spin .8s linear infinite; }
+.pending > .btn-spin + .ico { display: none; }
+.pending { cursor: progress; }
+.tb-btn.pending:disabled { opacity: .75; }
+/* Loading placeholder for lists and panes (folder opened for the first time, message loading). */
+.loading-state { padding: 48px 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--text-dim); animation: fade .2s ease .15s both; }
+.loading-state .busy { width: 22px; height: 22px; visibility: visible; animation: spin .8s linear infinite; }
+.readpane .loading-state { margin: auto; }
+.lh-busy { width: 12px; height: 12px; margin-left: 8px; align-self: center; }
 
 /* ================================================================ action bar */
 .actionbar {

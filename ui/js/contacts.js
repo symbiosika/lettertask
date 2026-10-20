@@ -80,6 +80,10 @@ export function renderNav() {
 // ------------------------------------------------------------------ data
 export async function reload() {
   const token = ++ct.loadToken;
+  if (!ct.items.length) {
+    els.list.innerHTML = '';
+    els.list.appendChild(h('div.loading-state', h('span.busy'), h('div', 'Kontakte werden geladen…')));
+  }
   const accountId = ct.source !== 'all' && ct.source !== 'collected' ? ct.source : null;
   const source = ct.source === 'collected' ? 'collected' : null;
   const res = await call('list_contacts', { query: ct.query || null, accountId, source, offset: 0, limit: 2000 }, { silent: true }).catch((e) => { reportError(e); return { items: [], total: 0 }; });

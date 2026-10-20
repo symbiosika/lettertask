@@ -31,7 +31,9 @@ function ensureEventSource() {
 
 let busyCount = 0;
 const busyListeners = new Set();
-export function onBusy(cb) { busyListeners.add(cb); }
+/** Subscribes to the "a visible backend call is running" state. Returns an unsubscribe function. */
+export function onBusy(cb) { busyListeners.add(cb); return () => busyListeners.delete(cb); }
+export function isBusy() { return busyCount > 0; }
 function setBusy(delta) {
   busyCount = Math.max(0, busyCount + delta);
   for (const cb of busyListeners) cb(busyCount > 0);

@@ -2,7 +2,7 @@
 import { call, params, closeWindow, isTauri } from './api.js';
 import { h, $, esc, fmtSize, fileToBase64, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog, showMenuAt } from './dialogs.js';
+import { modal, reportError, toast, confirmDialog, showMenuAt, setPending } from './dialogs.js';
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { splitBtn } from './toolbar.js';
@@ -28,7 +28,7 @@ const st = {
   closing: false,
 };
 
-let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind;
+let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind, sendSplit;
 
 function markDirty() { st.dirty = true; }
 
@@ -99,6 +99,7 @@ function renderForm() {
     });
   }
   renderForm.paintFrom = paintFrom;
+  sendSplit = send;
   sendrow.append(send, h('span.cw-from-lbl', 'Von'), fromChip);
 
   // fields
@@ -302,7 +303,7 @@ async function send_() {
   if (r && r.error) { toast(r.error, 'error'); return; }
   const remindAt = r && r.date ? r.date : null;
   st.busy = true;
-  document.body.style.cursor = 'progress';
+  setSending(true);
   try {
     const draft = buildInput();
     if (remindAt) draft.remindAt = remindAt.toISOString();
@@ -313,8 +314,19 @@ async function send_() {
     reportError(e);
   } finally {
     st.busy = false;
-    document.body.style.cursor = '';
+    setSending(false);
   }
+}
+
+/** Locks the send button and shows a spinner while the message goes out. */
+function setSending(on) {
+  document.body.style.cursor = on ? 'progress' : '';
+  if (!sendSplit) return;
+  const [main, drop] = sendSplit.querySelectorAll('.tb-btn');
+  main.disabled = drop.disabled = !!on;
+  setPending(main, on);
+  const label = main.querySelector('.tb-label');
+  if (label) label.textContent = on ? 'Wird gesendet…' : 'Senden';
 }
 
 async function save(quiet) {

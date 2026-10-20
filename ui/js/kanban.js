@@ -60,6 +60,7 @@ export function createBoard(host, ctx) {
     head.append(
       h('span.folder-name', ctx.title()),
       h('span.lh-count', ctx.count() ? String(ctx.count()) : ''),
+      h('span.busy.lh-busy' + (ctx.loading && ctx.loading() ? '.on' : ''), { title: 'Wird aktualisiert…' }),
       h('span.spacer'),
       seg, h('span.kb-tools', noLaneBtn, paneBtn, edit));
   }

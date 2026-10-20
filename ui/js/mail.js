@@ -30,6 +30,8 @@ const FIELD_LABELS = { all: '', from: 'Von', to: 'An', subject: 'Betreff', body:
 const els = {};
 const list = {
   items: [], total: 0, unread: 0, canLoadOlder: false, loading: false,
+  fetching: false, // first load of the current folder still running (list is empty, not "no items")
+  syncing: null,   // folderId whose server sync is running
   sortBy: load('sortBy', 'received'), sortDesc: load('sortDesc', true),
   filter: { unreadOnly: false, flaggedOnly: false, category: null },
   text: '', search: null, // search: {text, items, opts} when server search results are shown
@@ -74,7 +76,7 @@ export function initMail({ navHost, contentHost, onCounts, onSelection }) {
   els.mailview = h('div.mailview#mailview');
   els.listpane = h('div.listpane#listpane');
   els.head = h('div.list-head',
-    h('div.lh-title', h('span.folder-name'), h('span.lh-count'), h('span.spacer'), h('div.lh-sort')),
+    h('div.lh-title', h('span.folder-name'), h('span.lh-count'), h('span.busy.lh-busy', { title: 'Wird aktualisiert…' }), h('span.spacer'), h('div.lh-sort')),
     h('div.lh-tools'));
   els.searchbar = h('div.search-bar.hidden');
   els.list = h('div.msglist#msglist', { tabindex: '0', role: 'listbox', 'aria-label': 'Nachrichten', 'aria-multiselectable': 'true' });
@@ -95,6 +97,7 @@ export function initMail({ navHost, contentHost, onCounts, onSelection }) {
     paneMode: () => kanbanPane(),
     title: () => { const f = currentFolder(); return f ? f.displayName : ''; },
     count: () => list.total,
+    loading: () => !!listLoading(),
     onSelect: (id, e) => {
       if (e && (e.ctrlKey || e.metaKey)) { if (list.selection.has(id)) list.selection.delete(id); else list.selection.add(id); }
       else if (e && e.shiftKey && list.anchor) selectRange(list.anchor, id);
@@ -402,6 +405,7 @@ export async function selectFolder(mailboxId, folderId) {
   store('lastFolder', state.current);
   if (changed) {
     list.selection.clear(); list.cursor = null; list.anchor = null; list.search = null; list.items = [];
+    list.total = 0; list.unread = 0; list.canLoadOlder = false; list.fetching = true;
     list.filter = { unreadOnly: false, flaggedOnly: false, category: null };
     list.text = '';
     const sb = $('#search-input'); if (sb) sb.value = '';
@@ -414,16 +418,33 @@ export async function selectFolder(mailboxId, folderId) {
   if (folderId === TODAY) {
     if (!mailboxById(mailboxId)) state.current.mailboxId = mailboxes()[0] && mailboxes()[0].id;
     applyReadingPaneLayout();
-    await reloadList();
+    if (changed) renderList();
+    try { await reloadList(); } finally { if (isToday()) list.fetching = false; }
     return;
   }
   applyReadingPaneLayout();
+  if (changed) renderList(); // shows the loading state right away instead of the old folder
   call('set_active_folder', { mailboxId, folderId }, { silent: true }).catch(() => {});
-  await reloadList();
+  list.syncing = folderId;
+  try { await reloadList(); } finally { if (state.current.folderId === folderId) list.fetching = false; }
+  // An empty local cache (folder never opened) is not "no items" until the sync is done.
+  if (state.current.folderId === folderId && !list.items.length) renderList();
+  renderListHead();
   // pull fresh data in the background
   call('sync_folder', { mailboxId, folderId }, { silent: true })
     .then(() => (state.current.folderId === folderId ? reloadList() : null))
-    .catch(() => {});
+    .catch(() => {})
+    .finally(() => {
+      if (list.syncing !== folderId) return;
+      list.syncing = null;
+      if (state.current.folderId === folderId) renderList();
+    });
+}
+
+/** True while the list of the current folder is still being filled (first load or sync). */
+function listLoading() {
+  if (list.search) return false;
+  return list.fetching || (list.syncing && list.syncing === state.current.folderId);
 }
 
 export function currentFolder() { return folderById(state.current.mailboxId, state.current.folderId); }
@@ -439,6 +460,8 @@ function renderListHead() {
   const n = list.search ? list.search.items.length : list.total;
   count.textContent = n ? String(n) : '';
   count.title = list.search ? '' : `${list.total} Elemente, ${list.unread} ungelesen`;
+  const busy = els.head.querySelector('.lh-busy');
+  if (busy) busy.classList.toggle('on', !!listLoading());
   const mb = mailboxById(state.current.mailboxId);
   document.title = isToday() ? 'Heute' : `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
 
@@ -597,7 +620,9 @@ function renderList() {
   els.list.innerHTML = '';
   els.list.classList.toggle('compact', !!compact);
   els.list.appendChild(frag);
-  if (!items.length) {
+  if (!items.length && listLoading()) {
+    els.list.appendChild(h('div.loading-state', { dataset: { testid: 'list-loading' } }, h('span.busy'), h('div', 'Nachrichten werden geladen…')));
+  } else if (!items.length) {
     els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : 'inbox', 40) }),
       h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : 'Keine Elemente in dieser Ansicht.')));
   } else if (!list.search && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
@@ -841,8 +866,14 @@ async function showReading(m, text) {
     return;
   }
   if (mode === 'off') return;
+  // Only when loading takes noticeably long (not cached yet) – avoids flicker for quick loads.
+  const slow = setTimeout(() => {
+    if (token !== readToken) return;
+    els.read.innerHTML = '';
+    els.read.appendChild(h('div.loading-state', { dataset: { testid: 'read-loading' } }, h('span.busy'), h('div', 'Nachricht wird geladen…')));
+  }, 250);
   try {
-    const detail = await call('get_message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id }, { silent: true });
+    const detail = await call('get_message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id }, { silent: true }).finally(() => clearTimeout(slow));
     if (token !== readToken) return;
     currentDetail = detail;
     const accountId = accountOfMailbox(detail.mailboxId || state.current.mailboxId);
