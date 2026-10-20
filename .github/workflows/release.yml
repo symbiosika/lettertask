@@ -30,6 +30,11 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Google-OAuth-Client (Desktop-App) für „Mit Google anmelden“, wird
+          # beim Bauen fest eingebaut. Fehlen die Secrets, trägt man ihn in
+          # den Einstellungen ein.
+          LETTERTASK_GOOGLE_CLIENT_ID: ${{ secrets.LETTERTASK_GOOGLE_CLIENT_ID }}
+          LETTERTASK_GOOGLE_CLIENT_SECRET: ${{ secrets.LETTERTASK_GOOGLE_CLIENT_SECRET }}
         with:
           projectPath: src-tauri
           # Tag push: release for that tag. Manual run: release for the app version
