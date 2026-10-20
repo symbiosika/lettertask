@@ -416,7 +416,10 @@ async function init() {
     if (renderForm.paintFrom) renderForm.paintFrom();
     await editor.setHtml(d.bodyHtml || '');
     st.dirty = !!P.to;
-    if ((d.to || []).length) await editor.focus(); else to.focus();
+    // Loading takes a moment; never pull the cursor out of a field the user
+    // already started typing in.
+    const untouched = !document.activeElement || document.activeElement === document.body;
+    if (untouched) { if ((d.to || []).length) await editor.focus(); else to.focus(); }
   } catch (e) {
     reportError(e);
     applyDraft({ id: null, mailboxId: st.mailboxId, mode: 'new', to: [], cc: [], bcc: [], subject: '', bodyHtml: '', importance: 'normal', requestReadReceipt: false, attachments: [] });
