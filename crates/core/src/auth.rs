@@ -75,7 +75,9 @@ impl std::fmt::Debug for TokenSet {
 impl TokenSet {
     /// True when the access token expires within the next two minutes.
     pub fn needs_refresh(&self) -> bool {
-        self.expires_at - chrono::Duration::seconds(120) <= Utc::now()
+        // Added to "now", not subtracted from `expires_at`: a restored token
+        // set carries a far-past expiry, and subtracting from it overflows.
+        self.expires_at <= Utc::now() + chrono::Duration::seconds(120)
     }
 }
 
@@ -436,6 +438,20 @@ pub async fn interactive_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tokens(expires_at: DateTime<Utc>) -> TokenSet {
+        TokenSet { access_token: String::new(), refresh_token: "r".into(), expires_at }
+    }
+
+    #[test]
+    fn needs_refresh_never_overflows() {
+        // Extreme expiries (e.g. a restored token set) must not panic.
+        assert!(tokens(DateTime::<Utc>::MIN_UTC).needs_refresh());
+        assert!(tokens(DateTime::<Utc>::UNIX_EPOCH).needs_refresh());
+        assert!(!tokens(DateTime::<Utc>::MAX_UTC - chrono::Duration::days(1)).needs_refresh());
+        assert!(tokens(Utc::now() + chrono::Duration::seconds(60)).needs_refresh());
+        assert!(!tokens(Utc::now() + chrono::Duration::seconds(600)).needs_refresh());
+    }
 
     #[test]
     fn pkce_challenge_is_sha256_of_verifier() {

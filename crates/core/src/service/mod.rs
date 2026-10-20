@@ -59,6 +59,14 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
     serde_json::from_value(v).map_err(|e| Error::invalid(format!("Parameter '{name}': {e}")))
 }
 
+/// Message of a caught panic (`panic!("…")` carries a &str or a String).
+fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unbekannte Ursache".into())
+}
+
 /// Largest accepted account picture (the UI scales it down to 128 px first).
 const AVATAR_MAX: usize = 300_000;
 
@@ -188,7 +196,8 @@ impl Service {
                 let tokens = TokenSet {
                     access_token: String::new(),
                     refresh_token: rt,
-                    expires_at: chrono::DateTime::<Utc>::MIN_UTC,
+                    // Expired: the first request fetches a fresh access token.
+                    expires_at: chrono::DateTime::<Utc>::UNIX_EPOCH,
                 };
                 map.insert(a.id.clone(), self.make_client(&a.id, tokens));
             }
@@ -237,8 +246,22 @@ impl Service {
         );
     }
 
-    /// Single entry point for the UI.
+    /// Runs one UI command. A bug that panics becomes an error the UI shows,
+    /// instead of a call that never answers (endless "Wird synchronisiert…").
     pub async fn dispatch(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
+        use futures::FutureExt;
+        match std::panic::AssertUnwindSafe(self.dispatch_inner(cmd, args)).catch_unwind().await {
+            Ok(r) => r,
+            Err(p) => {
+                let msg = format!("Interner Fehler bei „{cmd}“: {}", panic_text(&p));
+                tracing::error!("{msg}");
+                self.emit_status("error", &msg);
+                Err(Error::Other(msg))
+            }
+        }
+    }
+
+    async fn dispatch_inner(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
         check_ids(&args)?;
         let a = &args;
         match cmd {
@@ -824,6 +847,7 @@ impl Service {
     /// Spawns the periodic sync loop.
     pub fn start_background_sync(self: &Arc<Self>) {
         let svc = Arc::downgrade(self);
+        use futures::FutureExt;
         tokio::spawn(async move {
             // Small delay so the UI is up before the first sync.
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -838,7 +862,12 @@ impl Service {
                             focus_active = false;
                             s.emit("focus-changed", json!({"until": null}));
                         }
-                        s.sync_all(true).await;
+                        // A panicking sync must not end the loop silently.
+                        if let Err(p) = std::panic::AssertUnwindSafe(s.sync_all(true)).catch_unwind().await {
+                            let msg = format!("Interner Fehler beim Abgleich: {}", panic_text(&p));
+                            tracing::error!("{msg}");
+                            s.emit_status("error", &msg);
+                        }
                     }
                 }
                 let wait = s.config().sync_interval_secs.max(15);

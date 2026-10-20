@@ -392,12 +392,29 @@ function renderStatus() {
   const text = focusActive() && s.state !== 'syncing' ? 'Fokuszeit – automatischer Abruf pausiert' : {
     syncing: 'Wird synchronisiert…', idle: s.lastSync ? `Aktualisiert ${fmtTime(new Date(s.lastSync))}` : 'Verbunden', offline: 'Offline', error: 'Synchronisierungsfehler',
   }[s.state] || '';
+  const isError = s.state === 'error' && s.message;
+  const st = h('span.st' + (isError ? '.err' : ''), { title: s.message || '' }, h('span.dot.' + (s.state || 'idle')),
+    h('span.st-text', { dataset: { testid: 'sync-status' } }, state.accounts.length ? (isError ? `${text}: ${s.message}` : text) : 'Kein Konto'));
+  if (isError) {
+    st.setAttribute('role', 'button');
+    st.addEventListener('click', () => showSyncError(s.message));
+  }
   els.status.innerHTML = '';
-  els.status.append(
-    h('span.st', { title: s.message || '' }, h('span.dot.' + (s.state || 'idle')), h('span.st-text', { dataset: { testid: 'sync-status' } }, state.accounts.length ? text : 'Kein Konto')),
-    state.config && state.config.demo ? h('span.badge', { title: 'Es wird der eingebaute Demo-Server verwendet.' }, 'Demo') : null,
-  );
+  els.status.append(st);
+  if (state.config && state.config.demo) els.status.append(h('span.badge', { title: 'Es wird der eingebaute Demo-Server verwendet.' }, 'Demo'));
   updateActionState();
+}
+
+/** Full text of a sync error (the status line only has room for the start). */
+async function showSyncError(message) {
+  const again = await modal({
+    title: 'Synchronisierungsfehler',
+    body: h('div', h('p', { style: { marginTop: 0 } }, 'Beim Abgleich mit dem Server ist ein Fehler aufgetreten:'),
+      h('pre.selectable.err-detail', { dataset: { testid: 'sync-error-detail' } }, message)),
+    buttons: [{ label: 'Erneut versuchen', value: true, primary: true }, { label: 'Schließen', value: false, cancel: true }],
+    width: 520,
+  });
+  if (again) syncAll();
 }
 
 // ------------------------------------------------------------------ sync
@@ -417,14 +434,20 @@ async function syncAll() {
 // ------------------------------------------------------------------ data bootstrap
 async function loadAll() {
   await loadAccounts();
+  const failed = [];
   await Promise.all([
-    ...mailboxes().map((m) => loadFolders(m.id).catch((e) => { console.warn(e); return []; })),
+    ...mailboxes().map((m) => loadFolders(m.id).catch((e) => { failed.push(`${m.address}: ${e.message || e}`); return []; })),
     ...state.accounts.map((a) => loadCategories(a.id).catch(() => [])),
     ...state.accounts.map((a) => loadLanes(a.id)),
   ]);
   await Promise.all(mailboxes().filter((m) => !(state.folders.get(m.id) || []).length).map(async (m) => {
-    try { state.folders.set(m.id, await call('sync_folders', { mailboxId: m.id }, { silent: true })); } catch (e) { console.warn(e); }
+    try { state.folders.set(m.id, await call('sync_folders', { mailboxId: m.id }, { silent: true })); } catch (e) { failed.push(`${m.address}: ${e.message || e}`); }
   }));
+  if (failed.length) {
+    state.sync = { ...state.sync, state: 'error', message: 'Ordner konnten nicht geladen werden – ' + failed.join('; ') };
+    renderStatus();
+    toast(state.sync.message, 'error', 9000);
+  }
   if (accountChip.paint) accountChip.paint();
 }
 
@@ -499,7 +522,14 @@ function setupShortcuts() {
 
 // ------------------------------------------------------------------ events
 function setupEvents() {
-  on('sync-status', (p) => { state.sync = { ...state.sync, ...p }; renderStatus(); });
+  let lastError = null;
+  on('sync-status', (p) => {
+    state.sync = { ...state.sync, ...p };
+    renderStatus();
+    // Show a new error once, not only as a dot in the status line.
+    if (p && p.state === 'error' && p.message && p.message !== lastError) toast(p.message, 'error', 9000);
+    lastError = p && p.state === 'error' ? p.message : null;
+  });
   on('mail-changed', (p) => mail.onMailChanged(p).catch((e) => console.warn(e)));
   on('calendar-changed', () => calendar.onCalendarChanged().catch((e) => console.warn(e)));
   on('accounts-changed', () => onAccountsChanged().catch(reportError));

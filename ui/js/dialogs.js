@@ -111,6 +111,16 @@ export function reportError(e) {
   toast((e && e.message) || String(e), 'error', 7000);
 }
 
+// Unexpected errors (a bug, a failed call nobody awaited) are shown, not only
+// logged to a console the user never sees.
+window.addEventListener('error', (ev) => {
+  if (!ev.error && !ev.message) return;
+  // Harmless browser notice, not an error of the app.
+  if (/ResizeObserver loop/.test(ev.message || '')) return;
+  reportError(ev.error || new Error(ev.message));
+});
+window.addEventListener('unhandledrejection', (ev) => reportError(ev.reason instanceof Error ? ev.reason : new Error(String(ev.reason))));
+
 // ---------------- menus ----------------
 let openMenus = [];
 function closeMenus(from = 0) {

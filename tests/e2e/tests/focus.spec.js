@@ -208,9 +208,12 @@ test('Kanban-Ansicht: Spalten, Drag & Drop, Taste 2, Lesebereich unten/rechts', 
   await expect(board.locator('[data-testid=kb-col-Warten] .kb-card', { hasText: 'Wochenbericht Vertrieb KW 42' })).toBeVisible();
   // reading pane to the right
   await board.locator('[data-testid=kb-toggle-pane]').click();
-  const bb2 = await board.boundingBox();
-  const rb2 = await page.locator('#readpane').boundingBox();
-  expect(rb2.x).toBeGreaterThan(bb2.x + bb2.width - 5);
+  // The layout switches after the setting is saved: wait for it, don't measure once.
+  await expect.poll(async () => {
+    const bb2 = await board.boundingBox();
+    const rb2 = await page.locator('#readpane').boundingBox();
+    return rb2.x - (bb2.x + bb2.width);
+  }).toBeGreaterThan(-5);
   await board.locator('[data-testid=kb-toggle-pane]').click();
   // back to the list
   await board.locator('[data-testid=view-list]').click();
