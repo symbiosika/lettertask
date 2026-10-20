@@ -909,7 +909,7 @@ impl Service {
             }
         } else {
             let dir = std::env::temp_dir()
-                .join("outlook-clone")
+                .join("lettertask")
                 .join(uuid::Uuid::new_v4().to_string());
             std::fs::create_dir_all(&dir)?;
             dir.join(&name)

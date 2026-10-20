@@ -730,7 +730,7 @@ impl Service {
                 None => return Ok(None),
             }
         } else {
-            let dir = std::env::temp_dir().join("outlook-clone").join(uuid::Uuid::new_v4().to_string());
+            let dir = std::env::temp_dir().join("lettertask").join(uuid::Uuid::new_v4().to_string());
             std::fs::create_dir_all(&dir)?;
             dir.join(&name)
         };

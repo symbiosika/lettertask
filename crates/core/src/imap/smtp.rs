@@ -22,7 +22,7 @@ async fn open(s: &ServerSettings, password: &str) -> Result<AsyncSmtpConnection>
     if host.is_empty() {
         return Err(Error::invalid("SMTP-Server fehlt."));
     }
-    let hello = ClientId::Domain("outlook-classic.local".into());
+    let hello = ClientId::Domain("lettertask.local".into());
     let tls = || TlsParameters::new_rustls(host.to_string()).map_err(err);
     let wrapper = if s.security == "ssl" { Some(tls()?) } else { None };
     let mut conn = AsyncSmtpConnection::connect_tokio1((host, s.port), Some(TIMEOUT), &hello, wrapper, None)

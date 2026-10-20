@@ -1,10 +1,10 @@
 [package]
-name = "outlook-clone"
+name = "lettertask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Classic Outlook-style mail & calendar client for Microsoft 365 (Graph API)"
-default-run = "outlook-clone"
+default-run = "lettertask"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

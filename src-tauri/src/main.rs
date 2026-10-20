@@ -116,7 +116,7 @@ fn main() {
                             now: chrono::Utc::now(),
                         })
                         .await;
-                        let dir = std::env::temp_dir().join(format!("outlook-classic-demo-{}", std::process::id()));
+                        let dir = std::env::temp_dir().join(format!("lettertask-demo-{}", std::process::id()));
                         let base = fake.base_url.clone();
                         // Keep the fake server alive for the whole process.
                         std::mem::forget(fake);
@@ -124,7 +124,7 @@ fn main() {
                     } else {
                         let dir = handle.path().app_data_dir().expect("app data dir");
                         let tokens = Arc::new(mailcore::tokens::KeyringTokenStore::new(
-                            "outlook-classic",
+                            "lettertask",
                             dir.join("tokens.json"),
                         ));
                         (

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Outlook Classic",
+  "productName": "lettertask",
   "version": "0.1.0",
-  "identifier": "de.symbiosika.outlookclassic",
+  "identifier": "de.symbiosika.lettertask",
   "build": {
     "frontendDist": "../ui"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Posteingang – Outlook Classic",
+        "title": "Posteingang – lettertask",
         "width": 1440,
         "height": 900,
         "minWidth": 900,

@@ -240,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
     if write {
         println!("\n== Schreibtests (alles wird wieder entfernt)");
         let draft = json!({"id": null, "mailboxId": mb, "mode": "new", "to": [{"name": "", "address": account.email}],
-            "cc": [], "bcc": [], "subject": "[Outlook Classic] Verbindungstest – kann gelöscht werden",
+            "cc": [], "bcc": [], "subject": "[lettertask] Verbindungstest – kann gelöscht werden",
             "bodyHtml": "<p>Automatischer Test.</p>", "importance": "normal", "requestReadReceipt": false,
             "newAttachments": [{"name": "test.txt", "contentType": "text/plain",
                 "contentBase64": base64::engine::general_purpose::STANDARD.encode("hallo")}],
@@ -255,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
             let _: Option<Value> = c.call("Kennzeichnung zurücksetzen", "set_flag", json!({"mailboxId": mb, "ids": [m.id], "flag": "notFlagged"})).await;
         }
         let cat: Option<Category> = c
-            .call("Kategorie anlegen", "create_category", json!({"accountId": acc, "displayName": "OutlookClassic-Test", "color": "preset9"}))
+            .call("Kategorie anlegen", "create_category", json!({"accountId": acc, "displayName": "lettertask-Test", "color": "preset9"}))
             .await;
         if let Some(cat) = cat {
             let _: Option<Category> = c.call("Kategoriefarbe ändern", "update_category", json!({"accountId": acc, "id": cat.id, "color": "preset3"})).await;
@@ -263,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Some(cal) = cals.iter().find(|x| x.is_default && x.can_edit) {
             let day = (now + chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
-            let input = json!({"subject": "[Outlook Classic] Verbindungstest", "start": format!("{day}T10:00:00"),
+            let input = json!({"subject": "[lettertask] Verbindungstest", "start": format!("{day}T10:00:00"),
                 "end": format!("{day}T10:30:00"), "timeZone": "Europe/Berlin", "isAllDay": false, "location": "",
                 "bodyHtml": "", "attendees": [], "showAs": "free", "categories": [], "isReminderOn": false,
                 "reminderMinutes": 0, "isOnlineMeeting": false, "recurrence": null, "sensitivity": "normal", "importance": "normal"});

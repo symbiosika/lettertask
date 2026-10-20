@@ -1,4 +1,4 @@
-# Outlook Classic – fokussiertes Mailprogramm für Microsoft 365 und IMAP
+# lettertask – fokussiertes Mailprogramm für Microsoft 365 und IMAP
 
 Ein Desktop-Mailprogramm in **Rust** (Tauri 2) für konzentriertes Arbeiten nach dem
 **Inbox-Zero-Prinzip**: Das Postfach ist die Aufgabenliste. Die Oberfläche orientiert sich an
@@ -57,7 +57,7 @@ Versteckte Kategorien, die die App verwendet: `[K_…]` Kanban-Lane, `[#monthly]
 ## Schnellstart ohne Konto (Demo-Modus)
 
 ```bash
-cargo run -p outlook-clone -- --demo          # Desktop-App
+cargo run -p lettertask -- --demo          # Desktop-App
 cargo run -p devserver -- --demo --port 8080  # oder im Browser: http://127.0.0.1:8080
 ```
 
@@ -69,7 +69,7 @@ Die App-Registrierung von Symbiosika (Client-ID und Mandant) ist fest eingebaut 
 Das ist unbedenklich: Desktop-Apps sind öffentliche Clients ohne Geheimnis, beide IDs sind
 öffentliche Kennungen. Mit dem fest eingebauten Mandanten können sich Konten dieses Tenants
 anmelden; unter Einstellungen › Konten › Erweitert lassen sich Client-ID und Mandant ändern.
-Für eigene Builds: `OUTLOOK_CLASSIC_CLIENT_ID=<guid> OUTLOOK_CLASSIC_TENANT=<guid|organizations> cargo build`.
+Für eigene Builds: `LETTERTASK_CLIENT_ID=<guid> LETTERTASK_TENANT=<guid|organizations> cargo build`.
 
 **Anforderungen an die App-Registrierung** (Entra ID › App-Registrierungen):
 1. Plattform **„Mobile und Desktopanwendungen“**, Umleitungs-URI `http://localhost`
@@ -105,7 +105,7 @@ Voraussetzungen: Rust ≥ 1.80, unter Linux zusätzlich
 `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev`.
 
 ```bash
-cargo build --release -p outlook-clone          # Binärdatei: target/release/outlook-clone
+cargo build --release -p lettertask          # Binärdatei: target/release/lettertask
 cargo install tauri-cli --version "^2"          # einmalig, für Installer
 cd src-tauri && cargo tauri build               # MSI/NSIS (Windows), DMG (macOS), deb/AppImage (Linux)
 ```
