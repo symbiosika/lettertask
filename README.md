@@ -114,5 +114,20 @@ tests/e2e/             Playwright-Tests der Oberfläche gegen den Dev-Server
 
 ```bash
 cargo test --workspace                 # Kern + Fake-Server (inkl. Login, Delta, Senden, Kalender)
-cd tests/e2e && npm ci && npx playwright test   # UI-Ende-zu-Ende (startet den Dev-Server selbst)
+cd tests/e2e && npm ci && npx playwright install chromium && npx playwright test   # UI-Ende-zu-Ende
 ```
+
+Die E2E-Tests starten den Dev-Server selbst, öffnen aber keine App zum Ausprobieren. Der
+Playwright-Testrunner braucht Node.js; unter Bun allein läuft er nicht (er beendet sich ohne Ausgabe).
+
+### Oberfläche starten (ohne Node/Bun)
+
+Die Oberfläche in `ui/` hat keinen Build-Schritt, das Rust-Backend liefert sie aus. Weder Bun noch
+npm sind nötig:
+
+```bash
+cargo run -p outlook-clone -- --demo                    # als Desktop-App (Demo-Daten)
+cargo run -p devserver -- --demo --port 8080            # im Browser: http://127.0.0.1:8080
+```
+
+Änderungen an `ui/` werden im Browser-Modus mit einem Neuladen der Seite (F5) sichtbar.
