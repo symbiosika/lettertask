@@ -81,12 +81,12 @@ export function renderNav() {
 export async function reload() {
   const token = ++ct.loadToken;
   const accountId = ct.source !== 'all' && ct.source !== 'collected' ? ct.source : null;
-  const res = await call('list_contacts', { query: ct.query || null, accountId, offset: 0, limit: 2000 }, { silent: true }).catch((e) => { reportError(e); return { items: [], total: 0 }; });
+  const source = ct.source === 'collected' ? 'collected' : null;
+  const res = await call('list_contacts', { query: ct.query || null, accountId, source, offset: 0, limit: 2000 }, { silent: true }).catch((e) => { reportError(e); return { items: [], total: 0 }; });
   if (token !== ct.loadToken) return;
-  let items = (res && res.items) || [];
-  if (ct.source === 'collected') items = items.filter((c) => c.source === 'collected');
+  const items = (res && res.items) || [];
   ct.items = items;
-  ct.total = ct.source === 'collected' ? items.length : (res.total ?? items.length);
+  ct.total = res.total ?? items.length;
   if (ct.selectedId && !items.some((c) => c.id === ct.selectedId)) ct.selectedId = null;
   if (!ct.selectedId && items.length) ct.selectedId = items[0].id;
   renderList();

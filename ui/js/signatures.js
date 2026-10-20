@@ -115,7 +115,7 @@ export function signaturesPanel(accounts, initialAccountId) {
     for (const s of w.settings.signatures) {
       const isDef = w.defaultKey === s._k;
       const star = h('button.icon-btn.sm.sig-star' + (isDef ? '.on' : ''), { type: 'button', title: isDef ? 'Standardsignatur' : 'Als Standard festlegen', 'aria-label': 'Als Standard', html: icon('star', 15), dataset: { testid: 'sig-default' } });
-      star.addEventListener('click', (e) => { e.stopPropagation(); w.defaultKey = isDef ? null : s._k; w.dirty = true; renderList(); });
+      star.addEventListener('click', (e) => { e.stopPropagation(); if (isDef) return; w.defaultKey = s._k; w.dirty = true; renderList(); });
       const del = h('button.icon-btn.sm', { type: 'button', title: 'Signatur löschen', 'aria-label': 'Signatur löschen', html: icon('delete', 15), dataset: { testid: 'sig-delete' } });
       del.addEventListener('click', async (e) => {
         e.stopPropagation();

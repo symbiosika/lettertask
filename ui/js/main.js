@@ -7,12 +7,14 @@ import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories
 import { tbBtn, splitBtn, sep } from './toolbar.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
+import * as contacts from './contacts.js';
+import { isImap } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
 const els = {
   topbar: $('#topbar'), toolbar: $('#toolbar'), nav: $('#navpane'), navTitle: $('#nav-title'), tree: $('#folder-tree'),
-  calNav: $('#cal-nav'), navButtons: $('#nav-buttons'), content: $('#content'), status: $('#statusbar'),
+  calNav: $('#cal-nav'), ctNav: $('#contacts-nav'), navButtons: $('#nav-buttons'), content: $('#content'), status: $('#statusbar'),
 };
 
 // ------------------------------------------------------------------ search options
@@ -71,7 +73,10 @@ function renderTopbar() {
     }
     panel.appendChild(h('div.sp-foot', 'Eingabetaste: auf dem Server suchen · Tippen: aktuelle Liste filtern · Esc: zurücksetzen'));
   };
-  const openPanel = () => { if (state.mode !== 'mail') return; renderPanel(); panel.classList.remove('hidden'); wrap.classList.add('open'); };
+  const openPanel = () => {
+    if (state.mode === 'contacts') { input.blur(); contacts.focusSearch(); return; }
+    if (state.mode !== 'mail') return;
+    renderPanel(); panel.classList.remove('hidden'); wrap.classList.add('open'); };
   const closePanel = () => { panel.classList.add('hidden'); wrap.classList.remove('open'); };
   const runSearch = () => {
     const t = input.value.trim();
@@ -112,6 +117,7 @@ function accountChip() {
 
 function appMenu() {
   const acc = state.accounts[0] && state.accounts[0].id;
+  const o365 = state.accounts.find((a) => !isImap(a));
   const c = state.config || {};
   const setCfg = async (patch) => {
     state.config = await call('save_config', { config: { ...state.config, ...patch } });
@@ -119,7 +125,8 @@ function appMenu() {
   };
   return [
     { label: 'Neue E-Mail', icon: 'mail', shortcut: 'Strg+N', onClick: () => mail.newMail() },
-    { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', onClick: () => calendar.newEvent() },
+    { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', disabled: !o365, onClick: () => calendar.newEvent() },
+    { label: 'Neuer Kontakt', icon: 'contacts', disabled: !acc, onClick: () => { setMode('contacts'); contacts.newContact().catch(reportError); } },
     { separator: true },
     { label: 'Ansicht', icon: 'workWeek', submenu: () => [
       { header: 'Lesebereich' },
@@ -135,8 +142,9 @@ function appMenu() {
     ] },
     { separator: true },
     { label: 'Einstellungen…', icon: 'settings', onClick: () => openSettings(), testid: 'menu-settings' },
+    { label: 'Signaturen…', icon: 'signature', disabled: !acc, onClick: () => openSettings('signatures'), testid: 'menu-signatures' },
     { label: 'Kategorien verwalten…', icon: 'tag', disabled: !acc, onClick: () => openCategoryManager(acc), testid: 'menu-categories' },
-    { label: 'Abwesenheitsnotiz…', icon: 'outOfOffice', disabled: !acc, onClick: () => openAutoReply(acc), testid: 'menu-autoreply' },
+    { label: 'Abwesenheitsnotiz…', icon: 'outOfOffice', disabled: !o365, onClick: () => openAutoReply(o365.id), testid: 'menu-autoreply' },
     { separator: true },
     { label: 'Konto hinzufügen…', icon: 'user', onClick: () => addAccountFlow(), testid: 'menu-add-account' },
     { label: 'Konto entfernen…', icon: 'signOut', disabled: !acc, onClick: () => removeAccountDialog() },
@@ -211,6 +219,19 @@ function renderToolbar() {
         tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Senden/Empfangen (F9)', iconOnly: true })),
     );
     updateActionState();
+  } else if (state.mode === 'contacts') {
+    lead.appendChild(splitBtn('Neu', 'plus', () => contacts.newContact(), (b) => showMenuAt(b, [
+      { label: 'Kontakt', icon: 'contacts', onClick: () => contacts.newContact(), testid: 'new-contact' },
+      { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'new-mail' },
+    ]), { testid: 'tb-new-contact', menuTestid: 'tb-new-menu', primary: true, title: 'Neuer Kontakt (Strg+N)' }));
+    tb.append(lead,
+      h('div.ab-group',
+        dep(tbBtn('E-Mail schreiben', 'mail', () => { const c = contacts.selectedContact(); if (c) contacts.writeTo(c, c.emails[0]); }, { testid: 'tb-ct-write' })),
+        dep(tbBtn('Bearbeiten', 'edit', () => contacts.editContact(contacts.selectedContact()), { testid: 'tb-ct-edit' })),
+        dep(tbBtn('Löschen', 'delete', () => contacts.deleteContact(), { testid: 'tb-ct-delete' }))),
+      h('span.spacer'),
+      tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Kontakte synchronisieren (F9)', iconOnly: true }));
+    updateActionState();
   } else {
     lead.appendChild(splitBtn('Neu', 'plus', () => calendar.newEvent(), (b) => showMenuAt(b, [
       { label: 'Termin', icon: 'calendarNew', onClick: () => calendar.newEvent(), testid: 'new-event' },
@@ -239,6 +260,15 @@ function renderToolbar() {
 }
 
 function updateActionState() {
+  if (state.mode === 'contacts') {
+    const c = contacts.selectedContact();
+    for (const b of selDependent) b.disabled = !c;
+    const w = els.toolbar.querySelector('[data-testid=tb-ct-write]');
+    if (w) w.disabled = !c || !c.emails.length;
+    const d = els.toolbar.querySelector('[data-testid=tb-ct-delete]');
+    if (d) d.disabled = !c || c.readOnly;
+    return;
+  }
   if (state.mode !== 'mail') {
     const p = $('#ab-period');
     if (p) p.textContent = calendar.periodTitle();
@@ -256,25 +286,28 @@ function updateActionState() {
 function renderNavButtons() {
   els.navButtons.innerHTML = '';
   const mk = (mode, label, ic) => {
-    const b = h('button.nav-btn' + (state.mode === mode ? '.active' : ''), { type: 'button', title: `${label} (Strg+${mode === 'mail' ? 1 : 2})`, 'aria-label': label, dataset: { testid: 'nav-' + mode } });
+    const b = h('button.nav-btn' + (state.mode === mode ? '.active' : ''), { type: 'button', title: `${label} (Strg+${{ mail: 1, calendar: 2, contacts: 3 }[mode]})`, 'aria-label': label, dataset: { testid: 'nav-' + mode } });
     b.innerHTML = icon(ic, 22);
     b.addEventListener('click', () => setMode(mode));
     return b;
   };
-  els.navButtons.append(mk('mail', 'Mail', 'mail'), mk('calendar', 'Kalender', 'calendar'));
+  els.navButtons.append(mk('mail', 'Mail', 'mail'), mk('calendar', 'Kalender', 'calendar'), mk('contacts', 'Kontakte', 'contacts'));
 }
 
 function setMode(mode) {
   state.mode = mode;
   store('mode', mode);
   document.body.dataset.mode = mode;
-  els.navTitle.textContent = mode === 'mail' ? 'Mail' : 'Kalender';
+  const [title, ic] = { mail: ['Mail', 'mail'], calendar: ['Kalender', 'calendar'], contacts: ['Kontakte', 'contacts'] }[mode];
+  els.navTitle.textContent = title;
   const brand = document.getElementById('brand');
-  if (brand) brand.innerHTML = mode === 'mail' ? icon('mail', 18) + '<span>Mail</span>' : icon('calendar', 18) + '<span>Kalender</span>';
+  if (brand) brand.innerHTML = icon(ic, 18) + `<span>${title}</span>`;
   els.tree.classList.toggle('hidden', mode !== 'mail');
   els.calNav.classList.toggle('hidden', mode !== 'calendar');
+  els.ctNav.classList.toggle('hidden', mode !== 'contacts');
   mail.showMailView(mode === 'mail');
   calendar.showCalendarView(mode === 'calendar');
+  contacts.showContactsView(mode === 'contacts');
   renderNavButtons();
   renderToolbar();
   mail.renderFolderTree();
@@ -300,6 +333,7 @@ async function syncAll() {
   state.sync = { ...state.sync, state: 'syncing' };
   renderStatus();
   try {
+    if (state.mode === 'contacts') { await contacts.sync(); renderStatus(); return; }
     await call('sync_all', {});
     await Promise.all(mailboxes().map((m) => loadFolders(m.id).catch(() => {})));
     mail.renderFolderTree();
@@ -340,6 +374,7 @@ async function onAccountsChanged() {
   await loadAll();
   mail.renderFolderTree();
   await calendar.onAccountsChanged();
+  contacts.onAccountsChanged();
   if (!state.current.mailboxId || !mailboxes().some((m) => m.id === state.current.mailboxId)) {
     state.current = { mailboxId: null, folderId: null };
     await selectInitialFolder();
@@ -358,11 +393,13 @@ function setupShortcuts() {
     if (e.key === 'F9') { e.preventDefault(); syncAll(); return; }
     if (ctrl && k === '1') { e.preventDefault(); setMode('mail'); return; }
     if (ctrl && k === '2') { e.preventDefault(); setMode('calendar'); return; }
+    if (ctrl && k === '3') { e.preventDefault(); setMode('contacts'); return; }
     if (ctrl && e.shiftKey && k === 'a') { e.preventDefault(); calendar.newEvent(); return; }
-    if (ctrl && k === 'n') { e.preventDefault(); if (state.mode === 'calendar') calendar.newEvent(); else mail.newMail(); return; }
+    if (ctrl && k === 'n') { e.preventDefault(); if (state.mode === 'calendar') calendar.newEvent(); else if (state.mode === 'contacts') contacts.newContact().catch(reportError); else mail.newMail(); return; }
     if (ctrl && k === 'e') { e.preventDefault(); $('#search-input').focus(); return; }
     if (typing || state.mode !== 'mail') {
       if (state.mode === 'calendar' && !typing && e.key === 'Delete') { e.preventDefault(); calendar.deleteSelected().catch(reportError); }
+      if (state.mode === 'contacts' && !typing && e.key === 'Delete') { e.preventDefault(); contacts.deleteContact().catch(reportError); }
       return;
     }
     if (ctrl && e.shiftKey && k === 'r') { e.preventDefault(); mail.respond('replyAll'); }
@@ -382,6 +419,7 @@ function setupEvents() {
   on('mail-changed', (p) => mail.onMailChanged(p).catch((e) => console.warn(e)));
   on('calendar-changed', () => calendar.onCalendarChanged().catch((e) => console.warn(e)));
   on('accounts-changed', () => onAccountsChanged().catch(reportError));
+  on('contacts-changed', () => contacts.onContactsChanged().catch((e) => console.warn(e)));
   on('categories-changed', async (p) => {
     if (p && p.accountId) await loadCategories(p.accountId).catch(() => {});
     mail.reloadList().catch(() => {});
@@ -401,6 +439,7 @@ async function init() {
   mail.hooks.snoozeItems = snoozeItems;
   mail.initMail({ navHost: els.tree, contentHost: els.content, onCounts: renderStatus, onSelection: updateActionState });
   calendar.initCalendar({ navHost: els.calNav, contentHost: els.content, onCounts: updateActionState });
+  contacts.initContacts({ navHost: els.ctNav, contentHost: els.content, onSelection: updateActionState });
   const navW = load('navWidth2', null);
   if (navW) document.documentElement.style.setProperty('--nav-w', navW + 'px');
   setupNavSplitter();
@@ -410,11 +449,12 @@ async function init() {
     await loadConfig();
   } catch (e) {
     reportError(e);
-    state.config = { clientId: '', tenant: 'organizations', syncIntervalSecs: 120, loadRemoteImages: false, signatureHtml: '', readingPane: 'right', markReadDelaySecs: 2, listMode: 'comfortable', showDateSeparators: true, snoozeOptions: [], demo: false };
+    state.config = { clientId: '', tenant: 'organizations', syncIntervalSecs: 120, loadRemoteImages: false, readingPane: 'right', markReadDelaySecs: 2, listMode: 'comfortable', showDateSeparators: true, snoozeOptions: [], demo: false };
   }
   mail.applyReadingPaneLayout();
   try { await loadAll(); } catch (e) { reportError(e); }
-  setMode(load('mode', 'mail') === 'calendar' ? 'calendar' : 'mail');
+  const m = load('mode', 'mail');
+  setMode(['mail', 'calendar', 'contacts'].includes(m) ? m : 'mail');
   await selectInitialFolder().catch(reportError);
   renderStatus();
   if (!state.accounts.length) welcomeDialog().catch(reportError);
