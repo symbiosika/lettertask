@@ -150,6 +150,16 @@ impl Store {
                  ALTER TABLE accounts ADD COLUMN avatar TEXT;",
             )?;
         }
+        let has_label: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='label'")?
+            .exists([])?;
+        if !has_label {
+            conn.execute_batch(
+                "ALTER TABLE accounts ADD COLUMN label TEXT;
+                 ALTER TABLE accounts ADD COLUMN badge_color TEXT;
+                 ALTER TABLE accounts ADD COLUMN badge_text TEXT;",
+            )?;
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -185,6 +195,14 @@ impl Store {
         Ok(self.c().execute("UPDATE accounts SET avatar=?2 WHERE id=?1", params![id, avatar])? > 0)
     }
 
+    /// Name in the views and look of the initials badge (None = default).
+    pub fn set_account_look(&self, id: &str, label: Option<&str>, badge: &AccountBadge) -> Result<bool> {
+        Ok(self.c().execute(
+            "UPDATE accounts SET label=?2, badge_color=?3, badge_text=?4 WHERE id=?1",
+            params![id, label, badge.color, badge.text],
+        )? > 0)
+    }
+
     pub fn delete_account(&self, id: &str) -> Result<()> {
         self.c().execute("DELETE FROM accounts WHERE id=?1", params![id])?;
         Ok(())
@@ -208,7 +226,7 @@ impl Store {
         let c = self.c();
         // sort_order 0 = never arranged: after the arranged ones, oldest first.
         let mut st = c.prepare(
-            "SELECT id,email,display_name,avatar FROM accounts
+            "SELECT id,email,display_name,avatar,label,badge_color,badge_text FROM accounts
              ORDER BY CASE sort_order WHEN 0 THEN 1 ELSE 0 END, sort_order, created, email",
         )?;
         let mut accounts: Vec<Account> = st
@@ -221,6 +239,11 @@ impl Store {
                     display_name: r.get(2)?,
                     mailboxes: vec![],
                     avatar: r.get(3)?,
+                    label: r.get(4)?,
+                    badge: {
+                        let badge = AccountBadge { color: r.get(5)?, text: r.get(6)? };
+                        (badge != AccountBadge::default()).then_some(badge)
+                    },
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -978,6 +1001,15 @@ mod tests {
         assert!(s.set_account_avatar("a", None).unwrap());
         assert_eq!(s.list_accounts().unwrap()[1].avatar, None);
         assert!(!s.set_account_avatar("nope", None).unwrap());
+        // Name and badge survive a re-login as well.
+        let badge = AccountBadge { color: Some("#2fa67a".into()), text: Some("CU\nCO".into()) };
+        assert!(s.set_account_look("a", Some("Büro"), &badge).unwrap());
+        s.upsert_account("a", "a@x", "A").unwrap();
+        let acc = s.list_accounts().unwrap();
+        assert_eq!(acc[1].label.as_deref(), Some("Büro"));
+        assert_eq!(acc[1].badge.as_ref(), Some(&badge));
+        assert!(s.set_account_look("a", None, &AccountBadge::default()).unwrap());
+        assert_eq!(s.list_accounts().unwrap()[1].badge, None);
     }
 
     #[test]
@@ -993,6 +1025,7 @@ mod tests {
         assert_eq!(emails(&s), ["a@x"]);
         s.set_account_order(&["a".into()]).unwrap();
         assert!(s.set_account_avatar("a", Some("data:image/png;base64,AAAA")).unwrap());
+        assert!(s.set_account_look("a", Some("A"), &AccountBadge::default()).unwrap());
     }
 
     fn msg(id: &str, folder: &str, received: &str, read: bool, subject: &str, cats: &[&str]) -> MessageSummary {
