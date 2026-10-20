@@ -87,9 +87,17 @@ Linux Secret Service), sonst in einer nur für den Benutzer lesbaren Datei. IMAP
 ```bash
 cargo run -p devserver --bin live-check              # nur lesend, Login per Gerätecode
 cargo run -p devserver --bin live-check -- --write   # zusätzlich Schreibtests (räumt auf)
+
+# IMAP/SMTP: Zugangsdaten aus der Umgebung, Benutzername = Mailadresse
+export IMAP_TEST_HOST=… IMAP_TEST_IMAP_PORT=993 IMAP_TEST_SMTP=… IMAP_TEST_SMTP_PORT=465
+export IMAP_TEST_USERNAME=… IMAP_TEST_PASSWORD=…
+cargo run -p devserver --bin live-check-imap              # nur lesend
+cargo run -p devserver --bin live-check-imap -- --write   # Ordner, Aufgaben, Entwürfe, Versand an sich selbst (räumt auf)
 ```
 
-Nutzt dieselbe Service-Schicht wie die App und gibt nur Zähler aus, keine Mailinhalte.
+Nutzt dieselbe Service-Schicht wie die App und gibt nur Zähler aus, keine Mailinhalte. Die Schreibtests
+löschen alles, was sie anlegen, endgültig; nur die Ordner, die die App selbst nutzt (z. B. Wiedervorlage,
+Archiv), bleiben bestehen.
 
 ## Bauen
 
