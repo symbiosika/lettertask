@@ -256,12 +256,21 @@ impl Service {
         }
         let (mb, c) = self.mailbox(&d.mailbox_id)?;
         let id = self.write_draft(&mb, &c, &d).await?;
+        // Thread id of the mail, for "Nachfassen erledigt sich selbst".
+        let thread = if d.remind_at.as_deref().is_some_and(|a| !a.is_empty()) {
+            c.get(&format!("{}/messages/{}?$select=conversationId", mb.graph_prefix(), seg(&id)))
+                .await
+                .ok()
+                .and_then(|v| v["conversationId"].as_str().map(str::to_string))
+        } else {
+            None
+        };
         c.post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(&id)))
             .await?;
         let recipients: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
         self.collect_addresses(&mb.account_id, &recipients)?;
         if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
-            self.create_send_reminder(&d, at).await?;
+            self.create_send_reminder(&d, at, thread.as_deref()).await?;
         }
         self.store.delete_message(&mb.id, &id)?;
         for wk in ["drafts", "sentitems", "inbox"] {

@@ -584,6 +584,31 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Messages of a mailbox (any folder) carrying a category.
+    pub fn messages_with_category(&self, mailbox_id: &str, category: &str) -> Result<Vec<MessageSummary>> {
+        let pattern = format!("%{}%", serde_json::to_string(category)?);
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND categories_json LIKE ?2 ORDER BY received DESC"
+        ))?;
+        let rows = st.query_map(params![mailbox_id, pattern], message_row)?;
+        Ok(rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|m| m.categories.iter().any(|x| x == category))
+            .collect())
+    }
+
+    /// Messages of a mailbox with a due time before `ts` (RFC3339 UTC).
+    pub fn messages_due_before(&self, mailbox_id: &str, ts: &str) -> Result<Vec<MessageSummary>> {
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND due_at IS NOT NULL AND due_at < ?2 ORDER BY due_at"
+        ))?;
+        let rows = st.query_map(params![mailbox_id, ts], message_row)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // ---- message bodies ----
 
     pub fn put_detail(&self, d: &MessageDetail) -> Result<()> {
@@ -813,6 +838,12 @@ impl Store {
 const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at";
 
 fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
+    let mut m = message_row_raw(r)?;
+    m.recurrence = recurrence_of(&m.categories);
+    Ok(m)
+}
+
+fn message_row_raw(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     let from_name: String = r.get(5)?;
     let from_addr: String = r.get(6)?;
     let to_json: String = r.get(7)?;
@@ -841,6 +872,7 @@ fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
         categories: serde_json::from_str(&cat_json).unwrap_or_default(),
         preview: r.get(15)?,
         due_at: r.get(16)?,
+        recurrence: None,
     })
 }
 
@@ -892,6 +924,7 @@ mod tests {
             categories: cats.iter().map(|s| s.to_string()).collect(),
             preview: String::new(),
             due_at: None,
+            recurrence: None,
         }
     }
 

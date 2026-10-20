@@ -106,6 +106,7 @@ pub fn message_summary(v: &Value, mailbox_id: &str, fallback_folder: &str) -> Me
             .get("dueDateTime")
             .filter(|d| !s(d, "dateTime").is_empty())
             .map(dt_tz),
+        recurrence: recurrence_of(&string_list(v, "categories")),
     }
 }
 

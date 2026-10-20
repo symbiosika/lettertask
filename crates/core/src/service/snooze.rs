@@ -65,6 +65,8 @@ impl Service {
     }
 
     pub(crate) async fn archive_messages(&self, mailbox_id: &str, ids: &[String]) -> Result<()> {
+        // Recurring tasks: schedule the next occurrence before the original goes away.
+        self.schedule_recurrences(mailbox_id, ids).await?;
         if crate::imap::is_imap_id(mailbox_id) {
             return self.imap_archive(mailbox_id, ids).await;
         }
@@ -126,18 +128,23 @@ impl Service {
         let mapping = self.move_messages(mailbox_id, ids, &inbox.id, false).await?;
         let new_ids: Vec<String> = mapping.into_iter().map(|(_, n)| n).collect();
         let (mb, c) = self.mailbox(mailbox_id)?;
-        self.patch_many(
-            &mb,
-            &c,
-            &new_ids,
-            json!({"isRead": false, "flag": {"flagStatus": "notFlagged"}}),
-        )
-        .await?;
-        self.update_cached(mailbox_id, &new_ids, |m| {
+        // Recurring tasks keep their due time: it anchors the fixed rhythm.
+        let (recurring, plain): (Vec<String>, Vec<String>) = new_ids.iter().cloned().partition(|id| {
+            self.store
+                .get_summary(mailbox_id, id)
+                .ok()
+                .flatten()
+                .is_some_and(|m| m.recurrence.is_some())
+        });
+        self.patch_many(&mb, &c, &plain, json!({"isRead": false, "flag": {"flagStatus": "notFlagged"}}))
+            .await?;
+        self.patch_many(&mb, &c, &recurring, json!({"isRead": false})).await?;
+        self.update_cached(mailbox_id, &plain, |m| {
             m.is_read = false;
             m.flag = "notFlagged".into();
             m.due_at = None;
         })?;
+        self.update_cached(mailbox_id, &recurring, |m| m.is_read = false)?;
         self.emit_mail_changed(mailbox_id, Some(&inbox.id));
         Ok(())
     }

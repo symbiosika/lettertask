@@ -378,8 +378,20 @@ impl Service {
         Ok(v)
     }
 
-    fn summaries_from(&self, mb: &str, folder: &str, uv: u32, items: Vec<Fetched>, snoozed: bool) -> Vec<MessageSummary> {
-        items
+    /// Summaries of fetched messages. In the snooze folder, mails without a
+    /// `$due_` keyword fall back to a locally stored due time (servers without
+    /// custom keywords, or data from older versions); those are returned as
+    /// `(uid, due, kv key)` so the caller can migrate them to a keyword.
+    fn summaries_from(
+        &self,
+        mb: &str,
+        folder: &str,
+        uv: u32,
+        items: Vec<Fetched>,
+        snoozed: bool,
+    ) -> (Vec<MessageSummary>, Vec<(u32, String, String)>) {
+        let mut local = Vec::new();
+        let list = items
             .into_iter()
             .filter_map(|f| {
                 let header = f.header.as_deref().or(f.body.as_deref())?;
@@ -392,12 +404,19 @@ impl Service {
                     &f.flags,
                     f.internal_date,
                 );
-                if snoozed && !s.conversation_id.is_empty() {
-                    s.due_at = self.store.kv_get(&snooze_key(mb, &s.conversation_id)).ok().flatten().filter(|d| !d.is_empty());
+                if snoozed && s.due_at.is_none() {
+                    if let Some(mid) = mime::message_id_of(header) {
+                        let key = snooze_key(mb, &mid);
+                        if let Some(due) = self.store.kv_get(&key).ok().flatten().filter(|d| !d.is_empty()) {
+                            s.due_at = Some(due.clone());
+                            local.push((f.uid, due, key));
+                        }
+                    }
                 }
                 Some(s)
             })
-            .collect()
+            .collect();
+        (list, local)
     }
 
     pub(crate) async fn imap_sync_folder(&self, mb: &str, folder: &str, quiet: bool) -> Result<SyncResult> {
@@ -415,6 +434,7 @@ impl Service {
             flags: HashMap<u32, Vec<String>>,
             all_new: bool,
             reset: bool,
+            keywords_ok: bool,
         }
         let out = with_imap!(self, mb, |c| {
                 let sel = c.select(folder).await?;
@@ -452,6 +472,7 @@ impl Service {
                 }
                 let unseen = if sel.exists > 0 { uid_search(c, "UNSEEN").await?.len() } else { 0 };
                 Ok(Outcome {
+                    keywords_ok: may_create_keywords(&sel),
                     uv,
                     exists: sel.exists,
                     unseen,
@@ -463,6 +484,7 @@ impl Service {
             })?;
 
         let mut result = SyncResult::default();
+        let mut migrate: Vec<(u32, String, String)> = Vec::new();
         let initial = cached_before.is_empty() || out.reset;
         if out.reset {
             self.store.delete_folder_messages(mb, folder)?;
@@ -479,10 +501,24 @@ impl Service {
                     Some(fl) => {
                         if let Some(mut m) = self.store.get_summary(mb, id)? {
                             let (r, f, cats) = (mime::has_flag(fl, "\\Seen"), mime::flag_status(fl), mime::categories(fl));
-                            if m.is_read != r || m.flag != f || m.categories != cats {
+                            let due = match mime::due(fl) {
+                                Some(d) => Some(d),
+                                // Locally known due time: keep it, and move it onto the
+                                // server when keywords are possible.
+                                None if m.due_at.is_some() && snoozed => {
+                                    if out.keywords_ok {
+                                        migrate.push((*uid, m.due_at.clone().unwrap_or_default(), String::new()));
+                                    }
+                                    m.due_at.clone()
+                                }
+                                None => None,
+                            };
+                            if m.is_read != r || m.flag != f || m.categories != cats || m.due_at != due {
                                 m.is_read = r;
                                 m.flag = f;
+                                m.recurrence = crate::model::recurrence_of(&cats);
                                 m.categories = cats;
+                                m.due_at = due;
                                 changed.push(m);
                             }
                         }
@@ -493,7 +529,10 @@ impl Service {
             self.store.upsert_messages(&changed)?;
         }
         self.store.kv_set(&uv_key(mb, folder), &out.uv.to_string())?;
-        let new = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
+        let (new, local_due) = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
+        if out.keywords_ok {
+            migrate.extend(local_due);
+        }
         result.added = new.len() as i64;
         let mut new_unread: Vec<MessageSummary> = new.iter().filter(|m| !m.is_read && !m.is_draft).cloned().collect();
         self.store.upsert_messages(&new)?;
@@ -506,6 +545,9 @@ impl Service {
             self.store.upsert_folder(&f)?;
         }
         drop(guard);
+        if !migrate.is_empty() {
+            self.imap_migrate_due(mb, folder, &migrate).await?;
+        }
         let is_inbox = folder.eq_ignore_ascii_case("INBOX");
         if !initial && is_inbox && !new_unread.is_empty() {
             // Rule chain runs before the new mails are announced to the UI.
@@ -558,7 +600,7 @@ impl Service {
                 let items = if take.is_empty() { vec![] } else { uid_fetch(c, &im::uid_set(&take), &summary_query()).await? };
                 Ok((sel.uid_validity.unwrap_or(0), items, more))
             })?;
-        let list = self.summaries_from(mb, folder, uv, items, snoozed);
+        let (list, _) = self.summaries_from(mb, folder, uv, items, snoozed);
         self.store.upsert_messages(&list)?;
         if !more {
             self.store.set_fully_loaded(mb, folder, true)?;
@@ -621,7 +663,7 @@ impl Service {
             })?;
         let mut out = Vec::new();
         for (f, uv, items) in found {
-            out.extend(self.summaries_from(mb, &f, uv, items, false));
+            out.extend(self.summaries_from(mb, &f, uv, items, false).0);
         }
         out.sort_by(|a, b| b.received_at.cmp(&a.received_at));
         out.truncate(100);
@@ -886,34 +928,80 @@ impl Service {
 
     // ---- Wiedervorlage ----
 
-    /// Message-ID header of a message (cached summary or from the server).
+    /// Whether `folder` accepts custom keywords (PERMANENTFLAGS contains `\*`).
+    pub(crate) async fn imap_keywords_ok(&self, mb: &str, folder: &str) -> Result<bool> {
+        with_imap!(self, mb, |c| {
+            let sel = c.select(folder).await?;
+            Ok(may_create_keywords(&sel))
+        })
+    }
+
+    /// Real Message-IDs (without brackets) of messages, from the server.
     async fn imap_message_ids(&self, mb: &str, ids: &[String]) -> Result<Vec<String>> {
-        let mut out = Vec::new();
-        let mut missing = Vec::new();
-        for id in ids {
-            match self.store.get_summary(mb, id)?.map(|s| s.conversation_id).filter(|c| !c.is_empty()) {
-                Some(m) => out.push(m),
-                None => missing.push(id.clone()),
+        let groups = by_folder(ids)?;
+        let fetched = with_imap!(self, mb, |c| {
+            let mut v = Vec::new();
+            for (folder, (_, uids)) in &groups {
+                c.select(folder).await?;
+                v.extend(uid_fetch(c, &im::uid_set(uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?);
             }
-        }
-        if !missing.is_empty() {
-            let groups = by_folder(&missing)?;
-            let fetched = with_imap!(self, mb, |c| {
-                    let mut v = Vec::new();
-                    for (folder, (_, uids)) in &groups {
-                        c.select(folder).await?;
-                        v.extend(uid_fetch(c, &im::uid_set(uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?);
-                    }
-                    Ok(v)
-                })?;
-            for f in fetched {
-                let raw = f.header.or(f.body).unwrap_or_default();
-                if let Some(m) = mime::parse(&raw).and_then(|p| p.message_id().map(str::to_string)) {
-                    out.push(m);
+            Ok(v)
+        })?;
+        Ok(fetched
+            .into_iter()
+            .filter_map(|f| mime::message_id_of(&f.header.or(f.body).unwrap_or_default()))
+            .collect())
+    }
+
+    /// Sets (or with `None` removes) the `$due_` keyword of messages. Returns
+    /// false when the server does not accept custom keywords.
+    async fn imap_set_due(&self, mb: &str, ids: &[String], due: Option<DateTime<Utc>>) -> Result<bool> {
+        let groups = by_folder(ids)?;
+        with_imap!(self, mb, |c| {
+            let mut ok = true;
+            for (folder, (_, uids)) in &groups {
+                let sel = c.select(folder).await?;
+                if !may_create_keywords(&sel) {
+                    ok = false;
+                    continue;
+                }
+                let set = im::uid_set(uids);
+                let old: HashSet<String> = uid_fetch(c, &set, "(UID FLAGS)")
+                    .await?
+                    .into_iter()
+                    .flat_map(|f| f.flags)
+                    .filter(|f| im::is_due_keyword(f))
+                    .collect();
+                if !old.is_empty() {
+                    let list: Vec<String> = old.into_iter().collect();
+                    store_flags(c, &set, &format!("-FLAGS.SILENT ({})", list.join(" "))).await?;
+                }
+                if let Some(d) = due {
+                    store_flags(c, &set, &format!("+FLAGS.SILENT ({})", im::due_keyword(d))).await?;
+                }
+            }
+            Ok(ok)
+        })
+    }
+
+    /// Moves locally stored due times onto the server as keywords.
+    pub(crate) async fn imap_migrate_due(&self, mb: &str, folder: &str, items: &[(u32, String, String)]) -> Result<()> {
+        let uv: u32 = self.store.kv_get(&uv_key(mb, folder))?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        for (uid, due, key) in items {
+            let Ok(dt) = DateTime::parse_from_rfc3339(due) else { continue };
+            let id = im::message_id(uv, *uid, folder);
+            if !self.imap_set_due(mb, std::slice::from_ref(&id), Some(dt.with_timezone(&Utc))).await? {
+                continue;
+            }
+            if !key.is_empty() {
+                self.store.kv_set(key, "")?;
+            } else {
+                for mid in self.imap_message_ids(mb, std::slice::from_ref(&id)).await? {
+                    self.store.kv_set(&snooze_key(mb, &mid), "")?;
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     pub(crate) async fn imap_snooze(&self, mb: &str, ids: &[String], until: &str) -> Result<()> {
@@ -925,8 +1013,11 @@ impl Service {
         }
         let due = until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let folder = self.imap_ensure_folder(mb, "snoozed", SNOOZE_FOLDER).await?;
-        for mid in self.imap_message_ids(mb, ids).await? {
-            self.store.kv_set(&snooze_key(mb, &mid), &due)?;
+        // The keyword travels with the message on MOVE.
+        if !self.imap_set_due(mb, ids, Some(until)).await? {
+            for mid in self.imap_message_ids(mb, ids).await? {
+                self.store.kv_set(&snooze_key(mb, &mid), &due)?;
+            }
         }
         let (already, to_move): (Vec<String>, Vec<String>) = ids.iter().cloned().partition(|id| {
             im::parse_message_id(id).is_some_and(|(_, _, f)| f == folder.id)
@@ -940,10 +1031,24 @@ impl Service {
     }
 
     pub(crate) async fn imap_unsnooze(&self, mb: &str, ids: &[String]) -> Result<()> {
-        for mid in self.imap_message_ids(mb, ids).await? {
-            self.store.kv_set(&snooze_key(mb, &mid), "")?;
+        // Recurring tasks keep their due time: it anchors the fixed rhythm.
+        let (recurring, plain): (Vec<String>, Vec<String>) = ids.iter().cloned().partition(|id| {
+            self.store
+                .get_summary(mb, id)
+                .ok()
+                .flatten()
+                .is_some_and(|m| m.recurrence.is_some())
+        });
+        if !plain.is_empty() {
+            self.imap_set_due(mb, &plain, None).await?;
+            for mid in self.imap_message_ids(mb, &plain).await? {
+                self.store.kv_set(&snooze_key(mb, &mid), "")?;
+            }
+            self.imap_store(mb, &plain, &["-FLAGS.SILENT (\\Seen \\Flagged)".to_string()]).await?;
         }
-        self.imap_store(mb, ids, &["-FLAGS.SILENT (\\Seen)".to_string()]).await?;
+        if !recurring.is_empty() {
+            self.imap_store(mb, &recurring, &["-FLAGS.SILENT (\\Seen)".to_string()]).await?;
+        }
         self.imap_move(mb, ids, "INBOX", false).await?;
         Ok(())
     }
@@ -1006,7 +1111,8 @@ impl Service {
     fn imap_remember_categories(&self, account: &str, names: &[String]) -> Result<()> {
         let mut cats = self.imap_categories(account)?;
         let mut changed = false;
-        for n in names {
+        // Hidden ones ("[#…]", "[F_…]", lanes "[K_…]") are managed elsewhere.
+        for n in names.iter().filter(|n| !n.starts_with('[')) {
             if !cats.iter().any(|c| c.display_name.eq_ignore_ascii_case(n)) {
                 cats.push(Category {
                     id: uuid::Uuid::new_v4().to_string(),

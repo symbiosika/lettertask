@@ -101,6 +101,25 @@ pub fn keyword_category(keyword: &str) -> Option<String> {
     Some(out)
 }
 
+/// Wiedervorlage/due time as IMAP keyword `$due_YYYYMMDDTHHMMZ` (UTC, minute
+/// precision), so it lives on the server like Outlook's follow-up date.
+pub fn due_keyword(due: chrono::DateTime<chrono::Utc>) -> String {
+    format!("$due_{}", due.format("%Y%m%dT%H%MZ"))
+}
+
+pub fn is_due_keyword(flag: &str) -> bool {
+    flag.len() > 5 && flag[..5].eq_ignore_ascii_case("$due_")
+}
+
+/// `$due_20261021T0600Z` → `2026-10-21T06:00:00Z`.
+pub fn keyword_due(flag: &str) -> Option<String> {
+    if !is_due_keyword(flag) {
+        return None;
+    }
+    let dt = chrono::NaiveDateTime::parse_from_str(&flag[5..].to_ascii_uppercase(), "%Y%m%dT%H%MZ").ok()?;
+    Some(dt.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
 /// Quotes a string for IMAP commands (quoted-string; 8-bit is passed through,
 /// which servers accept with CHARSET UTF-8).
 pub fn quote(s: &str) -> String {
@@ -156,6 +175,16 @@ mod tests {
             assert_eq!(keyword_category(&k).as_deref(), Some(name));
         }
         assert_eq!(keyword_category("\\Seen"), None);
+    }
+
+    #[test]
+    fn due_keywords() {
+        let dt = chrono::DateTime::parse_from_rfc3339("2026-10-21T08:00:30+02:00").unwrap().with_timezone(&chrono::Utc);
+        let k = due_keyword(dt);
+        assert_eq!(k, "$due_20261021T0600Z");
+        assert_eq!(keyword_due(&k).as_deref(), Some("2026-10-21T06:00:00Z"));
+        assert_eq!(keyword_due("$due_20261021t0600z").as_deref(), Some("2026-10-21T06:00:00Z"));
+        assert_eq!(keyword_due("$cat_X"), None);
     }
 
     #[test]

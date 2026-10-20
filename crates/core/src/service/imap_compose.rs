@@ -382,7 +382,7 @@ impl Service {
         let all: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
         self.collect_addresses(&mb, &all)?;
         if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
-            self.create_send_reminder(&d, at).await?;
+            self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await?;
         }
         Ok(())
     }
@@ -408,15 +408,33 @@ impl Service {
             message_id: mime::new_message_id(&me.address),
             ..Default::default()
         };
+        let keywords_ok = self.imap_keywords_ok(mb, &folder.id).await?;
+        let mut flags: Vec<String> = Vec::new();
         if let Some(due) = m.due {
-            let key = super::imap_mail::snooze_key(mb, o.message_id.trim_matches(['<', '>']));
-            self.store
-                .kv_set(&key, &due.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))?;
+            flags.extend(["\\Seen".to_string(), "\\Flagged".to_string()]);
+            if keywords_ok {
+                flags.push(im::due_keyword(due));
+            } else {
+                let key = super::imap_mail::snooze_key(mb, o.message_id.trim_matches(['<', '>']));
+                self.store
+                    .kv_set(&key, &due.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))?;
+            }
         }
-        let flags = if m.due.is_some() { "(\\Seen \\Flagged)" } else { "()" };
+        if keywords_ok {
+            flags.extend(m.categories.iter().map(|c| im::category_keyword(c)));
+        }
         let raw = mime::build(&o, true)?.formatted();
-        let id = self.imap_append(mb, &folder.id, flags, &raw, &o.message_id).await?;
+        let id = self
+            .imap_append(mb, &folder.id, &format!("({})", flags.join(" ")), &raw, &o.message_id)
+            .await?;
         self.imap_sync_folder(mb, &folder.id, true).await?;
+        if !keywords_ok && !m.categories.is_empty() {
+            // Server without custom keywords: categories only in the local cache.
+            self.update_cached(mb, std::slice::from_ref(&id), |s| {
+                s.categories = m.categories.clone();
+                s.recurrence = crate::model::recurrence_of(&s.categories);
+            })?;
+        }
         self.emit_mail_changed(mb, Some(&folder.id));
         self.store
             .get_summary(mb, &id)?

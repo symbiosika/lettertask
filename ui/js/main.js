@@ -99,8 +99,61 @@ function renderTopbar() {
     else if (e.key === 'Escape') { e.preventDefault(); input.value = ''; mail.clearSearch(); closePanel(); input.blur(); mail.focusList(); }
   });
 
-  const right = h('div.tb-right', busy, h('div.sync-ind#sync-ind'), accountChip());
+  const right = h('div.tb-right', focusButton(), h('span.spacer'), busy, h('div.sync-ind#sync-ind'), accountChip());
   els.topbar.append(h('div.tb-left', menuBtn, h('span.brand#brand', { html: icon('mail', 18) + '<span>Mail</span>' })), wrap, right);
+}
+
+// ------------------------------------------------------------------ Fokuszeit
+const focus = { until: null, timer: null };
+function focusActive() { return !!(focus.until && new Date(focus.until) > new Date()); }
+
+function focusButton() {
+  const b = h('button.focus-btn#focus-btn', { type: 'button', dataset: { testid: 'focus-btn' } });
+  b.addEventListener('click', () => showMenuAt(b, focusMenu()));
+  focusButton.el = b;
+  paintFocus();
+  return b;
+}
+
+function focusMenu() {
+  if (focusActive()) {
+    return [
+      { header: `Fokuszeit bis ${fmtTime(new Date(focus.until))}` },
+      { label: 'Fokuszeit beenden', icon: 'close', onClick: () => setFocus(0), testid: 'focus-end' },
+      { separator: true },
+      ...[1, 2, 3, 4].map((n) => ({ label: `Auf ${n} ${n === 1 ? 'Stunde' : 'Stunden'} ab jetzt ändern`, onClick: () => setFocus(n * 60), testid: 'focus-' + n })),
+    ];
+  }
+  return [
+    { header: 'Fokuszeit – keine automatischen Abrufe' },
+    ...[[1, '1 Stunde Pause'], [2, '2 Stunden'], [3, '3 Stunden'], [4, '4 Stunden']].map(([n, label]) => ({ label, icon: n === 1 ? 'focus' : null, onClick: () => setFocus(n * 60), testid: 'focus-' + n })),
+  ];
+}
+
+async function setFocus(minutes) {
+  const r = await call('set_focus', { minutes });
+  applyFocus(r && r.until);
+  toast(focusActive() ? `Fokuszeit bis ${fmtTime(new Date(focus.until))} – neue Mails werden erst danach abgerufen.` : 'Fokuszeit beendet.');
+}
+
+function applyFocus(until) {
+  focus.until = until || null;
+  clearTimeout(focus.timer);
+  if (focusActive()) {
+    // local fallback in case the expiry event gets lost
+    focus.timer = setTimeout(() => applyFocus(null), Math.min(2 ** 31 - 1, new Date(focus.until) - new Date() + 1500));
+  }
+  paintFocus();
+  renderStatus();
+}
+
+function paintFocus() {
+  const b = focusButton.el;
+  if (!b) return;
+  const on = focusActive();
+  b.classList.toggle('on', on);
+  b.title = on ? 'Fokuszeit aktiv – automatischer Abruf pausiert' : 'Fokuszeit: automatischen Abruf für eine Weile pausieren';
+  b.innerHTML = icon('focus', 16) + `<span>${on ? `Fokus bis ${fmtTime(new Date(focus.until))}` : 'Fokuszeit'}</span>` + icon('chevronDown', 12);
 }
 
 function accountChip() {
@@ -335,7 +388,7 @@ function setMode(mode) {
 // ------------------------------------------------------------------ status (sidebar footer)
 function renderStatus() {
   const s = state.sync;
-  const text = {
+  const text = focusActive() && s.state !== 'syncing' ? 'Fokuszeit – automatischer Abruf pausiert' : {
     syncing: 'Wird synchronisiert…', idle: s.lastSync ? `Aktualisiert ${fmtTime(new Date(s.lastSync))}` : 'Verbunden', offline: 'Offline', error: 'Synchronisierungsfehler',
   }[s.state] || '';
   els.status.innerHTML = '';
@@ -376,6 +429,7 @@ async function loadAll() {
 
 async function selectInitialFolder() {
   const last = load('lastFolder', null);
+  if (last && last.folderId === mail.TODAY && mailboxes().length) return mail.selectFolder(mailboxes()[0].id, mail.TODAY);
   if (last && folderById(last.mailboxId, last.folderId)) return mail.selectFolder(last.mailboxId, last.folderId);
   const mb = mailboxes()[0];
   if (!mb) { mail.renderFolderTree(); await mail.reloadList(); return; }
@@ -460,6 +514,16 @@ function setupEvents() {
     toast(p.count === 1 ? '1 Mail automatisch auf Wiedervorlage gelegt.' : `${p.count} Mails automatisch auf Wiedervorlage gelegt.`, 'info', 6000, { title: subjects });
     if (p.mailboxId) mail.refreshFolders(p.mailboxId).catch(() => {});
   });
+  on('focus-changed', (p) => applyFocus(p && p.until));
+  on('followup-resolved', (p) => {
+    if (!p) return;
+    toast(`Nachfassen erledigt – Antwort von ${p.from || 'unbekannt'}`, 'info', 6000, { title: p.subject || '' });
+  });
+  on('recurrence-scheduled', (p) => {
+    if (!p) return;
+    const d = p.due ? new Date(p.due) : null;
+    toast(d && !isNaN(d) ? `Nächste Wiederholung: ${fmtSnoozeTarget(d)}` : 'Nächste Wiederholung eingeplant.', 'info', 6000, { title: p.subject || '' });
+  });
   on('lanes-changed', (p) => { if (p && p.accountId) mail.onLanesChanged(p.accountId).catch(() => {}); });
   onBroadcast((m) => {
     if (m.type === 'task-created') toast(m.due ? `Aufgabe angelegt – fällig ${m.due}.` : 'Aufgabe angelegt – sie liegt im Posteingang.');
@@ -496,6 +560,8 @@ async function init() {
   const m = load('mode', 'mail');
   setMode(['mail', 'calendar', 'contacts'].includes(m) ? m : 'mail');
   await selectInitialFolder().catch(reportError);
+  try { const f = await call('get_focus', {}, { silent: true }); applyFocus(f && f.until); } catch { /* older backend */ }
+  mail.refreshTodayCount();
   renderStatus();
   if (!state.accounts.length) welcomeDialog().catch(reportError);
 }

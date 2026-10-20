@@ -1,6 +1,6 @@
 // Dialogs: settings, category manager, auto reply, welcome / account setup.
 import { call } from './api.js';
-import { h, esc, toLocalIso } from './util.js';
+import { h, esc, toLocalIso, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, field } from './dialogs.js';
 import { PRESETS, presetHex, textOn, getCategories, setCategories } from './categories.js';
@@ -166,6 +166,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const tenant = h('input.input', { value: c.tenant || 'organizations', name: 'tenant' });
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
+  const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
   const seps = h('input', { type: 'checkbox', checked: c.showDateSeparators !== false, name: 'showDateSeparators' });
   const pane = select([['right', 'Rechts'], ['bottom', 'Unten'], ['off', 'Aus']], c.readingPane || 'right');
   pane.name = 'readingPane';
@@ -186,6 +187,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
       field('Automatisch synchronisieren alle', h('span.inline', interval, h('span.dim', 'Sekunden'))),
+      h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null),
     reading: h('div.set-panel',
       h('h3', 'Lesen'),
@@ -239,6 +241,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       };
       delete config.signatureHtml;
       state.config = await call('save_config', { config });
+      store('confetti', confetti.checked);
       if (sigs) await sigs.save();
       if (lanes) { try { await lanes.save(); } catch (e) { show('kanban'); throw e; } }
       try { localStorage.setItem('oc.kanbanPane', JSON.stringify(kbPane.value)); } catch { /* ignore */ }

@@ -1,7 +1,8 @@
 // Renders a MessageDetail (reading pane and message window share this).
 import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fmtSize } from './util.js';
 import { icon } from './icons.js';
-import { pillHtml, visibleCats, laneCats } from './categories.js';
+import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
+import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
 import { call, openUrl, openWindow } from './api.js';
 import { showMenu, showMenuAt, reportError, toast } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
@@ -86,8 +87,9 @@ export function renderMessage(container, msg, opts) {
   let allowRemote = !!(config && config.loadRemoteImages);
   const remote = hasRemoteContent(msg.bodyHtml);
   // Kanban lane markers ("[K_…]") stay hidden but must survive tag edits.
-  const lanes = laneCats(msg.categories);
+  let lanes = hiddenCats(msg.categories);
   let cats = visibleCats(msg.categories);
+  let rule = recurrenceOf(msg);
 
   const card = h('article.rp-card');
   const from = msg.from || { name: '(Unbekannt)', address: '' };
@@ -122,9 +124,27 @@ export function renderMessage(container, msg, opts) {
   renderTags();
   container._openTagPicker = () => openPicker();
 
+  // recurring task badge (click: change / remove)
+  const rec = h('span.rp-rec', { dataset: { testid: 'rp-rec' } });
+  const renderRec = () => {
+    rec.innerHTML = '';
+    if (!rule) return;
+    const b = h('button.rec-btn', { type: 'button', title: 'Wiederholung ändern', html: recurrenceBadgeHtml(rule) });
+    if (opts.setRecurrence) b.addEventListener('click', () => showMenuAt(b, recurrenceMenuItems(rule, (k) => applyRule(k))));
+    rec.appendChild(b);
+  };
+  const applyRule = async (k) => {
+    rule = k;
+    lanes = [...lanes.filter((c) => !isRecurrenceCategory(c)), ...(k ? [recurrenceCategory(k)] : [])];
+    renderRec();
+    try { await opts.setRecurrence(k); } catch (e) { reportError(e); }
+  };
+  renderRec();
+  container._setRecurrence = opts.setRecurrence ? applyRule : null;
+
   const titleRow = h('div.rp-titlerow',
     h('h1.rp-subject', { title: msg.subject || '' }, msg.subject || '(Kein Betreff)'),
-    tags);
+    rec, tags);
 
   // ---- sender row
   const act = (name, ic, title, testid) => h('button.icon-btn', { type: 'button', title, 'aria-label': title, dataset: { testid }, html: icon(ic, 18), onclick: (e) => opts.onAction && opts.onAction(name, e.currentTarget) });
