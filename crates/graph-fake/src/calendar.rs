@@ -65,6 +65,9 @@ pub fn parse_tz(name: &str) -> Option<Tz> {
     let mapped = match n {
         "" | "UTC" | "utc" | "Etc/UTC" | "Coordinated Universal Time" | "tzone://Microsoft/Utc" => "UTC",
         "W. Europe Standard Time" => "Europe/Berlin",
+        // Exchange labels zones from foreign ICS invites like this; clients
+        // cannot resolve it. The fake treats it as W. Europe internally.
+        "Customized Time Zone" => "Europe/Berlin",
         "Central Europe Standard Time" => "Europe/Budapest",
         "Romance Standard Time" => "Europe/Paris",
         "GMT Standard Time" => "Europe/London",
@@ -205,7 +208,8 @@ fn pattern_dates(rec: &Value, until: NaiveDate) -> Vec<NaiveDate> {
                     break;
                 }
                 let d = if p["type"].as_str().unwrap_or("").starts_with("absolute") {
-                    NaiveDate::from_ymd_opt(y, m, dom)
+                    // Like Exchange: day 29–31 falls on the last day of shorter months.
+                    (1..=dom.max(1)).rev().find_map(|day| NaiveDate::from_ymd_opt(y, m, day))
                 } else {
                     nth_weekday(y, m, &dows, index)
                 };
@@ -634,7 +638,9 @@ fn events_collection(mb: &mut Mailbox, cal_id: &str, req: &Req) -> GResult {
         Method::POST => {
             ensure_editable(mb, cal_id)?;
             let ev = new_event(mb, cal_id, &req.json()?)?;
-            let v = render_event(&ev, None, &out_tz(req));
+            // Like Graph: the POST response is in the event's own zone, the
+            // `Prefer: outlook.timezone` header only applies to GET.
+            let v = render_event(&ev, None, &ev.tz);
             mb.events.insert(ev.id.clone(), ev);
             created(v)
         }
@@ -675,7 +681,7 @@ fn event_item(mb: &mut Mailbox, id: &str, req: &Req) -> GResult {
                 entry.patch = base;
                 let ev = &mb.events[master];
                 let occ = occurrence_at(ev, key).expect("exists");
-                return ok(render_event(ev, Some(occ), &tz));
+                return ok(render_event(ev, Some(occ), &ev.tz));
             }
             Method::DELETE => {
                 ensure_editable(mb, &ev.cal_id.clone())?;
@@ -709,7 +715,8 @@ fn event_item(mb: &mut Mailbox, id: &str, req: &Req) -> GResult {
                 ev.deleted_occ.clear();
             }
             apply_props(&mut ev.json, &body);
-            ok(render_event(ev, None, &tz))
+            // PATCH responses are in the event's own zone as well.
+            ok(render_event(ev, None, &ev.tz))
         }
         Method::DELETE => {
             ensure_editable(mb, &ev.cal_id.clone())?;

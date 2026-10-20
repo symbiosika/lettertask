@@ -84,6 +84,7 @@ fn granted_scope(requested: &str) -> String {
 
 pub async fn token(State(st): State<SharedState>, Path(_tenant): Path<String>, Form(f): Form<HashMap<String, String>>) -> Response {
     let mut s = st.lock();
+    s.token_requests += 1;
     let scope = match f.get("grant_type").map(String::as_str) {
         Some("authorization_code") => {
             let Some(code) = f.get("code") else {
@@ -126,6 +127,9 @@ pub async fn token(State(st): State<SharedState>, Path(_tenant): Path<String>, F
         }
         Some("refresh_token") => {
             let rt = f.get("refresh_token").map(String::as_str).unwrap_or("");
+            if s.refresh_revoked {
+                return oauth_error("invalid_grant", "AADSTS50173: The provided grant has expired due to it being revoked, a fresh auth token is needed.", &[50173]);
+            }
             match s.auth.refresh.get(rt) {
                 Some(scope) => scope.clone(),
                 None => {

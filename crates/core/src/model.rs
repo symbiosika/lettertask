@@ -194,6 +194,9 @@ pub struct Recurrence {
     pub day_of_month: i64,
     #[serde(default)]
     pub month: i64,
+    /// Week of the month for relative patterns: first … fourth, last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
     pub start_date: String,
     #[serde(default)]
     pub end_date: Option<String>,
