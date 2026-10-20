@@ -4,7 +4,7 @@ import { icon } from './icons.js';
 import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
 import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
 import { call, openUrl, openWindow } from './api.js';
-import { showMenu, showMenuAt, reportError, toast } from './dialogs.js';
+import { showMenu, showMenuAt, reportError, toast, busyClick } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
 import { fmtSnoozeTarget } from './snooze.js';
 
@@ -258,17 +258,16 @@ export function renderMessage(container, msg, opts) {
   }
   if (msg.importance === 'high') bars.appendChild(h('div.infobar.important', { html: icon('important', 16) + ' Diese Nachricht wurde mit hoher Wichtigkeit gesendet.' }));
   if (msg.isMeetingRequest && msg.eventId) {
+    const bar = h('div.infobar.meeting', h('span.ib-text', { html: icon('calendar', 16) + ' Besprechungsanfrage' }), h('span.spacer'));
     const mk = (label, ic, response) => h('button.btn.small', {
-      onclick: async () => {
-        try {
-          await call('respond_event', { accountId, eventId: msg.eventId, response, comment: '', sendResponse: true });
-          toast('Antwort gesendet.');
-          opts.onChanged && opts.onChanged();
-        } catch (e) { reportError(e); }
-      }, html: icon(ic, 15) + ' ' + esc(label),
+      onclick: busyClick(async () => {
+        await call('respond_event', { accountId, eventId: msg.eventId, response, comment: '', sendResponse: true });
+        toast('Antwort gesendet.');
+        opts.onChanged && opts.onChanged();
+      }, bar), html: icon(ic, 15) + ' ' + esc(label),
     });
-    bars.appendChild(h('div.infobar.meeting', h('span.ib-text', { html: icon('calendar', 16) + ' Besprechungsanfrage' }),
-      h('span.spacer'), mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline')));
+    bar.append(mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline'));
+    bars.appendChild(bar);
   }
   let remoteBar = null;
   if (remote && !allowRemote) {

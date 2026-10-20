@@ -75,7 +75,8 @@ async function setFlag(flag) {
 async function init() {
   renderToolbar();
   try { await bootstrapSecondary(); } catch (e) { reportError(e); }
-  try { await load(); } catch (e) { reportError(e); $('#msg').appendChild(h('div.empty', 'Die Nachricht konnte nicht geladen werden.')); }
+  $('#msg').appendChild(h('div.loading-state', h('span.busy'), h('div', 'Nachricht wird geladen…')));
+  try { await load(); } catch (e) { reportError(e); $('#msg').innerHTML = ''; $('#msg').appendChild(h('div.empty', 'Die Nachricht konnte nicht geladen werden.')); }
   on('categories-changed', () => load().catch(() => {}));
   window.addEventListener('keydown', (e) => {
     if (document.querySelector('.modal-overlay')) return;

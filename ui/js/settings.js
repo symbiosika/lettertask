@@ -2,13 +2,13 @@
 import { call } from './api.js';
 import { h, esc, toLocalIso, load, store } from './util.js';
 import { icon } from './icons.js';
-import { modal, confirmDialog, reportError, toast, field } from './dialogs.js';
+import { modal, confirmDialog, reportError, toast, field, busyClick, loadingPill } from './dialogs.js';
 import { PRESETS, presetHex, textOn, getCategories, setCategories } from './categories.js';
 import { state, loadCategories, loadLanes, lanesOf } from './state.js';
 import { LANE_NAME_RE } from './categories.js';
 import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
 import { signaturesPanel } from './signatures.js';
-import { chooseAccountKind, imapWizard, accountDetail, isImap, kindLabel } from './accounts.js';
+import { chooseAccountKind, imapWizard, accountDetail, isImap, kindLabel, accountAvatar } from './accounts.js';
 
 export const hooks = { onConfigSaved: () => {}, onAccountsChanged: () => {} };
 
@@ -259,14 +259,19 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
   const render = () => {
     listEl.innerHTML = '';
     if (!state.accounts.some((a) => a.id === selected)) selected = state.accounts[0] && state.accounts[0].id;
-    for (const a of state.accounts) {
+    const n = state.accounts.length;
+    state.accounts.forEach((a, i) => {
+      const mv = (e, d) => { e.stopPropagation(); moveAccount(i, d).catch(reportError); };
       const row = h('div.acc-item' + (a.id === selected ? '.selected' : ''), { role: 'option', dataset: { testid: 'acc-item', id: a.id } },
-        h('span.avatar.xs', { style: { background: '#5b8def' } }, (a.displayName || a.email || '?').slice(0, 1).toUpperCase()),
+        accountAvatar(a, 'xs'),
         h('span.acc-text', h('span.acc-n', a.displayName || a.email), h('span.acc-e', a.email)),
-        h('span.kind-badge.' + (isImap(a) ? 'imap' : 'o365'), kindLabel(a)));
+        h('span.kind-badge.' + (isImap(a) ? 'imap' : 'o365'), kindLabel(a)),
+        n > 1 ? h('span.acc-order',
+          h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', 'aria-label': 'Nach oben', html: icon('up', 14), disabled: i === 0, dataset: { testid: 'acc-up' }, onclick: (e) => mv(e, -1) }),
+          h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', 'aria-label': 'Nach unten', html: icon('down', 14), disabled: i === n - 1, dataset: { testid: 'acc-down' }, onclick: (e) => mv(e, 1) })) : null);
       row.addEventListener('click', () => { selected = a.id; render(); });
       listEl.appendChild(row);
-    }
+    });
     if (!state.accounts.length) listEl.appendChild(h('div.dim.acc-none', 'Noch kein Konto eingerichtet.'));
     detailHost.innerHTML = '';
     const acc = state.accounts.find((a) => a.id === selected);
@@ -274,15 +279,26 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
       detailHost.appendChild(accountDetail(acc, {
         onRemoved: async (x) => { if (await removeAccount(x)) render(); },
         onSaved: async () => { hooks.onAccountsChanged(); await reloadAccounts(); render(); },
+        onAvatar: () => render(),
       }));
     }
   };
   const reloadAccounts = async () => { state.accounts = (await call('list_accounts', {}, { silent: true })) || []; };
+  /** Order of the accounts (folder pane, menus, "Von"): saved right away. */
+  const moveAccount = async (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= state.accounts.length) return;
+    const list = [...state.accounts];
+    [list[i], list[j]] = [list[j], list[i]];
+    state.accounts = list;
+    render();
+    await call('set_account_order', { accountIds: list.map((a) => a.id) }, { silent: true });
+  };
   const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + ' Konto hinzufügen…' });
-  add.addEventListener('click', async () => {
+  add.addEventListener('click', busyClick(async () => {
     const acc = await addAccountFlow();
     if (acc) { await reloadAccounts(); selected = acc.id; render(); }
-  });
+  }));
   const adv = h('details.welcome-adv.acc-adv',
     h('summary', 'Microsoft-365-Anmeldung (App-Registrierung)'),
     builtin ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
@@ -290,7 +306,7 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
     field('Anwendungs-ID (Client-ID)', clientId),
     field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'));
   render();
-  return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add), detailHost), adv) };
+  return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add, state.accounts.length > 1 ? h('p.note.acc-hint', 'Reihenfolge und Kontobild werden sofort übernommen.') : null), detailHost), adv) };
 }
 
 async function removeAccount(acc) {
@@ -367,7 +383,7 @@ export async function openCategoryManager(accountId) {
     h('div', { style: { display: 'flex', gap: '10px' } },
       h('div', { style: { flex: '1' } }, listEl),
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-        h('button.btn', { type: 'button', dataset: { testid: 'cat-new' }, onclick: async () => {
+        h('button.btn', { type: 'button', dataset: { testid: 'cat-new' }, onclick: busyClick(async () => {
           try {
             const r = await categoryEditor({ title: 'Neue Kategorie hinzufügen' });
             if (!r) return;
@@ -376,14 +392,14 @@ export async function openCategoryManager(accountId) {
             selected = created && created.id;
             await refresh();
           } catch (e) { reportError(e); }
-        } }, 'Neu…'),
+        }) }, 'Neu…'),
         h('button.btn', { type: 'button', onclick: () => { const c = getCategories(accountId).find((x) => x.id === selected); if (c) editColor(c).catch(reportError); } }, 'Farbe…'),
-        h('button.btn', { type: 'button', onclick: async () => {
+        h('button.btn', { type: 'button', onclick: busyClick(async () => {
           const c = getCategories(accountId).find((x) => x.id === selected);
           if (!c) return;
           if (!(await confirmDialog(`Möchten Sie die Kategorie „${c.displayName}" wirklich löschen? Elemente behalten den Kategorienamen, er wird jedoch ohne Farbe angezeigt.`, { danger: true, ok: 'Ja', cancel: 'Nein' }))) return;
           try { await call('delete_category', { accountId, id: c.id }); selected = null; await refresh(); } catch (e) { reportError(e); }
-        } }, 'Löschen'),
+        }) }, 'Löschen'),
       ),
     ),
   );
@@ -396,7 +412,9 @@ export async function openCategoryManager(accountId) {
 export async function openAutoReply(accountId) {
   accountId = accountId || (state.accounts[0] && state.accounts[0].id);
   if (!accountId) return;
-  const ar = await call('get_auto_reply', { accountId });
+  const stop = loadingPill('Abwesenheitsnotiz wird geladen…');
+  let ar;
+  try { ar = await call('get_auto_reply', { accountId }); } finally { stop(); }
   const mode = h('div',
     h('label.checkrow', h('input', { type: 'radio', name: 'ar', value: 'disabled', checked: ar.status === 'disabled' }), 'Keine automatischen Antworten senden'),
     h('label.checkrow', h('input', { type: 'radio', name: 'ar', value: 'on', checked: ar.status !== 'disabled' }), 'Automatische Antworten senden'),

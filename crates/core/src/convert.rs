@@ -326,6 +326,37 @@ pub fn message_summary(v: &Value, mailbox_id: &str, fallback_folder: &str) -> Me
     }
 }
 
+/// True for a delta item that carries only some properties (Graph sends just the
+/// changed ones at times, e.g. after a read-state change in another client).
+pub fn is_partial_message(v: &Value) -> bool {
+    v.get("receivedDateTime").is_none()
+}
+
+/// Applies the properties present in a partial Graph item to a cached summary.
+pub fn merge_message_summary(old: &MessageSummary, v: &Value) -> MessageSummary {
+    let mut m = old.clone();
+    let has = |k: &str| v.get(k).is_some_and(|x| !x.is_null());
+    if has("subject") { m.subject = s(v, "subject"); }
+    if has("from") { m.from = v.get("from").and_then(address); }
+    if has("toRecipients") { m.to = addresses(v, "toRecipients"); }
+    if has("conversationId") { m.conversation_id = s(v, "conversationId"); }
+    if has("isRead") { m.is_read = v["isRead"].as_bool().unwrap_or(m.is_read); }
+    if has("isDraft") { m.is_draft = v["isDraft"].as_bool().unwrap_or(m.is_draft); }
+    if has("importance") { m.importance = s(v, "importance"); }
+    if has("hasAttachments") { m.has_attachments = v["hasAttachments"].as_bool().unwrap_or(m.has_attachments); }
+    if has("bodyPreview") { m.preview = s(v, "bodyPreview"); }
+    if has("categories") {
+        m.categories = string_list(v, "categories");
+        m.recurrence = recurrence_of(&m.categories);
+    }
+    if has("flag") {
+        let full = message_summary(v, &m.mailbox_id, &m.folder_id);
+        m.flag = full.flag;
+        m.due_at = full.due_at;
+    }
+    m
+}
+
 pub fn string_list(v: &Value, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(Value::as_array)

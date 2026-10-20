@@ -50,7 +50,7 @@ pub fn handle(s: &mut State, idx: usize, rest: &[&str], req: &Req) -> GResult {
         ["mailFolders", fid, "messages", "delta"] if m == Method::GET => {
             let mb = &s.mailboxes[idx];
             let id = folder(mb, fid)?.id;
-            delta(mb, &id, req)
+            delta(mb, &id, req, s.sparse_delta)
         }
         ["messages"] if m == Method::GET => list_messages(&s.mailboxes[idx], None, req),
         ["messages"] if m == Method::POST => {
@@ -605,7 +605,7 @@ fn send_mail(s: &mut State, idx: usize, req: &Req) -> GResult {
 
 // ---------------------------------------------------------------- delta
 
-fn delta(mb: &Mailbox, folder_id: &str, req: &Req) -> GResult {
+fn delta(mb: &Mailbox, folder_id: &str, req: &Req, sparse: bool) -> GResult {
     let size = req.max_page_size().or(req.top()).unwrap_or(10).max(1);
     let decode = |t: &str| -> Result<Value, GErr> {
         unb64url(t)
@@ -635,6 +635,10 @@ fn delta(mb: &Mailbox, folder_id: &str, req: &Req) -> GResult {
         let mut values = Vec::new();
         for id in ids {
             match mb.messages.get(id) {
+                Some(m) if m.folder_id == folder_id && sparse => {
+                    let r = m.render();
+                    values.push(json!({ "@odata.type": "#microsoft.graph.message", "id": r["id"], "isRead": r["isRead"], "flag": r["flag"], "categories": r["categories"] }));
+                }
                 Some(m) if m.folder_id == folder_id => values.push(apply_select(m.render(), select.as_deref())),
                 _ => values.push(json!({ "@odata.type": "#microsoft.graph.message", "id": id, "@removed": { "reason": "deleted" } })),
             }

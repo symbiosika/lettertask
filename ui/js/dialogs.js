@@ -1,6 +1,7 @@
 // Modal dialogs, menus, toasts – no native alert()/confirm().
 import { h, esc } from './util.js';
 import { icon } from './icons.js';
+import { onBusy, isBusy } from './api.js';
 
 // ---------------- modal ----------------
 /**
@@ -18,9 +19,14 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
       footer,
     );
     let done = false;
-    async function close(value, isCancel = false) {
+    let closing = false;
+    async function close(value, isCancel = false, btn = null) {
       if (done) return;
       if (onBeforeClose && !isCancel) {
+        // onBeforeClose may save to the server: one run at a time, spinner on the button.
+        if (closing) return;
+        closing = true;
+        const stop = whileWorking(btn || footer.querySelector('.primary') || footer);
         try {
           const r = await onBeforeClose(value);
           if (r === false) return;
@@ -28,7 +34,7 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
         } catch (e) {
           toast(e.message || String(e), 'error');
           return;
-        }
+        } finally { closing = false; stop(); }
       }
       done = true;
       overlay.remove();
@@ -38,7 +44,7 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
     let cancelValue;
     for (const b of buttons) {
       if (b.cancel) cancelValue = b.value;
-      const btn = h('button.btn' + (b.primary ? '.primary' : ''), { type: 'button', onclick: () => close(b.value, !!b.cancel) }, b.label);
+      const btn = h('button.btn' + (b.primary ? '.primary' : ''), { type: 'button', onclick: () => close(b.value, !!b.cancel, btn) }, b.label);
       if (b.id) btn.id = b.id;
       footer.appendChild(btn);
     }
@@ -186,6 +192,60 @@ export function busyIndicator(el) {
     clearTimeout(t);
     if (busy) t = setTimeout(() => el.classList.add('on'), 250);
     else el.classList.remove('on');
+  };
+}
+
+/** Shows/hides the spinner on a button (it takes the place of the leading icon). */
+export function setPending(b, on) {
+  b.classList.toggle('pending', !!on);
+  if (on) b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
+  let spin = b.querySelector(':scope > .btn-spin');
+  if (on && !spin) { spin = h('span.btn-spin', { 'aria-hidden': 'true' }); b.prepend(spin); }
+  else if (!on && spin) spin.remove();
+}
+
+/**
+ * Spinner on the button while its action runs AND a backend call is in flight –
+ * an action that only waits for a dialog or menu shows none. Returns stop().
+ */
+export function whileWorking(b, delay = 200) {
+  let t = null;
+  const update = (busy) => {
+    clearTimeout(t);
+    const on = b.classList.contains('pending');
+    // Short gaps between two calls of one action don't make the spinner flicker.
+    if (busy && !on) t = setTimeout(() => setPending(b, true), delay);
+    else if (!busy && on) t = setTimeout(() => setPending(b, false), 150);
+  };
+  const off = onBusy(update);
+  update(isBusy());
+  return () => { off(); clearTimeout(t); setPending(b, false); };
+}
+
+/**
+ * Floating "… wird geladen" pill for waits without a button to spin on (a dialog
+ * that needs server data first, a window preparing its content). Shown only if the
+ * wait takes longer than `delay`. Returns stop().
+ */
+export function loadingPill(text, delay = 300) {
+  const pill = h('div.view-loading.on.fixed', { role: 'status', dataset: { testid: 'loading-pill' } }, h('span.busy.on'), text);
+  const t = setTimeout(() => document.body.appendChild(pill), delay);
+  return () => { clearTimeout(t); pill.remove(); };
+}
+
+/**
+ * Click handler for a button that runs an async action: further clicks are ignored
+ * while it runs (also on the other buttons of `group`, e.g. Annehmen/Ablehnen), and
+ * the button shows a spinner while the backend works.
+ */
+export function busyClick(fn, group = null) {
+  return (e) => {
+    const b = e.currentTarget;
+    const lock = group || b;
+    if (lock.dataset.running) return;
+    lock.dataset.running = '1';
+    const stop = whileWorking(b);
+    Promise.resolve().then(() => fn(e)).catch(reportError).finally(() => { delete lock.dataset.running; stop(); });
   };
 }
 

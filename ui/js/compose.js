@@ -1,11 +1,12 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
 import { call, params, closeWindow, isTauri } from './api.js';
-import { h, $, esc, fmtSize, fileToBase64, initials, avatarColor } from './util.js';
+import { h, $, esc, fmtSize, fileToBase64 } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog, showMenuAt } from './dialogs.js';
+import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { splitBtn } from './toolbar.js';
+import { accountAvatar } from './accounts.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById, accountOfMailbox } from './state.js';
 import { duePicker } from './due.js';
 import { loadSignatures, defaultSignatureFor, applySignature, currentSignatureId, signatureMenuItems, signaturesPanel } from './signatures.js';
@@ -28,7 +29,7 @@ const st = {
   closing: false,
 };
 
-let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind;
+let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind, sendSplit;
 
 function markDirty() { st.dirty = true; }
 
@@ -84,7 +85,7 @@ function renderForm() {
     const mb = mailboxById(st.mailboxId) || mbs[0];
     fromChip.innerHTML = '';
     if (!mb) return;
-    fromChip.append(...[h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address)),
+    fromChip.append(...[accountAvatar(state.accounts.find((a) => a.id === mb.accountId), 'xs', mb),
       h('span.from-text', `${mb.displayName} <${mb.address}>`), mbs.length > 1 && !(st.draft && st.draft.id) ? h('span', { html: icon('chevronDown', 14) }) : null].filter(Boolean));
   };
   if (mbs.length > 1) {
@@ -99,6 +100,7 @@ function renderForm() {
     });
   }
   renderForm.paintFrom = paintFrom;
+  sendSplit = send;
   sendrow.append(send, h('span.cw-from-lbl', 'Von'), fromChip);
 
   // fields
@@ -302,7 +304,7 @@ async function send_() {
   if (r && r.error) { toast(r.error, 'error'); return; }
   const remindAt = r && r.date ? r.date : null;
   st.busy = true;
-  document.body.style.cursor = 'progress';
+  setSending(true);
   try {
     const draft = buildInput();
     if (remindAt) draft.remindAt = remindAt.toISOString();
@@ -313,8 +315,19 @@ async function send_() {
     reportError(e);
   } finally {
     st.busy = false;
-    document.body.style.cursor = '';
+    setSending(false);
   }
+}
+
+/** Locks the send button and shows a spinner while the message goes out. */
+function setSending(on) {
+  document.body.style.cursor = on ? 'progress' : '';
+  if (!sendSplit) return;
+  const [main, drop] = sendSplit.querySelectorAll('.tb-btn');
+  main.disabled = drop.disabled = !!on;
+  setPending(main, on);
+  const label = main.querySelector('.tb-label');
+  if (label) label.textContent = on ? 'Wird gesendet…' : 'Senden';
 }
 
 async function save(quiet) {
@@ -402,6 +415,7 @@ async function init() {
   if (!st.mailboxId) st.mailboxId = mailboxes()[0] && mailboxes()[0].id;
   renderForm();
   setupClose();
+  const stopPill = loadingPill(P.draftId ? 'Entwurf wird geladen…' : 'Nachricht wird vorbereitet…');
   try {
     let d;
     if (P.draftId) {
@@ -415,12 +429,14 @@ async function init() {
     applyDraft(d);
     if (renderForm.paintFrom) renderForm.paintFrom();
     await editor.setHtml(d.bodyHtml || '');
+    stopPill();
     st.dirty = !!P.to;
     // Loading takes a moment; never pull the cursor out of a field the user
     // already started typing in.
     const untouched = !document.activeElement || document.activeElement === document.body;
     if (untouched) { if ((d.to || []).length) await editor.focus(); else to.focus(); }
   } catch (e) {
+    stopPill();
     reportError(e);
     applyDraft({ id: null, mailboxId: st.mailboxId, mode: 'new', to: [], cc: [], bcc: [], subject: '', bodyHtml: '', importance: 'normal', requestReadReceipt: false, attachments: [] });
   }

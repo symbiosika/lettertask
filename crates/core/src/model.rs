@@ -21,6 +21,9 @@ pub struct Account {
     #[serde(default)]
     pub kind: String,
     pub mailboxes: Vec<Mailbox>,
+    /// Own picture (data:image/png|jpeg|webp URL, shown round); None = initials.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

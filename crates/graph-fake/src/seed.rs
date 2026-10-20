@@ -14,6 +14,8 @@ use crate::util::{email, graph_dt, new_id};
 use crate::FakeOptions;
 
 pub const PRIMARY: (&str, &str) = ("Max Mustermann", "max.mustermann@contoso.example");
+/// Mails in the demo folder "Archiv/Altablage" (all older than the initial sync window).
+pub const LARGE_ARCHIVE: usize = 2500;
 pub const SHARED: (&str, &str) = ("Datenschutz Contoso", "datenschutz@contoso.example");
 
 const ERIKA: (&str, &str) = ("Erika Beispiel", "erika.beispiel@fabrikam.example");
@@ -45,6 +47,7 @@ pub fn build(base_url: &str, opts: &FakeOptions) -> State {
         faults: Default::default(),
         request_count: 0,
         token_requests: 0,
+        sparse_delta: false,
         refresh_revoked: false,
     }
 }
@@ -333,6 +336,15 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
     .enumerate()
     {
         add(mb, "archive", from, subj, html(&["Archivierte Nachricht.", "Details siehe Anhang bzw. Verlauf."], from.0), 1000.0 + i as f64 * 200.0, json!({ "isRead": true }));
+    }
+
+    // Large, old archive (beyond the initial sync window): exercises lazy loading.
+    let altablage = add_folder(mb, "Altablage", "archive");
+    let senders = [ERIKA, THOMAS, MICHAEL, SABINE, ANNA, PETER, DANIEL];
+    for i in 0..LARGE_ARCHIVE {
+        let from = senders[i % senders.len()];
+        let body = format!("<html><body><p>Altablage Nr. {}</p></body></html>", i + 1);
+        add(mb, &altablage, from, &format!("Altablage Nr. {}", i + 1), body, 24.0 * 90.0 + i as f64 * 6.0, json!({ "isRead": true }));
     }
 
     add(mb, "junkemail", ("Gewinnspiel-Team", "win@lucky-prize.example"), "Herzlichen Glückwunsch! Sie haben gewonnen!!!", html(&["Klicken Sie <a href=\"https://lucky-prize.example\">hier</a>, um Ihren Preis abzuholen."], ""), 40.0, json!({ "isRead": false }));

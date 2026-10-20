@@ -302,7 +302,11 @@ impl Service {
             }
             other => other?,
         };
-        let (result, mut new_unread) = res;
+        let (mut result, mut new_unread) = res;
+        match self.repair_incomplete(&mb, &c, folder_id).await {
+            Ok(n) => result.updated += n as i64,
+            Err(e) => tracing::warn!("repair of incomplete messages failed: {e}"),
+        }
         if !initial && !new_unread.is_empty() && self.is_inbox(mailbox_id, folder_id) {
             // Rule chain runs before the new mails are announced to the UI.
             let moved = self.apply_inbox_rules(mailbox_id, &new_unread).await;
@@ -408,9 +412,22 @@ impl Service {
                     continue;
                 }
                 seen.insert(id.clone());
-                let mut m = convert::message_summary(&item, &mb.id, folder_id);
+                let cached = self.store.get_summary(&mb.id, &id)?;
+                let mut m = if convert::is_partial_message(&item) {
+                    // Only the changed properties: merge into the cached row, or
+                    // fetch the whole message if we have never seen it.
+                    match &cached {
+                        Some(old) => convert::merge_message_summary(old, &item),
+                        None => match self.fetch_summary(mb, c, &id).await? {
+                            Some(full) => full,
+                            None => continue,
+                        },
+                    }
+                } else {
+                    convert::message_summary(&item, &mb.id, folder_id)
+                };
                 m.folder_id = folder_id.to_string();
-                match self.store.get_summary(&mb.id, &id)? {
+                match cached {
                     Some(old) => {
                         if old != m {
                             result.updated += 1;
@@ -451,6 +468,40 @@ impl Service {
             break;
         }
         Ok((result, new_unread))
+    }
+
+    /// One message summary straight from the server (None: it is gone).
+    async fn fetch_summary(&self, mb: &Mailbox, c: &Arc<GraphClient>, id: &str) -> Result<Option<MessageSummary>> {
+        match c
+            .get(&format!("{}/messages/{}?$select={}", mb.graph_prefix(), seg(id), MESSAGE_SUMMARY_SELECT))
+            .await
+        {
+            Ok(v) => Ok(Some(convert::message_summary(&v, &mb.id, ""))),
+            Err(Error::Graph { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Re-fetches cached rows that an incomplete server answer left without
+    /// sender, subject and date (shown as "(Unbekannt)" at the end of the list).
+    async fn repair_incomplete(&self, mb: &Mailbox, c: &Arc<GraphClient>, folder_id: &str) -> Result<usize> {
+        let ids = self.store.incomplete_message_ids(&mb.id, folder_id, 50)?;
+        let mut fixed = 0;
+        for id in ids {
+            match self.fetch_summary(mb, c, &id).await? {
+                Some(mut m) if !m.received_at.is_empty() => {
+                    m.folder_id = folder_id.to_string();
+                    self.store.upsert_messages(&[m])?;
+                    fixed += 1;
+                }
+                Some(_) => {}
+                None => {
+                    self.store.delete_message(&mb.id, &id)?;
+                    fixed += 1;
+                }
+            }
+        }
+        Ok(fixed)
     }
 
     async fn refresh_folder_counts(&self, mb: &Mailbox, c: &Arc<GraphClient>, folder_id: &str) {

@@ -141,6 +141,15 @@ impl Store {
         if !has_due {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN due_at TEXT")?;
         }
+        let has_order: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='sort_order'")?
+            .exists([])?;
+        if !has_order {
+            conn.execute_batch(
+                "ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE accounts ADD COLUMN avatar TEXT;",
+            )?;
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -159,6 +168,21 @@ impl Store {
             params![id, email, display_name],
         )?;
         Ok(())
+    }
+
+    /// Display order of the accounts: `ids` from top to bottom (unknown ids ignored).
+    pub fn set_account_order(&self, ids: &[String]) -> Result<()> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        for (i, id) in ids.iter().enumerate() {
+            tx.execute("UPDATE accounts SET sort_order=?2 WHERE id=?1", params![id, i as i64 + 1])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_account_avatar(&self, id: &str, avatar: Option<&str>) -> Result<bool> {
+        Ok(self.c().execute("UPDATE accounts SET avatar=?2 WHERE id=?1", params![id, avatar])? > 0)
     }
 
     pub fn delete_account(&self, id: &str) -> Result<()> {
@@ -182,7 +206,11 @@ impl Store {
 
     pub fn list_accounts(&self) -> Result<Vec<Account>> {
         let c = self.c();
-        let mut st = c.prepare("SELECT id,email,display_name FROM accounts ORDER BY created, email")?;
+        // sort_order 0 = never arranged: after the arranged ones, oldest first.
+        let mut st = c.prepare(
+            "SELECT id,email,display_name,avatar FROM accounts
+             ORDER BY CASE sort_order WHEN 0 THEN 1 ELSE 0 END, sort_order, created, email",
+        )?;
         let mut accounts: Vec<Account> = st
             .query_map([], |r| {
                 let id: String = r.get(0)?;
@@ -192,6 +220,7 @@ impl Store {
                     email: r.get(1)?,
                     display_name: r.get(2)?,
                     mailboxes: vec![],
+                    avatar: r.get(3)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -473,6 +502,15 @@ impl Store {
         let c = self.c();
         let mut st = c.prepare("SELECT id FROM messages WHERE mailbox_id=?1 AND folder_id=?2 AND received >= ?3")?;
         let rows = st.query_map(params![mailbox_id, folder_id, since], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Cached messages of a folder without a receive time – rows built from an
+    /// incomplete server answer, to be fetched again.
+    pub fn incomplete_message_ids(&self, mailbox_id: &str, folder_id: &str, limit: i64) -> Result<Vec<String>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT id FROM messages WHERE mailbox_id=?1 AND folder_id=?2 AND received='' LIMIT ?3")?;
+        let rows = st.query_map(params![mailbox_id, folder_id, limit], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -914,6 +952,48 @@ fn folder_row(r: &rusqlite::Row) -> rusqlite::Result<Folder> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn emails(s: &Store) -> Vec<String> {
+        s.list_accounts().unwrap().into_iter().map(|a| a.email).collect()
+    }
+
+    #[test]
+    fn accounts_keep_the_chosen_order_and_picture() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_account("a", "a@x", "A").unwrap();
+        s.upsert_account("b", "b@x", "B").unwrap();
+        s.upsert_account("c", "c@x", "C").unwrap();
+        assert_eq!(emails(&s), ["a@x", "b@x", "c@x"]);
+        s.set_account_order(&["c".into(), "a".into(), "b".into()]).unwrap();
+        assert_eq!(emails(&s), ["c@x", "a@x", "b@x"]);
+        // A new account appears below the arranged ones.
+        s.upsert_account("d", "d@x", "D").unwrap();
+        assert_eq!(emails(&s), ["c@x", "a@x", "b@x", "d@x"]);
+        // Re-login (upsert) keeps order and picture.
+        assert!(s.set_account_avatar("a", Some("data:image/png;base64,AAAA")).unwrap());
+        s.upsert_account("a", "a@x", "A neu").unwrap();
+        let acc = s.list_accounts().unwrap();
+        assert_eq!(acc[1].email, "a@x");
+        assert_eq!(acc[1].avatar.as_deref(), Some("data:image/png;base64,AAAA"));
+        assert!(s.set_account_avatar("a", None).unwrap());
+        assert_eq!(s.list_accounts().unwrap()[1].avatar, None);
+        assert!(!s.set_account_avatar("nope", None).unwrap());
+    }
+
+    #[test]
+    fn old_account_table_is_migrated() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL, display_name TEXT NOT NULL,
+               created INTEGER NOT NULL DEFAULT (strftime('%s','now')));
+             INSERT INTO accounts(id,email,display_name) VALUES('a','a@x','A');",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(emails(&s), ["a@x"]);
+        s.set_account_order(&["a".into()]).unwrap();
+        assert!(s.set_account_avatar("a", Some("data:image/png;base64,AAAA")).unwrap());
+    }
 
     fn msg(id: &str, folder: &str, received: &str, read: bool, subject: &str, cats: &[&str]) -> MessageSummary {
         MessageSummary {

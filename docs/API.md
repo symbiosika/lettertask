@@ -17,7 +17,7 @@ All JSON keys are **camelCase**. Timestamps are ISO-8601 UTC strings with `Z`
 
 ```ts
 Address      { name: string, address: string }
-Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[] }
+Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[], avatar: string|null }
                // kind "imap": no calendar, no mailbox settings (auto reply); categories are local
                // (stored as IMAP keywords on messages), "Wiedervorlage" times are kept locally.
 ServerSettings { host: string, port: number, security: "ssl"|"starttls"|"none", username: string }
@@ -134,6 +134,8 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `update_imap_account` | `{ accountId, input: ImapAccountInput }` | `Account` (password "" = keep the stored one) |
 | `get_imap_account` | `{ accountId }` | `ImapAccountInput` with password "" |
 | `remove_account` | `{ accountId }` | `null` |
+| `set_account_order` | `{ accountIds: string[] }` | `null` — display order from top to bottom (folder pane, menus, „Von“); emits `accounts-changed` |
+| `set_account_avatar` | `{ accountId, avatar: string\|null }` | `null` — own picture as `data:image/png\|jpeg\|webp;base64,…` (max. 300 KB; the UI crops it to 128 px), `null` = initials again; emits `accounts-changed` |
 | `set_active_folder` | `{ mailboxId, folderId }` | `null` — background sync also syncs this folder |
 | `sync_all` | `{}` | `null` — "Senden/Empfangen": folders + inbox + active folder of every mailbox |
 

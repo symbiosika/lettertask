@@ -34,6 +34,10 @@ export function createBoard(host, ctx) {
   const cols = h('div.kb-cols');
   host.append(head, cols);
   let columns = []; // [{ lane, ids }]
+  // Cards per column are rendered in steps – an archive's "Ohne Lane" can hold hundreds.
+  const COL_STEP = 100;
+  let shown = new Map(); // lane -> number of rendered cards
+  let shownFor = null;
 
   function columnDefs() {
     const lanes = ctx.lanes();
@@ -60,6 +64,7 @@ export function createBoard(host, ctx) {
     head.append(
       h('span.folder-name', ctx.title()),
       h('span.lh-count', ctx.count() ? String(ctx.count()) : ''),
+      h('span.busy.lh-busy' + (ctx.loading && ctx.loading() ? '.on' : ''), { title: 'Wird aktualisiert…' }),
       h('span.spacer'),
       seg, h('span.kb-tools', noLaneBtn, paneBtn, edit));
   }
@@ -92,6 +97,8 @@ export function createBoard(host, ctx) {
     const accountId = ctx.accountId();
     const snoozed = ctx.snoozed();
     const byLane = new Map(columnDefs().map((d) => [d.lane, []]));
+    const key = ctx.title() + '|' + accountId;
+    if (key !== shownFor) { shown = new Map(); shownFor = key; }
     for (const m of items) {
       const l = laneOf(m, lanes);
       if (byLane.has(l)) byLane.get(l).push(m);
@@ -100,15 +107,21 @@ export function createBoard(host, ctx) {
     cols.innerHTML = '';
     columns = [];
     columnDefs().forEach((d, idx) => {
-      const ms = byLane.get(d.lane) || [];
+      const all = byLane.get(d.lane) || [];
+      const limit = shown.get(d.lane) || COL_STEP;
+      const ms = all.slice(0, limit);
       columns.push({ lane: d.lane, ids: ms.map((m) => m.id) });
       const body = h('div.kb-body');
       for (const m of ms) body.appendChild(card(m, accountId, snoozed));
+      if (all.length > ms.length) {
+        body.appendChild(h('button.linkbtn.kb-more', { type: 'button', dataset: { testid: 'kb-more' },
+          onclick: () => { shown.set(d.lane, limit + COL_STEP); render(); } }, `${all.length - ms.length} weitere anzeigen`));
+      }
       if (!ms.length) body.appendChild(h('div.kb-empty', d.lane === NO_LANE ? 'Alles einsortiert' : 'Hierher ziehen'));
       const num = d.lane === NO_LANE ? '' : String(lanes.indexOf(d.lane) + 1);
       const col = h('section.kb-col' + (d.lane === NO_LANE ? '.nolane' : ''), { dataset: { lane: d.lane, testid: 'kb-col-' + (d.lane || 'none') } },
         h('header.kb-colhead', { title: num && Number(num) <= 9 ? `Taste ${num}: ausgewählte Mails in diese Lane` : '' },
-          h('span.kb-colname', d.label), h('span.kb-colcount', String(ms.length)),
+          h('span.kb-colname', d.label), h('span.kb-colcount', String(all.length)),
           num && Number(num) <= 9 ? h('kbd.kb-key', num) : null),
         body);
       setupDrop(col, d.lane);

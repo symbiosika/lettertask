@@ -4,7 +4,7 @@ import {
   h, $, esc, addDays, startOfDay, toDateInput, toTimeInput, parseLocal, toLocalIso, DAY_KEYS, WEEKDAYS, MONTHS, displayName,
 } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog, showMenuAt, field } from './dialogs.js';
+import { modal, reportError, toast, confirmDialog, showMenuAt, field, loadingPill } from './dialogs.js';
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { tbBtn, group, setPressed } from './toolbar.js';
@@ -336,7 +336,14 @@ function buildInput() {
   };
 }
 
+let saving = false;
 async function save() {
+  if (saving) return;
+  saving = true;
+  try { await saveNow(); } finally { saving = false; }
+}
+
+async function saveNow() {
   const input = buildInput();
   if (!f.startDate.value || (!input.isAllDay && (!f.startTime.value || !f.endTime.value))) { toast('Bitte Beginn und Ende angeben.', 'error'); return; }
   if (input.end <= input.start) { toast('Das Ende muss nach dem Beginn liegen.', 'error'); f.endDate.focus(); return; }
@@ -393,7 +400,9 @@ async function init() {
   let calendars = [];
   try { calendars = (await call('list_calendars', { accountId: st.accountId }, { silent: true })) || []; } catch (e) { reportError(e); }
   if (P.eventId) {
-    let ev = await call('get_event', { accountId: st.accountId, eventId: P.eventId });
+    const stop = loadingPill('Termin wird geladen…', 150);
+    let ev;
+    try { ev = await call('get_event', { accountId: st.accountId, eventId: P.eventId }); } finally { stop(); }
     if (ev.type === 'occurrence' && ev.seriesMasterId && ev.isOrganizer) {
       const choice = await modal({
         title: 'Serienelement öffnen', width: 400,

@@ -59,6 +59,27 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
     serde_json::from_value(v).map_err(|e| Error::invalid(format!("Parameter '{name}': {e}")))
 }
 
+/// Largest accepted account picture (the UI scales it down to 128 px first).
+const AVATAR_MAX: usize = 300_000;
+
+/// Account pictures are shown as <img src>: only base64 PNG/JPEG/WebP data URLs.
+fn check_avatar(v: &str) -> Result<()> {
+    use base64::Engine;
+    let Some((head, data)) = v.split_once(',') else {
+        return Err(Error::invalid("Das Bild ist ungültig."));
+    };
+    if !matches!(head, "data:image/png;base64" | "data:image/jpeg;base64" | "data:image/webp;base64") {
+        return Err(Error::invalid("Nur PNG-, JPG- oder WebP-Bilder sind möglich."));
+    }
+    if v.len() > AVATAR_MAX {
+        return Err(Error::invalid("Das Bild ist zu groß."));
+    }
+    if base64::engine::general_purpose::STANDARD.decode(data).is_err() {
+        return Err(Error::invalid("Das Bild ist ungültig."));
+    }
+    Ok(())
+}
+
 /// Ids become URL path segments ("…/mailFolders/{id}/messages"). "." and ".."
 /// (also percent-encoded) would be normalised away and silently retarget the
 /// request – e.g. emptying "folder .." would delete the whole mailbox.
@@ -233,6 +254,23 @@ impl Service {
                 .update_imap_account(&arg::<String>(a, "accountId")?, arg(a, "input")?)
                 .await?),
             "get_imap_account" => ok(self.get_imap_account(&arg::<String>(a, "accountId")?)?),
+            "set_account_order" => {
+                self.store.set_account_order(&arg::<Vec<String>>(a, "accountIds")?)?;
+                self.emit("accounts-changed", json!({}));
+                ok(Value::Null)
+            }
+            "set_account_avatar" => {
+                let id: String = arg(a, "accountId")?;
+                let avatar: Option<String> = arg(a, "avatar")?;
+                if let Some(v) = &avatar {
+                    check_avatar(v)?;
+                }
+                if !self.store.set_account_avatar(&id, avatar.as_deref())? {
+                    return Err(Error::invalid("Unbekanntes Konto."));
+                }
+                self.emit("accounts-changed", json!({}));
+                ok(Value::Null)
+            }
             "remove_account" => {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
                 ok(Value::Null)
