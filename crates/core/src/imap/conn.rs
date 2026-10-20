@@ -283,7 +283,10 @@ pub async fn connect(s: &ServerSettings, password: &str) -> Result<Conn> {
         "starttls" => {
             let mut client = async_imap::Client::new(ImapStream::Plain(tcp));
             read_greeting(&mut client).await?;
-            timed(client.run_command_and_check_ok("STARTTLS", None)).await?;
+            timed(client.run_command_and_check_ok("STARTTLS", None)).await.map_err(|e| match e {
+                Error::Network(_) => e,
+                _ => Error::Network(format!("{host} unterstützt kein STARTTLS ({e})")),
+            })?;
             let ImapStream::Plain(tcp) = client.into_inner() else {
                 unreachable!("plain stream before STARTTLS")
             };

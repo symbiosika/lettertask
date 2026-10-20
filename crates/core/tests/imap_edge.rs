@@ -490,6 +490,7 @@ async fn messages_expunged_elsewhere() {
 
     let err = call_err(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": a.id})).await;
     assert!(err.contains("Nicht gefunden"), "{err}");
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.id == a.id), "stale entry kept");
     let err = call_err(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": a.id})).await;
     assert!(err.contains("Nicht gefunden"), "{err}");
     let err = call_err(
@@ -685,7 +686,7 @@ async fn connection_errors_are_clear() {
     let e = connect_err(dv.port, "ssl").await;
     assert!(e.contains("TLS") || e.contains("Verbindung"), "{e}");
     let e = connect_err(dv.port, "starttls").await;
-    assert!(!e.is_empty(), "{e}");
+    assert!(e.contains("unterstützt kein STARTTLS"), "{e}");
     // Unknown setting never falls back to plain text.
     let e = connect_err(dv.port, "SSL/TLS").await;
     assert!(e.contains("Unbekannte Verschlüsselung"), "{e}");
@@ -745,6 +746,102 @@ async fn smtp_errors_are_clear() {
     assert!(r["imapOk"].as_bool().unwrap(), "{r}");
 }
 
+#[tokio::test]
+async fn server_without_move_and_uidplus() {
+    let opts = Options {
+        minimal_caps: true,
+        ..Options::default()
+    };
+    let Some(ctx) = setup_with(opts, &[("Erste", "e1@example.com"), ("Zweite", "e2@example.com"), ("Dritte", "e3@example.com")]).await else {
+        return;
+    };
+    let inbox = ctx.folder("inbox").await;
+    let probe = other(ctx.dv.port).await;
+    assert!(!probe.can_move && !probe.uidplus);
+    drop(probe);
+    // Move falls back to COPY + \Deleted + EXPUNGE.
+    let a = ctx.by_subject(&inbox.id, "Erste").await;
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [a.id]})).await;
+    let archive = ctx.folder("archive").await;
+    ctx.by_subject(&archive.id, "Erste").await;
+    let b = ctx.by_subject(&inbox.id, "Zweite").await;
+    let _: Value = call(&ctx.svc, "delete_messages", json!({"mailboxId": ctx.account, "ids": [b.id]})).await;
+    let trash = ctx.folder("deleteditems").await;
+    let t = ctx.by_subject(&trash.id, "Zweite").await;
+    let _: Value = call(&ctx.svc, "delete_messages", json!({"mailboxId": ctx.account, "ids": [t.id]})).await;
+    ctx.sync(&inbox.id).await;
+    let left: Vec<String> = ctx.list(&inbox.id).await.items.into_iter().map(|m| m.subject).collect();
+    assert_eq!(left, ["Dritte"]);
+    let mut c = other(ctx.dv.port).await;
+    assert_eq!(c.session.select("INBOX").await.unwrap().exists, 1);
+    assert_eq!(c.session.select(&trash.id).await.unwrap().exists, 0);
+    let _ = c.session.logout().await;
+    // Draft replacement uses the same path.
+    let d: Draft = call(&ctx.svc, "save_draft", json!({"draft": {"id": null, "mailboxId": ctx.account, "subject": "E1"}})).await;
+    let d: Draft = call(&ctx.svc, "save_draft", json!({"draft": {"id": d.id, "mailboxId": ctx.account, "subject": "E2"}})).await;
+    let drafts = ctx.folder("drafts").await;
+    let subjects: Vec<String> = ctx.list(&drafts.id).await.items.into_iter().map(|m| m.subject).collect();
+    assert_eq!(subjects, ["E2"]);
+    assert!(d.id.is_some());
+}
+
+#[tokio::test]
+async fn large_attachment_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let big: Vec<u8> = (0..6 * 1024 * 1024).map(|i| (i * 7 % 256) as u8).collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&big);
+    let draft = json!({"id": null, "mailboxId": ctx.account, "to": [{"name": "", "address": "x@example.com"}],
+        "subject": "Gross", "bodyHtml": "<p>Anbei</p>",
+        "newAttachments": [{"name": "Daten März.bin", "contentType": "application/octet-stream", "contentBase64": b64}]});
+    let saved: Draft = call(&ctx.svc, "save_draft", json!({"draft": draft})).await;
+    assert_eq!(saved.attachments.len(), 1);
+    assert_eq!(saved.attachments[0].size, big.len() as i64);
+    let mut d = draft.clone();
+    d["id"] = json!(saved.id);
+    d["newAttachments"] = json!([]);
+    ctx.send(d).await;
+    let raw = &ctx.sink.messages()[0].raw;
+    let parts = mailcore::imap::mime::all_attachments(raw.as_bytes());
+    assert_eq!(parts[0].1, "Daten März.bin");
+    assert!(parts[0].3 == big);
+    let sent = ctx.folder("sentitems").await;
+    let m = ctx.by_subject(&sent.id, "Gross").await;
+    let detail: MessageDetail = call(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": m.id})).await;
+    assert_eq!(detail.attachments[0].size, big.len() as i64);
+}
+
+// ---- discovery ----
+
+#[tokio::test]
+async fn discovery_survives_hostile_config_servers() {
+    use axum::routing::get;
+    let huge = format!("<clientConfig>{}</clientConfig>", "x".repeat(2 * 1024 * 1024));
+    let good = r#"<clientConfig><emailProvider>
+<incomingServer type="imap"><hostname>imap.gut.test</hostname><port>993</port><socketType>SSL</socketType></incomingServer>
+<outgoingServer type="smtp"><hostname>smtp.gut.test</hostname><port>587</port><socketType>STARTTLS</socketType></outgoingServer>
+</emailProvider></clientConfig>"#;
+    let app = axum::Router::new()
+        .route("/gross.test", get(move || async move { huge }))
+        .route("/kaputt.test", get(|| async { "<clientConfig><incomingServer type=\"imap\"><hostname>" }))
+        .route("/fehler.test", get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "nein") }))
+        .route("/gut.test", get(move || async move { good }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    // SAFETY: only this test in this binary reads the variable.
+    unsafe { std::env::set_var(mailcore::imap::discover::ISPDB_ENV, format!("http://127.0.0.1:{port}")) };
+    let dir = tempfile::tempdir().unwrap();
+    let svc = service(&dir);
+    for domain in ["gross.test", "kaputt.test", "fehler.test"] {
+        let d: Value = call(&svc, "discover_imap", json!({"email": format!("max@{domain}")})).await;
+        assert_eq!(d["source"], "guess", "{domain}: {d}");
+        assert_eq!(d["imap"]["host"], format!("imap.{domain}"));
+    }
+    let d: Value = call(&svc, "discover_imap", json!({"email": "  Max@GUT.test "})).await;
+    assert_eq!(d["source"], "ispdb", "{d}");
+    assert_eq!(d["imap"]["host"], "imap.gut.test");
+}
+
 // ---- server layout: "INBOX." namespace, no SPECIAL-USE ----
 
 #[tokio::test]
@@ -752,6 +849,7 @@ async fn inbox_namespace_without_special_use() {
     let Some(dv) = Dovecot::start_with(Options {
         separator: '.',
         inbox_prefix: true,
+        minimal_caps: false,
     }) else {
         return;
     };

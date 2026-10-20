@@ -54,6 +54,8 @@ pub struct Options {
     /// Personal namespace below INBOX ("INBOX." like Courier/Cyrus) and no
     /// SPECIAL-USE folders: roles must be found by name.
     pub inbox_prefix: bool,
+    /// Only IMAP4rev1 advertised (no MOVE, UIDPLUS, SPECIAL-USE …).
+    pub minimal_caps: bool,
 }
 
 impl Default for Options {
@@ -61,6 +63,7 @@ impl Default for Options {
         Options {
             separator: '/',
             inbox_prefix: false,
+            minimal_caps: false,
         }
     }
 }
@@ -95,6 +98,7 @@ impl Dovecot {
         };
         let b = base.display();
         let sep = opts.separator;
+        let caps = if opts.minimal_caps { "IMAP4rev1 LITERAL+" } else { "+SPECIAL-USE" };
         let namespace = if opts.inbox_prefix {
             format!("namespace inbox {{\n  inbox = yes\n  prefix = INBOX{sep}\n  separator = {sep}\n}}")
         } else {
@@ -143,7 +147,7 @@ userdb {{
 mail_location = maildir:{b}/home/%u/Maildir
 {namespace}
 protocol imap {{
-  imap_capability = +SPECIAL-USE
+  imap_capability = {caps}
   mail_max_userip_connections = 50
 }}
 "#

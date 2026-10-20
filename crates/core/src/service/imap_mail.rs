@@ -847,6 +847,16 @@ impl Service {
                 }
                 return Ok(d);
             }
+            Err(e) if e.is_not_found() => {
+                // Removed (or folder rebuilt) by another client: drop the stale entry.
+                if self.store.message_exists(mb, id)? {
+                    self.store.delete_message(mb, id)?;
+                    if let Some((_, _, folder)) = im::parse_message_id(id) {
+                        self.emit_mail_changed(mb, Some(folder));
+                    }
+                }
+                return Err(e);
+            }
             Err(e) => return Err(e),
         };
         let (_, _, folder) = im::parse_message_id(id).expect("checked");
