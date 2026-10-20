@@ -5,6 +5,7 @@
 pub mod conn;
 pub mod discover;
 pub mod mime;
+pub mod smtp;
 
 use serde::{Deserialize, Serialize};
 

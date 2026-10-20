@@ -40,8 +40,8 @@ export function serverEditor(kind, initial = {}) {
   const el = h('div.srv-box', { dataset: { testid: 'srv-' + kind } },
     h('div.srv-head', { html: icon(kind === 'imap' ? 'inbox' : 'send', 16) + `<span>${kind === 'imap' ? 'Posteingang (IMAP)' : 'Postausgang (SMTP)'}</span>` }),
     h('div.srv-grid',
-      h('label.srv-l', 'Server'), h('div.srv-hostrow', host, h('span.dim', 'Port'), port),
-      h('label.srv-l', 'Sicherheit'), sec,
+      h('label.srv-l', 'Server'), host,
+      h('label.srv-l', 'Sicherheit'), h('div.srv-hostrow', sec, h('span.dim', 'Port'), port),
       h('label.srv-l', 'Benutzername'), user),
     warn);
   return {
@@ -184,7 +184,7 @@ export async function imapWizard() {
       h('label.checkrow', ownSmtpPw, 'Für SMTP ein anderes Passwort verwenden'), smtpPw,
       testPanel(() => buildInput()));
     const r2 = await modal({
-      title: 'IMAP-Konto hinzufügen', body: step2, width: 640,
+      title: 'IMAP-Konto hinzufügen', body: step2, width: 780,
       buttons: [{ label: 'Konto hinzufügen', value: 'add', primary: true, id: 'imap-add' }, { label: 'Zurück', value: 'back' }, { label: 'Abbrechen', value: null, cancel: true }],
       onBeforeClose: async (v) => {
         if (v !== 'add') return v;

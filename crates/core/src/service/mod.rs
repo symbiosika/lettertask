@@ -4,6 +4,9 @@ mod calendar;
 mod categories;
 mod compose;
 mod contacts;
+mod imap_account;
+mod imap_compose;
+mod imap_mail;
 mod mail;
 mod signatures;
 mod snooze;
@@ -45,6 +48,8 @@ pub struct Service {
     folder_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     sync_all_lock: tokio::sync::Mutex<()>,
     last_sync: RwLock<Option<String>>,
+    /// Cached IMAP sessions of IMAP accounts.
+    pub(crate) imap: crate::imap::conn::Pool,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -82,6 +87,7 @@ impl Service {
             folder_locks: Default::default(),
             sync_all_lock: tokio::sync::Mutex::new(()),
             last_sync: RwLock::new(None),
+            imap: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -621,6 +627,7 @@ impl Service {
         self.store.delete_account(account_id)?;
         self.store.delete_account_contacts(account_id)?;
         self.opts.token_store.delete(account_id);
+        self.forget_imap_account(account_id);
         self.clients.write().unwrap().remove(account_id);
         self.emit("accounts-changed", json!({}));
         Ok(())

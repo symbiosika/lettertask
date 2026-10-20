@@ -53,8 +53,10 @@ export function recipientField(opts = {}) {
     const r = box.getBoundingClientRect();
     const pop = h('div.rcpt-pop', { style: { left: r.left + 'px', top: r.bottom + 4 + 'px', width: Math.max(320, Math.min(420, r.width)) + 'px' }, role: 'listbox' });
     suggestions.forEach((s, i) => {
-      const row = h('div.rcpt-sugg' + (i === active ? '.active' : ''), { role: 'option', html: `<span class="avatar xs" style="background:${avatarColor(s.address)}">${esc(initials(s.name, s.address))}</span><span class="rs-text"><span class="sn">${esc(s.name || s.address)}</span><span class="sa">${esc(s.address)}</span></span>` });
+      const meta = [s.address, s.company].filter(Boolean).map(esc).join(' · ');
+      const row = h('div.rcpt-sugg' + (i === active ? '.active' : ''), { role: 'option', dataset: { testid: 'rcpt-sugg' }, html: `<span class="avatar xs" style="background:${avatarColor(s.address)}">${esc(initials(s.name, s.address))}</span><span class="rs-text"><span class="sn">${esc(s.name || s.address)}</span><span class="sa">${meta}</span></span>` });
       row.addEventListener('mousedown', (e) => { e.preventDefault(); pick(s); });
+      row.addEventListener('mouseenter', () => { active = i; pop.querySelectorAll('.rcpt-sugg').forEach((r, j) => r.classList.toggle('active', j === i)); });
       pop.appendChild(row);
     });
     document.body.appendChild(pop);
@@ -103,7 +105,7 @@ export function recipientField(opts = {}) {
   input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) commit(); }, 150));
   input.addEventListener('paste', (e) => {
     const t = (e.clipboardData || window.clipboardData).getData('text');
-    if (/[;,\n]/.test(t)) { e.preventDefault(); addRaw(t.replace(/\n/g, ';')); }
+    if (/[;,\n]/.test(t) || /<[^>]+@[^>]+>/.test(t)) { e.preventDefault(); addRaw(t.replace(/\r?\n/g, ';')); }
   });
   box.addEventListener('click', () => input.focus());
   box.appendChild(input);

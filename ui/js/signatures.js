@@ -129,7 +129,6 @@ export function signaturesPanel(accounts, initialAccountId) {
       const row = h('div.sig-item' + (s._k === selKey ? '.selected' : ''), { role: 'option', dataset: { testid: 'sig-item' } },
         h('span.sig-ic', { html: icon('signature', 16) }),
         h('span.sig-name', s.name || 'Ohne Namen'),
-        isDef ? h('span.sig-defbadge', 'Standard') : null,
         h('span.sig-tools', star, del));
       row.addEventListener('click', async () => { if (selKey !== s._k) { selKey = s._k; await showSelected(); } });
       listEl.appendChild(row);

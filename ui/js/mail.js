@@ -2,6 +2,7 @@
 import { call, openWindow } from './api.js';
 import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
+import { isImap, kindLabel } from './accounts.js';
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
 import { chipHtml, getCategories, presetHex, swatchHtml } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
@@ -220,6 +221,8 @@ export function renderFolderTree() {
     const av = h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address));
     const root = sectionHeader(key, mb.address || mb.displayName, av, { title: mb.address });
     root.classList.add('account');
+    const acc = state.accounts.find((x) => x.id === mb.accountId);
+    if (acc) root.appendChild(h('span.kind-badge.sm.' + (isImap(acc) ? 'imap' : 'o365'), { title: isImap(acc) ? 'IMAP/SMTP-Konto' : 'Microsoft-365-Konto' }, kindLabel(acc)));
     root.addEventListener('contextmenu', (e) => { e.preventDefault(); mailboxContextMenu(mb, e.clientX, e.clientY); });
     sec.appendChild(root);
     if (isExpanded(key)) {

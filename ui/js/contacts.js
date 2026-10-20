@@ -25,13 +25,13 @@ export function initContacts({ navHost, contentHost, onSelection }) {
   onSelectionChanged = onSelection || onSelectionChanged;
   els.nav = navHost;
   els.view = h('div.contactsview.hidden#contactsview');
-  els.listpane = h('div.listpane.ct-listpane');
+  els.listpane = h('div.ct-listpane');
   els.search = h('input.input.ct-search', { type: 'search', placeholder: 'Kontakte durchsuchen', 'aria-label': 'Kontakte durchsuchen', dataset: { testid: 'contacts-search' }, spellcheck: false });
-  els.head = h('div.list-head', h('div.lh-title', h('span.folder-name#ct-title', 'Kontakte'), h('span.lh-count#ct-count'), h('span.spacer')), els.search);
-  els.list = h('div.msglist.ct-list', { tabindex: '0', role: 'listbox', 'aria-label': 'Kontakte', dataset: { testid: 'contacts-list' } });
+  els.head = h('div.list-head', h('div.lh-title', h('span.ct-title#ct-title', 'Kontakte'), h('span.lh-count#ct-count'), h('span.spacer')), els.search);
+  els.list = h('div.ct-list', { tabindex: '0', role: 'listbox', 'aria-label': 'Kontakte', dataset: { testid: 'contacts-list' } });
   els.listpane.append(els.head, els.list);
   els.split = h('div.splitter');
-  els.detail = h('div.readpane.ct-detail', { dataset: { testid: 'contact-detail' } });
+  els.detail = h('div.ct-detail', { dataset: { testid: 'contact-detail' } });
   els.view.append(els.listpane, els.split, els.detail);
   contentHost.appendChild(els.view);
   els.listpane.style.width = load('ctListWidth', 360) + 'px';
@@ -129,10 +129,10 @@ function renderList() {
   let last = null;
   for (const c of sorted) {
     const L = letterOf(c);
-    if (L !== last) { els.list.appendChild(h('div.m-sep.ct-letter', L)); last = L; }
+    if (L !== last) { els.list.appendChild(h('div.ct-letter', L)); last = L; }
     const name = c.displayName || c.emails[0] || '(ohne Namen)';
     const sub = [c.emails[0], c.company].filter(Boolean).join(' · ');
-    const row = h('div.msg.ct-row' + (c.id === ct.selectedId ? '.selected' : ''), { role: 'option', dataset: { id: c.id, testid: 'contact-row' }, title: name },
+    const row = h('div.ct-row' + (c.id === ct.selectedId ? '.selected' : ''), { role: 'option', dataset: { id: c.id, testid: 'contact-row' }, title: name },
       h('span.avatar.sm', { style: { background: avatarColor(c.emails[0] || name) } }, initials(name, c.emails[0])),
       h('div.m-main', h('div.m-l1', h('span.m-from', name), c.source === 'collected' ? h('span.ct-src', 'gesammelt') : null), h('div.m-l3', h('span.m-prev', sub))));
     row.addEventListener('click', () => select(c.id));
@@ -163,7 +163,7 @@ function renderDetail() {
   const role = [c.jobTitle, c.company].filter(Boolean).join(' · ');
   const btn = (label, ic, fn, opts = {}) => h('button.btn.small' + (opts.primary ? '.primary' : ''), { type: 'button', disabled: !!opts.disabled, dataset: { testid: opts.testid || '' }, html: icon(ic, 15) + ' ' + esc(label), onclick: () => Promise.resolve(fn()).catch(reportError) });
   const section = (title, ic, rows) => (rows.length ? h('div.ct-sec', h('div.ct-sec-title', { html: icon(ic, 15) + `<span>${esc(title)}</span>` }), ...rows) : null);
-  const card = h('div.rp-card.ct-card',
+  const card = h('div.ct-card',
     h('div.ct-hero',
       h('span.avatar.xl', { style: { background: avatarColor(c.emails[0] || name) } }, initials(name, c.emails[0])),
       h('div.ct-hero-text',

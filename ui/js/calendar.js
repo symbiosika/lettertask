@@ -8,6 +8,10 @@ import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenu } from './dialogs.js';
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
+import { isImap } from './accounts.js';
+
+/** Accounts with a calendar (IMAP accounts have none). */
+function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
 
 const SLOT_PX = 24; // per 30 minutes
 const DAY_START_WORK = 8, DAY_END_WORK = 17;
@@ -46,11 +50,11 @@ export function periodTitle() { return headerTitle(); }
 
 // ------------------------------------------------------------- data
 export async function loadCalendars() {
-  await Promise.all(state.accounts.map(async (a) => {
+  await Promise.all(calAccounts().map(async (a) => {
     try { cal.calendars.set(a.id, (await call('list_calendars', { accountId: a.id }, { silent: true })) || []); }
     catch (e) { cal.calendars.set(a.id, []); console.warn(e); }
   }));
-  for (const id of [...cal.calendars.keys()]) if (!state.accounts.some((a) => a.id === id)) cal.calendars.delete(id);
+  for (const id of [...cal.calendars.keys()]) if (!calAccounts().some((a) => a.id === id)) cal.calendars.delete(id);
 }
 
 function calendarById(accountId, id) { return (cal.calendars.get(accountId) || []).find((c) => c.id === id) || null; }
@@ -69,7 +73,7 @@ export async function refresh() {
   const token = ++cal.loadToken;
   if (!cal.calendars.size) await loadCalendars();
   const { start, end } = range();
-  const results = await Promise.all(state.accounts.map(async (a) => {
+  const results = await Promise.all(calAccounts().map(async (a) => {
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
     if (!ids.length) return [];
     try {
@@ -110,7 +114,10 @@ export function renderNav() {
   if (!els.nav) return;
   els.nav.innerHTML = '';
   els.nav.appendChild(miniCalendar());
-  for (const a of state.accounts) {
+  if (!calAccounts().length) {
+    els.nav.appendChild(h('p.tree-hint.cal-none', { dataset: { testid: 'cal-none' } }, 'Kalender ist nur für Microsoft-365-Konten verfügbar.'));
+  }
+  for (const a of calAccounts()) {
     const sec = h('div.cal-list');
     sec.appendChild(h('div.tree-root.static', h('span.tr-label', 'Meine Kalender'), h('span.tr-sub', a.email)));
     for (const c of cal.calendars.get(a.id) || []) {
@@ -203,6 +210,14 @@ function headerTitle() {
 // ------------------------------------------------------------- render
 function render() {
   closePeek();
+  if (!calAccounts().length) {
+    els.body.innerHTML = '';
+    els.body.appendChild(h('div.empty.cal-empty', h('span.empty-ic', { html: icon('calendar', 48) }),
+      h('div', { style: { fontWeight: '600', color: 'var(--text-2)' } }, 'Kein Kalender verfügbar'),
+      h('div', 'Kalender ist nur für Microsoft-365-Konten verfügbar. IMAP-Konten unterstützen nur E-Mail.')));
+    onStatus();
+    return;
+  }
   if (cal.view === 'month') renderMonth(); else renderTimeGrid();
   onStatus();
 }
@@ -521,7 +536,7 @@ export function openEvent(ev) {
 }
 
 function defaultCalendar() {
-  for (const a of state.accounts) {
+  for (const a of calAccounts()) {
     const list = (cal.calendars.get(a.id) || []).filter((c) => c.canEdit);
     const c = list.find((x) => x.isDefault) || list[0];
     if (c) return { accountId: a.id, calendarId: c.id };
@@ -530,6 +545,7 @@ function defaultCalendar() {
 }
 
 export function newEvent(opts = {}) {
+  if (!calAccounts().length) { toast('Termine sind nur mit einem Microsoft-365-Konto möglich.', 'error'); return; }
   if (!cal.calendars.size) {
     loadCalendars().then(() => { if (cal.calendars.size) newEvent(opts); else toast('Kein bearbeitbarer Kalender vorhanden.', 'error'); }).catch(reportError);
     return;

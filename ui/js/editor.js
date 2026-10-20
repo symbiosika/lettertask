@@ -131,6 +131,10 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
       return styles ? `<html><head>${styles}</head><body>${doc.body.innerHTML}</body></html>` : doc.body.innerHTML;
     },
     getText: () => (doc ? doc.body.innerText : ''),
+    /** The editable document (null until loaded). */
+    doc: () => doc,
+    /** Notifies listeners after programmatic changes. */
+    changed: () => onInput && onInput(),
     setHtml: async (x) => { pending = x; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
     focus: async () => {
       await ready;

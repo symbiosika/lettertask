@@ -17,6 +17,9 @@ pub struct Account {
     pub id: String,
     pub email: String,
     pub display_name: String,
+    /// "o365" | "imap" (derived from the id prefix).
+    #[serde(default)]
+    pub kind: String,
     pub mailboxes: Vec<Mailbox>,
 }
 

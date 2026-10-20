@@ -6,7 +6,8 @@ import { modal, reportError, toast, confirmDialog, showMenuAt } from './dialogs.
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { splitBtn } from './toolbar.js';
-import { state, bootstrapSecondary, mailboxes, mailboxById } from './state.js';
+import { state, bootstrapSecondary, mailboxes, mailboxById, accountOfMailbox } from './state.js';
+import { loadSignatures, defaultSignatureFor, applySignature, currentSignatureId, signatureMenuItems, signaturesPanel } from './signatures.js';
 
 const P = params();
 const MODE_TITLE = { new: 'Neue Nachricht', reply: 'Antwort', replyAll: 'Antwort', forward: 'Weiterleitung' };
@@ -26,7 +27,7 @@ const st = {
   closing: false,
 };
 
-let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink;
+let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn;
 
 function markDirty() { st.dirty = true; }
 
@@ -89,7 +90,11 @@ function renderForm() {
     fromChip.classList.add('clickable');
     fromChip.addEventListener('click', () => {
       if (st.draft && st.draft.id) { toast('Der Absender kann für einen vorhandenen Entwurf nicht geändert werden.'); return; }
-      showMenuAt(fromChip, mbs.map((m) => ({ label: `${m.displayName} <${m.address}>`, checked: m.id === st.mailboxId, onClick: () => { st.mailboxId = m.id; markDirty(); paintFrom(); } })));
+      showMenuAt(fromChip, mbs.map((m) => ({ label: `${m.displayName} <${m.address}>`, checked: m.id === st.mailboxId, onClick: async () => {
+        const changedAccount = accountOfMailbox(m.id) !== accountOfMailbox(st.mailboxId);
+        st.mailboxId = m.id; markDirty(); paintFrom();
+        if (changedAccount) await useDefaultSignature();
+      } })));
     });
   }
   renderForm.paintFrom = paintFrom;
@@ -114,7 +119,10 @@ function renderForm() {
   });
   const attachBtn = h('button.ed-btn', { type: 'button', title: 'Datei anfügen', 'aria-label': 'Datei anfügen', dataset: { testid: 'compose-attach' }, html: icon('attach', 18), onclick: () => fileInput.click() });
   impBtn = h('button.ed-btn.imp', { type: 'button', title: 'Wichtigkeit: hoch', 'aria-label': 'Wichtigkeit hoch', dataset: { testid: 'compose-importance' }, html: icon('important', 18), onclick: () => setImportance(st.importance === 'high' ? 'normal' : 'high') });
-  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn] });
+  sigBtn = h('button.ed-btn.ed-sig', { type: 'button', title: 'Signatur', 'aria-label': 'Signatur', dataset: { testid: 'compose-signature' }, html: icon('signature', 18) + `<span class="ed-sig-label">Signatur</span>` + icon('chevronDown', 12) });
+  sigBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  sigBtn.addEventListener('click', () => openSignatureMenu().catch(reportError));
+  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn] });
   $('#editor').append(editor.toolbar, editor.area);
 
   // drag & drop files onto the window
@@ -126,6 +134,38 @@ function renderForm() {
     e.preventDefault();
     for (const f of e.dataTransfer.files) await addFile(f).catch(reportError);
   });
+}
+
+// ------------------------------------------------------------------ signatures
+function composeMode() { return (st.draft && st.draft.mode) || P.mode || 'new'; }
+
+async function openSignatureMenu() {
+  const settings = await loadSignatures(accountOfMailbox(st.mailboxId));
+  showMenuAt(sigBtn, signatureMenuItems({
+    settings,
+    current: currentSignatureId(editor.doc()),
+    onPick: (sig) => { applySignature(editor.doc(), sig, composeMode()); editor.changed(); },
+    onEdit: () => editSignatures(),
+  }));
+}
+
+/** Replaces the signature with the default of the current account (respecting useOn* flags). */
+async function useDefaultSignature() {
+  const settings = await loadSignatures(accountOfMailbox(st.mailboxId));
+  await editor.ready;
+  applySignature(editor.doc(), defaultSignatureFor(settings, composeMode()), composeMode());
+  editor.changed();
+}
+
+async function editSignatures() {
+  const accountId = accountOfMailbox(st.mailboxId);
+  const panel = signaturesPanel(state.accounts, accountId);
+  const res = await modal({
+    title: 'Signaturen', body: panel.el, width: 760, className: 'sig-modal',
+    buttons: [{ label: 'Speichern', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
+    onBeforeClose: async () => { await panel.save(); return 'ok'; },
+  });
+  if (res === 'ok') toast('Signaturen gespeichert.');
 }
 
 function showCcBcc(focus) {

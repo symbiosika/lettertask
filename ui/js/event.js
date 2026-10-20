@@ -388,7 +388,7 @@ function renderReadOnly(ev) {
 
 async function init() {
   try { await bootstrapSecondary(); } catch (e) { reportError(e); }
-  if (!st.accountId) st.accountId = state.accounts[0] && state.accounts[0].id;
+  if (!st.accountId) { const o = state.accounts.find((a) => a.kind !== 'imap') || state.accounts[0]; st.accountId = o && o.id; }
   renderForm();
   let calendars = [];
   try { calendars = (await call('list_calendars', { accountId: st.accountId }, { silent: true })) || []; } catch (e) { reportError(e); }

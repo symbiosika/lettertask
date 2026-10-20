@@ -179,8 +179,10 @@ impl Store {
         let mut st = c.prepare("SELECT id,email,display_name FROM accounts ORDER BY created, email")?;
         let mut accounts: Vec<Account> = st
             .query_map([], |r| {
+                let id: String = r.get(0)?;
                 Ok(Account {
-                    id: r.get(0)?,
+                    kind: if crate::imap::is_imap_id(&id) { "imap" } else { "o365" }.into(),
+                    id,
                     email: r.get(1)?,
                     display_name: r.get(2)?,
                     mailboxes: vec![],

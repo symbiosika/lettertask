@@ -6,6 +6,7 @@ pub mod convert;
 pub mod error;
 pub mod graph;
 pub mod host;
+pub mod imap;
 pub mod model;
 pub mod service;
 pub mod store;
