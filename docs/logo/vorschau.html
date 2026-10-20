@@ -1,0 +1,20 @@
+<!doctype html><html lang="de"><meta charset="utf-8"><title>lettertask Logo-Vorschläge</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#f3f4f6;margin:0;padding:32px;color:#1f2328}
+.row{display:flex;align-items:flex-end;gap:28px;background:#fff;border-radius:12px;padding:20px 24px;margin-bottom:16px}
+.row.dark{background:#1f2328;color:#eee}
+h2{font-size:15px;margin:0 0 4px}.n{width:220px}.n p{margin:0;font-size:12.5px;color:#6b7280}
+img{display:block}
+</style>
+<h1 style="font-size:20px">lettertask – 5 Logo-Vorschläge (App-Icon)</h1>
+<div id="list"></div>
+<script>
+const L=[["1-check-kuvert","1 · Check-Kuvert","Briefumschlag, dessen Häkchen über den Rand hinausgreift: Mail = erledigte Aufgabe."],
+["2-inbox-zero","2 · Inbox Zero","Leeres Ablagefach mit Häkchen – das Inbox-Zero-Prinzip, dunkel und ruhig."],
+["3-kanban-lanes","3 · Kanban-Lanes","Drei Lanes mit Mail-Karten, die letzte ist erledigt."],
+["4-wiedervorlage","4 · Wiedervorlage","Brief mit Uhr: die Mail kommt zum richtigen Zeitpunkt zurück."],
+["5-monogramm","5 · Monogramm","Ein „l“, dessen Fuß in ein Häkchen übergeht – reduziert und markant."]];
+for(const dark of [false,true])for(const[f,t,d]of L){const r=document.createElement('div');r.className='row'+(dark?' dark':'');
+r.innerHTML=`<div class="n"><h2>${t}</h2><p>${dark?'auf dunklem Hintergrund':d}</p></div>`+[192,96,48,32,16].map(s=>`<img src="${f}.svg" width="${s}" height="${s}">`).join('');
+list.appendChild(r)}
+</script></html>
