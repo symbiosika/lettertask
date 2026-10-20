@@ -60,6 +60,12 @@ export function chipHtml(accountId, name) {
   return `<span class="cat-chip" style="background:${bg};color:${textOn(bg)}" title="${esc(name)}">${esc(name)}</span>`;
 }
 
+/** Larger tag pill (reading pane). */
+export function pillHtml(accountId, name, removable = false) {
+  const bg = categoryHex(accountId, name);
+  return `<span class="tag-pill" style="background:${bg};color:${textOn(bg)}" data-name="${esc(name)}" title="${esc(name)}"><span class="tp-name">${esc(name)}</span>${removable ? `<button type="button" class="tp-x" title="Kategorie entfernen" aria-label="${esc(name)} entfernen">×</button>` : ''}</span>`;
+}
+
 export function swatchHtml(hex, size = 12) {
   return `<span class="cat-swatch" style="background:${hex};width:${size}px;height:${size}px"></span>`;
 }

@@ -1,9 +1,11 @@
 // Renders a MessageDetail (reading pane and message window share this).
 import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fmtSize } from './util.js';
 import { icon } from './icons.js';
-import { chipHtml } from './categories.js';
+import { pillHtml } from './categories.js';
 import { call, openUrl, openWindow } from './api.js';
-import { showMenu, reportError, toast } from './dialogs.js';
+import { showMenu, showMenuAt, reportError, toast } from './dialogs.js';
+import { openTagPicker } from './tagpicker.js';
+import { fmtSnoozeTarget } from './snooze.js';
 
 const REMOTE_RE = /(<img\b[^>]*\bsrc\s*=\s*["']?\s*(https?:)?\/\/)|(url\(\s*["']?\s*(https?:)?\/\/)|(<image\b[^>]*href\s*=\s*["']?\s*https?:)/i;
 
@@ -20,8 +22,9 @@ export function buildSrcdoc(bodyHtml, allowRemote) {
   return `<!doctype html><html><head><meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
     `<base target="_blank">` +
-    `<style>html{background:#fff}body{font-family:Calibri,"Segoe UI",Arial,sans-serif;font-size:11pt;color:#1f1f1f;margin:10px 14px;word-wrap:break-word;overflow-wrap:anywhere}` +
-    `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font-family:Consolas,monospace;font-size:10pt}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex;color:#444}a{color:#0563c1}</style>` +
+    `<style>html{background:#fff}body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;margin:4px 2px 24px;word-wrap:break-word;overflow-wrap:anywhere}` +
+    `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font-family:Consolas,"Cascadia Mono",monospace;font-size:13px}blockquote{margin:0 0 0 .8ex;border-left:2px solid #c9d3e3;padding-left:1.2ex;color:#57606a}a{color:#2f6fe4}` +
+    `::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#d0d4da;border-radius:5px;border:2px solid #fff}</style>` +
     `</head><body>${clean}</body></html>`;
 }
 
@@ -59,46 +62,117 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
 }
 
 function addrList(list) {
-  return (list || []).map((a) => `<span class="addr" title="${esc(a.address)}">${esc(displayName(a))}</span>`).join('; ');
+  return (list || []).map((a) => `<span class="addr" title="${esc(a.address)}">${esc(displayName(a))}</span>`).join(', ');
 }
 
-const FLAG_TEXT = { flagged: 'Zur Nachverfolgung.', complete: 'Gekennzeichnet: Erledigt.' };
+function fileIcon(a) {
+  if (/^image\//.test(a.contentType)) return 'image';
+  return 'file';
+}
+function fileExt(name) {
+  const m = /\.([a-z0-9]{1,5})$/i.exec(name || '');
+  return m ? m[1].toUpperCase() : '';
+}
+
+const FLAG_TEXT = { flagged: 'Zur Nachverfolgung gekennzeichnet', complete: 'Als erledigt markiert' };
 
 /**
  * Renders a message into container.
- * opts: { accountId, config, onChanged() }
+ * opts: { accountId, config, onChanged(), setCategories(cats) → Promise, onAction(name), moreItems: [] , onManageCategories() }
  */
 export function renderMessage(container, msg, opts) {
   const { accountId, config } = opts;
   container.innerHTML = '';
   let allowRemote = !!(config && config.loadRemoteImages);
   const remote = hasRemoteContent(msg.bodyHtml);
+  let cats = [...(msg.categories || [])];
 
+  const card = h('article.rp-card');
   const from = msg.from || { name: '(Unbekannt)', address: '' };
-  const header = h('div.rp-header',
-    h('div.rp-subject', { title: msg.subject || '' }, msg.subject || '(Kein Betreff)'),
-    h('div.rp-fromline',
-      h('div.avatar', { style: { background: avatarColor(from.address || from.name) } }, initials(from.name, from.address)),
-      h('div.rp-fromblock',
-        h('div.rp-from', h('span.rp-fromname', from.name || from.address), from.address && from.name !== from.address ? h('span.rp-fromaddr', `<${from.address}>`) : null),
-        h('div.rp-date', fmtDateTime(new Date(msg.receivedAt || msg.sentAt))),
-      ),
-    ),
-    msg.to && msg.to.length ? h('div.rp-line', h('span.rp-lbl', 'An:'), h('span.rp-val', { html: addrList(msg.to) })) : null,
-    msg.cc && msg.cc.length ? h('div.rp-line', h('span.rp-lbl', 'Cc:'), h('span.rp-val', { html: addrList(msg.cc) })) : null,
-    msg.bcc && msg.bcc.length ? h('div.rp-line', h('span.rp-lbl', 'Bcc:'), h('span.rp-val', { html: addrList(msg.bcc) })) : null,
-  );
-  container.appendChild(header);
 
-  // info bars
+  // ---- title row: subject + tags (top right)
+  const tags = h('div.rp-tags', { dataset: { testid: 'rp-tags' } });
+  const renderTags = () => {
+    tags.innerHTML = cats.map((c) => pillHtml(accountId, c, !!opts.setCategories)).join('');
+    if (opts.setCategories) {
+      const add = h('button.tag-add', { type: 'button', title: 'Kategorien zuweisen (T)', dataset: { testid: 'tag-add' }, html: icon('tag', 15) + `<span>${cats.length ? '' : 'Tag'}</span>` + icon('plus', 12) });
+      add.addEventListener('click', () => openPicker(add));
+      tags.appendChild(add);
+    }
+  };
+  const applyCats = async (next) => {
+    cats = next;
+    renderTags();
+    await opts.setCategories(next);
+  };
+  const openPicker = (anchor) => openTagPicker(anchor || tags.querySelector('.tag-add'), {
+    accountId,
+    assigned: () => cats,
+    onToggle: (name, on) => applyCats(on ? [...cats, name] : cats.filter((c) => c !== name)),
+    onManage: opts.onManageCategories,
+  });
+  tags.addEventListener('click', (e) => {
+    const x = e.target.closest('.tp-x');
+    if (!x) return;
+    const name = x.closest('.tag-pill').dataset.name;
+    applyCats(cats.filter((c) => c !== name)).catch(reportError);
+  });
+  renderTags();
+  container._openTagPicker = () => openPicker();
+
+  const titleRow = h('div.rp-titlerow',
+    h('h1.rp-subject', { title: msg.subject || '' }, msg.subject || '(Kein Betreff)'),
+    tags);
+
+  // ---- sender row
+  const act = (name, ic, title, testid) => h('button.icon-btn', { type: 'button', title, 'aria-label': title, dataset: { testid }, html: icon(ic, 18), onclick: (e) => opts.onAction && opts.onAction(name, e.currentTarget) });
+  const actions = opts.onAction ? h('div.rp-actions',
+    act('reply', 'reply', 'Antworten (Strg+R)', 'rp-reply'),
+    act('replyAll', 'replyAll', 'Allen antworten (Strg+Umschalt+R)', 'rp-replyall'),
+    act('forward', 'forward', 'Weiterleiten (Strg+F)', 'rp-forward'),
+    h('span.rp-actsep'),
+    act('more', 'more', 'Weitere Aktionen', 'rp-more')) : null;
+
+  const recip = h('div.rp-recips');
+  const toList = msg.to || [];
+  const ccList = msg.cc || [];
+  const LIMIT = 4;
+  const lines = [];
+  if (toList.length) lines.push(['An', toList]);
+  if (ccList.length) lines.push(['Cc', ccList]);
+  if ((msg.bcc || []).length) lines.push(['Bcc', msg.bcc]);
+  const renderRecips = (expanded) => {
+    recip.innerHTML = '';
+    for (const [lbl, list] of lines) {
+      const shown = expanded ? list : list.slice(0, LIMIT);
+      const line = h('div.rp-line', h('span.rp-lbl', lbl + ':'), h('span.rp-val', { html: addrList(shown) }));
+      if (!expanded && list.length > LIMIT) {
+        line.appendChild(h('button.linkbtn', { type: 'button', onclick: () => renderRecips(true) }, `+${list.length - LIMIT} weitere`));
+      }
+      recip.appendChild(line);
+    }
+  };
+  renderRecips(false);
+
+  const fromRow = h('div.rp-fromrow',
+    h('div.avatar.lg', { style: { background: avatarColor(from.address || from.name) } }, initials(from.name, from.address)),
+    h('div.rp-fromblock',
+      h('div.rp-from', h('span.rp-fromname', { title: from.address || '' }, from.name || from.address), from.address && from.name && from.name !== from.address ? h('span.rp-fromaddr', from.address) : null),
+      recip),
+    h('div.rp-meta',
+      h('div.rp-date', fmtDateTime(new Date(msg.receivedAt || msg.sentAt))),
+      actions));
+
+  card.append(titleRow, fromRow);
+
+  // ---- info bars
   const bars = h('div.rp-bars');
-  if (msg.categories && msg.categories.length) {
-    bars.appendChild(h('div.rp-catbar', { html: msg.categories.map((c) => chipHtml(accountId, c)).join(' ') }));
+  if (msg.dueAt && opts.snoozed) {
+    bars.appendChild(h('div.infobar.snooze', { html: icon('snooze', 16) + ' Auf Wiedervorlage bis ' + esc(fmtSnoozeTarget(new Date(msg.dueAt))) }));
+  } else if (msg.flag && msg.flag !== 'notFlagged') {
+    bars.appendChild(h('div.infobar.flag', { html: icon('flag', 16, msg.flag === 'flagged' ? 'flagged' : '') + ' ' + esc(FLAG_TEXT[msg.flag]) + (msg.flag === 'flagged' && msg.dueAt ? ' – fällig ' + esc(fmtSnoozeTarget(new Date(msg.dueAt))) : '') }));
   }
-  if (msg.flag && msg.flag !== 'notFlagged') {
-    bars.appendChild(h('div.infobar.flag', { html: icon(msg.flag === 'complete' ? 'check' : 'flag', 14) + ' ' + esc(FLAG_TEXT[msg.flag]) }));
-  }
-  if (msg.importance === 'high') bars.appendChild(h('div.infobar', { html: icon('important', 14) + ' Diese Nachricht wurde mit Wichtigkeit &bdquo;Hoch&ldquo; gesendet.' }));
+  if (msg.importance === 'high') bars.appendChild(h('div.infobar.important', { html: icon('important', 16) + ' Diese Nachricht wurde mit hoher Wichtigkeit gesendet.' }));
   if (msg.isMeetingRequest && msg.eventId) {
     const mk = (label, ic, response) => h('button.btn.small', {
       onclick: async () => {
@@ -107,26 +181,29 @@ export function renderMessage(container, msg, opts) {
           toast('Antwort gesendet.');
           opts.onChanged && opts.onChanged();
         } catch (e) { reportError(e); }
-      }, html: icon(ic, 14) + ' ' + esc(label),
+      }, html: icon(ic, 15) + ' ' + esc(label),
     });
-    bars.appendChild(h('div.infobar.meeting', h('span', { html: icon('calendar', 14) + ' Besprechungsanfrage' }),
+    bars.appendChild(h('div.infobar.meeting', h('span.ib-text', { html: icon('calendar', 16) + ' Besprechungsanfrage' }),
       h('span.spacer'), mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline')));
   }
   let remoteBar = null;
   if (remote && !allowRemote) {
-    remoteBar = h('div.infobar.remote', h('span', { html: icon('info', 14) + ' Klicken Sie hier, um Bilder herunterzuladen. Um den Datenschutz zu erhöhen, wurde der automatische Download von Bildern in dieser Nachricht verhindert.' }));
+    remoteBar = h('div.infobar.remote', { role: 'button', title: 'Bilder herunterladen' },
+      h('span.ib-text', { html: icon('image', 16) + ' Externe Bilder wurden zum Schutz Ihrer Privatsphäre blockiert.' }),
+      h('span.spacer'),
+      h('span.linkbtn', 'Bilder herunterladen'));
     remoteBar.addEventListener('click', () => { allowRemote = true; remoteBar.remove(); mountBody(bodyHost, msg.bodyHtml, { allowRemote, mailboxId: msg.mailboxId }); });
-    remoteBar.title = 'Bilder herunterladen';
-    remoteBar.setAttribute('role', 'button');
     bars.appendChild(remoteBar);
   }
-  if (bars.childNodes.length) container.appendChild(bars);
+  if (bars.childNodes.length) card.appendChild(bars);
 
   if (msg.attachments && msg.attachments.length) {
     const strip = h('div.rp-attachments');
     for (const a of msg.attachments) {
-      const ic = /^image\//.test(a.contentType) ? 'image' : 'file';
-      const el = h('button.attachment', { title: `${a.name} (${fmtSize(a.size)})`, html: icon(ic, 16) + `<span class="att-name">${esc(a.name)}</span><span class="att-size">(${esc(fmtSize(a.size))})</span>` });
+      const ext = fileExt(a.name);
+      const el = h('button.attachment', { type: 'button', title: `${a.name} (${fmtSize(a.size)}) – Klicken zum Öffnen, Rechtsklick zum Speichern` },
+        h('span.att-ic', { html: icon(fileIcon(a), 18) }),
+        h('span.att-text', h('span.att-name', a.name), h('span.att-size', [ext, fmtSize(a.size)].filter(Boolean).join(' · '))));
       const dl = (action) => call('download_attachment', { mailboxId: msg.mailboxId, messageId: msg.id, attachmentId: a.id, action })
         .then((p) => { if (p && action === 'save') toast('Gespeichert: ' + p); })
         .catch(reportError);
@@ -140,12 +217,23 @@ export function renderMessage(container, msg, opts) {
       });
       strip.appendChild(el);
     }
-    container.appendChild(strip);
+    card.appendChild(strip);
   }
 
   const bodyHost = h('div.rp-body');
-  container.appendChild(bodyHost);
+  card.appendChild(bodyHost);
+  container.appendChild(card);
   mountBody(bodyHost, msg.bodyHtml, { allowRemote, mailboxId: msg.mailboxId });
+}
+
+/** Standard "⋯" menu for a message. */
+export function showMoreMenu(anchor, items) {
+  showMenuAt(anchor, items);
+}
+
+export function printMessage(container) {
+  const f = (container || document).querySelector('.mail-frame');
+  if (f && f.contentWindow) f.contentWindow.print(); else window.print();
 }
 
 export { fmtAddress };

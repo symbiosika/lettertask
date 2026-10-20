@@ -1,16 +1,28 @@
-// Ribbon-style toolbar buttons shared by all windows.
+// Flat action-bar buttons shared by all windows.
 import { h, esc } from './util.js';
 import { icon } from './icons.js';
 import { reportError } from './dialogs.js';
 
-export function tbBtn(label, ic, onClick, { title, caret, testid, small, disabled, toggle } = {}) {
-  const b = h('button.tb-btn' + (small ? '.small' : ''), { type: 'button', title: title || label, disabled: !!disabled, dataset: { testid: testid || '' } });
-  b.innerHTML = icon(ic, small ? 16 : 24) + `<span>${esc(label)}${caret ? ' <span class="caret">▼</span>' : ''}</span>`;
+/**
+ * Icon + label button. opts: { title, caret, testid, small, disabled, toggle, primary, iconOnly }
+ */
+export function tbBtn(label, ic, onClick, { title, caret, testid, small, disabled, toggle, primary, iconOnly } = {}) {
+  const cls = 'button.tb-btn' + (small ? '.small' : '') + (primary ? '.primary' : '') + (iconOnly || !label ? '.icon-only' : '');
+  const b = h(cls, { type: 'button', title: title || label, 'aria-label': title || label, disabled: !!disabled, dataset: { testid: testid || '' } });
+  b.innerHTML = (ic ? icon(ic, small ? 16 : 18) : '') + (label && !iconOnly ? `<span class="tb-label">${esc(label)}</span>` : '') + (caret ? `<span class="tb-caret">${icon('chevronDown', 12)}</span>` : '');
   if (toggle) b.setAttribute('aria-pressed', 'false');
   b.addEventListener('click', (e) => {
     Promise.resolve().then(() => onClick(b, e)).catch(reportError);
   });
   return b;
+}
+
+/** Split button: main action + chevron opening a menu. */
+export function splitBtn(label, ic, onClick, onMenu, { testid, menuTestid, primary, title } = {}) {
+  const main = tbBtn(label, ic, onClick, { testid, primary, title });
+  const drop = tbBtn('', 'chevronDown', onMenu, { testid: menuTestid, primary, title: 'Weitere Optionen' });
+  drop.classList.add('tb-drop');
+  return h('div.split' + (primary ? '.primary' : ''), main, drop);
 }
 
 export function setPressed(b, on) {
@@ -20,3 +32,4 @@ export function setPressed(b, on) {
 
 export const group = (...children) => h('div.tb-group', ...children);
 export const stack = (...children) => h('div.tb-stack', ...children);
+export const sep = () => h('span.tb-sep');
