@@ -69,16 +69,229 @@ pub fn normalize_utc(ts: &str) -> String {
     ts.to_string()
 }
 
-/// Graph `dateTimeTimeZone` → UTC string. We always request
-/// `Prefer: outlook.timezone="UTC"`, so the value is UTC wall time.
-fn dt_tz(v: &Value) -> String {
+/// Windows time zone ids (as used by Exchange/Graph) → IANA names, after the
+/// CLDR `windowsZones` table (territory "001").
+const WINDOWS_ZONES: &[(&str, &str)] = &[
+    ("Dateline Standard Time", "Etc/GMT+12"),
+    ("UTC-11", "Etc/GMT+11"),
+    ("Aleutian Standard Time", "America/Adak"),
+    ("Hawaiian Standard Time", "Pacific/Honolulu"),
+    ("Marquesas Standard Time", "Pacific/Marquesas"),
+    ("Alaskan Standard Time", "America/Anchorage"),
+    ("UTC-09", "Etc/GMT+9"),
+    ("Pacific Standard Time (Mexico)", "America/Tijuana"),
+    ("UTC-08", "Etc/GMT+8"),
+    ("Pacific Standard Time", "America/Los_Angeles"),
+    ("US Mountain Standard Time", "America/Phoenix"),
+    ("Mountain Standard Time (Mexico)", "America/Mazatlan"),
+    ("Mountain Standard Time", "America/Denver"),
+    ("Yukon Standard Time", "America/Whitehorse"),
+    ("Central America Standard Time", "America/Guatemala"),
+    ("Central Standard Time", "America/Chicago"),
+    ("Easter Island Standard Time", "Pacific/Easter"),
+    ("Central Standard Time (Mexico)", "America/Mexico_City"),
+    ("Canada Central Standard Time", "America/Regina"),
+    ("SA Pacific Standard Time", "America/Bogota"),
+    ("Eastern Standard Time (Mexico)", "America/Cancun"),
+    ("Eastern Standard Time", "America/New_York"),
+    ("Haiti Standard Time", "America/Port-au-Prince"),
+    ("Cuba Standard Time", "America/Havana"),
+    ("US Eastern Standard Time", "America/Indiana/Indianapolis"),
+    ("Turks And Caicos Standard Time", "America/Grand_Turk"),
+    ("Paraguay Standard Time", "America/Asuncion"),
+    ("Atlantic Standard Time", "America/Halifax"),
+    ("Venezuela Standard Time", "America/Caracas"),
+    ("Central Brazilian Standard Time", "America/Cuiaba"),
+    ("SA Western Standard Time", "America/La_Paz"),
+    ("Pacific SA Standard Time", "America/Santiago"),
+    ("Newfoundland Standard Time", "America/St_Johns"),
+    ("Tocantins Standard Time", "America/Araguaina"),
+    ("E. South America Standard Time", "America/Sao_Paulo"),
+    ("SA Eastern Standard Time", "America/Cayenne"),
+    ("Argentina Standard Time", "America/Argentina/Buenos_Aires"),
+    ("Greenland Standard Time", "America/Nuuk"),
+    ("Montevideo Standard Time", "America/Montevideo"),
+    ("Magallanes Standard Time", "America/Punta_Arenas"),
+    ("Saint Pierre Standard Time", "America/Miquelon"),
+    ("Bahia Standard Time", "America/Bahia"),
+    ("UTC-02", "Etc/GMT+2"),
+    ("Mid-Atlantic Standard Time", "Etc/GMT+2"),
+    ("Azores Standard Time", "Atlantic/Azores"),
+    ("Cape Verde Standard Time", "Atlantic/Cape_Verde"),
+    ("UTC", "Etc/UTC"),
+    ("Coordinated Universal Time", "Etc/UTC"),
+    ("GMT Standard Time", "Europe/London"),
+    ("Greenwich Standard Time", "Atlantic/Reykjavik"),
+    ("Sao Tome Standard Time", "Africa/Sao_Tome"),
+    ("Morocco Standard Time", "Africa/Casablanca"),
+    ("W. Europe Standard Time", "Europe/Berlin"),
+    ("Central Europe Standard Time", "Europe/Budapest"),
+    ("Romance Standard Time", "Europe/Paris"),
+    ("Central European Standard Time", "Europe/Warsaw"),
+    ("W. Central Africa Standard Time", "Africa/Lagos"),
+    ("Jordan Standard Time", "Asia/Amman"),
+    ("GTB Standard Time", "Europe/Bucharest"),
+    ("Middle East Standard Time", "Asia/Beirut"),
+    ("Egypt Standard Time", "Africa/Cairo"),
+    ("E. Europe Standard Time", "Europe/Chisinau"),
+    ("Syria Standard Time", "Asia/Damascus"),
+    ("West Bank Standard Time", "Asia/Hebron"),
+    ("South Africa Standard Time", "Africa/Johannesburg"),
+    ("FLE Standard Time", "Europe/Kiev"),
+    ("Israel Standard Time", "Asia/Jerusalem"),
+    ("South Sudan Standard Time", "Africa/Juba"),
+    ("Kaliningrad Standard Time", "Europe/Kaliningrad"),
+    ("Sudan Standard Time", "Africa/Khartoum"),
+    ("Libya Standard Time", "Africa/Tripoli"),
+    ("Namibia Standard Time", "Africa/Windhoek"),
+    ("Arabic Standard Time", "Asia/Baghdad"),
+    ("Turkey Standard Time", "Europe/Istanbul"),
+    ("Arab Standard Time", "Asia/Riyadh"),
+    ("Belarus Standard Time", "Europe/Minsk"),
+    ("Russian Standard Time", "Europe/Moscow"),
+    ("E. Africa Standard Time", "Africa/Nairobi"),
+    ("Volgograd Standard Time", "Europe/Volgograd"),
+    ("Iran Standard Time", "Asia/Tehran"),
+    ("Arabian Standard Time", "Asia/Dubai"),
+    ("Astrakhan Standard Time", "Europe/Astrakhan"),
+    ("Azerbaijan Standard Time", "Asia/Baku"),
+    ("Russia Time Zone 3", "Europe/Samara"),
+    ("Mauritius Standard Time", "Indian/Mauritius"),
+    ("Saratov Standard Time", "Europe/Saratov"),
+    ("Georgian Standard Time", "Asia/Tbilisi"),
+    ("Caucasus Standard Time", "Asia/Yerevan"),
+    ("Afghanistan Standard Time", "Asia/Kabul"),
+    ("West Asia Standard Time", "Asia/Tashkent"),
+    ("Ekaterinburg Standard Time", "Asia/Yekaterinburg"),
+    ("Pakistan Standard Time", "Asia/Karachi"),
+    ("Qyzylorda Standard Time", "Asia/Qyzylorda"),
+    ("India Standard Time", "Asia/Kolkata"),
+    ("Sri Lanka Standard Time", "Asia/Colombo"),
+    ("Nepal Standard Time", "Asia/Kathmandu"),
+    ("Central Asia Standard Time", "Asia/Almaty"),
+    ("Bangladesh Standard Time", "Asia/Dhaka"),
+    ("Omsk Standard Time", "Asia/Omsk"),
+    ("Myanmar Standard Time", "Asia/Yangon"),
+    ("SE Asia Standard Time", "Asia/Bangkok"),
+    ("Altai Standard Time", "Asia/Barnaul"),
+    ("W. Mongolia Standard Time", "Asia/Hovd"),
+    ("North Asia Standard Time", "Asia/Krasnoyarsk"),
+    ("N. Central Asia Standard Time", "Asia/Novosibirsk"),
+    ("Tomsk Standard Time", "Asia/Tomsk"),
+    ("China Standard Time", "Asia/Shanghai"),
+    ("North Asia East Standard Time", "Asia/Irkutsk"),
+    ("Singapore Standard Time", "Asia/Singapore"),
+    ("W. Australia Standard Time", "Australia/Perth"),
+    ("Taipei Standard Time", "Asia/Taipei"),
+    ("Ulaanbaatar Standard Time", "Asia/Ulaanbaatar"),
+    ("Aus Central W. Standard Time", "Australia/Eucla"),
+    ("Transbaikal Standard Time", "Asia/Chita"),
+    ("Tokyo Standard Time", "Asia/Tokyo"),
+    ("North Korea Standard Time", "Asia/Pyongyang"),
+    ("Korea Standard Time", "Asia/Seoul"),
+    ("Yakutsk Standard Time", "Asia/Yakutsk"),
+    ("Cen. Australia Standard Time", "Australia/Adelaide"),
+    ("AUS Central Standard Time", "Australia/Darwin"),
+    ("E. Australia Standard Time", "Australia/Brisbane"),
+    ("AUS Eastern Standard Time", "Australia/Sydney"),
+    ("West Pacific Standard Time", "Pacific/Port_Moresby"),
+    ("Tasmania Standard Time", "Australia/Hobart"),
+    ("Vladivostok Standard Time", "Asia/Vladivostok"),
+    ("Lord Howe Standard Time", "Australia/Lord_Howe"),
+    ("Bougainville Standard Time", "Pacific/Bougainville"),
+    ("Russia Time Zone 10", "Asia/Srednekolymsk"),
+    ("Magadan Standard Time", "Asia/Magadan"),
+    ("Norfolk Standard Time", "Pacific/Norfolk"),
+    ("Sakhalin Standard Time", "Asia/Sakhalin"),
+    ("Central Pacific Standard Time", "Pacific/Guadalcanal"),
+    ("Russia Time Zone 11", "Asia/Kamchatka"),
+    ("New Zealand Standard Time", "Pacific/Auckland"),
+    ("UTC+12", "Etc/GMT-12"),
+    ("Fiji Standard Time", "Pacific/Fiji"),
+    ("Chatham Islands Standard Time", "Pacific/Chatham"),
+    ("UTC+13", "Etc/GMT-13"),
+    ("Tonga Standard Time", "Pacific/Tongatapu"),
+    ("Samoa Standard Time", "Pacific/Apia"),
+    ("Line Islands Standard Time", "Pacific/Kiritimati"),
+];
+
+/// Resolves a Graph `timeZone` value: IANA name, Windows id, or a UTC alias.
+/// `None` for unknown/custom zones (e.g. "Customized Time Zone").
+pub fn resolve_tz(name: &str) -> Option<chrono_tz::Tz> {
+    let n = name.trim();
+    if n.is_empty()
+        || n.eq_ignore_ascii_case("UTC")
+        || n.eq_ignore_ascii_case("GMT")
+        || n.eq_ignore_ascii_case("Etc/GMT")
+        || n.eq_ignore_ascii_case("Z")
+        || n.eq_ignore_ascii_case("tzone://Microsoft/Utc")
+    {
+        return Some(chrono_tz::UTC);
+    }
+    if let Some((_, iana)) = WINDOWS_ZONES.iter().find(|(w, _)| w.eq_ignore_ascii_case(n)) {
+        return iana.parse().ok();
+    }
+    n.parse::<chrono_tz::Tz>().ok()
+}
+
+/// Wall time in `tz` → UTC. Times in a DST gap move forward by the gap (like
+/// Outlook), ambiguous times take the first (summer time) instant.
+pub fn local_to_utc(local: NaiveDateTime, tz: chrono_tz::Tz) -> DateTime<Utc> {
+    use chrono::LocalResult;
+    match tz.from_local_datetime(&local) {
+        LocalResult::Single(d) => d.with_timezone(&Utc),
+        LocalResult::Ambiguous(a, _) => a.with_timezone(&Utc),
+        LocalResult::None => {
+            // Skip forward minute by minute until the wall clock exists again.
+            (1..=180)
+                .find_map(|m| tz.from_local_datetime(&(local + chrono::Duration::minutes(m))).earliest())
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|| Utc.from_utc_datetime(&local))
+        }
+    }
+}
+
+fn parse_naive(ts: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M"))
+        .ok()
+}
+
+/// Whether a Graph `dateTimeTimeZone` can be converted without a round trip.
+pub fn dt_tz_resolvable(v: &Value) -> bool {
     let dt = s(v, "dateTime");
-    let tz = s(v, "timeZone");
-    if tz.is_empty() || tz.eq_ignore_ascii_case("UTC") || tz.eq_ignore_ascii_case("Etc/GMT") {
-        normalize_utc(&dt)
-    } else {
-        // Unexpected zone; keep wall time as UTC rather than failing.
-        normalize_utc(&dt)
+    DateTime::parse_from_rfc3339(&dt).is_ok() || resolve_tz(&s(v, "timeZone")).is_some()
+}
+
+/// Graph `dateTimeTimeZone` → RFC3339 UTC string.
+///
+/// We request `Prefer: outlook.timezone="UTC"` where Graph honours it, but
+/// POST/PATCH responses, flags and mailbox settings come back in the zone the
+/// value was written in (IANA or Windows id), so the zone is applied here.
+/// Unknown zones fall back to treating the wall time as UTC.
+pub fn dt_tz(v: &Value) -> String {
+    let dt = s(v, "dateTime");
+    if dt.is_empty() || DateTime::parse_from_rfc3339(&dt).is_ok() {
+        return normalize_utc(&dt);
+    }
+    let tz_name = s(v, "timeZone");
+    match (parse_naive(&dt), resolve_tz(&tz_name)) {
+        (Some(local), Some(tz)) => local_to_utc(local, tz).to_rfc3339_opts(SecondsFormat::Secs, true),
+        (_, None) => {
+            tracing::warn!("Unbekannte Zeitzone \"{tz_name}\" – Zeit wird als UTC gelesen");
+            normalize_utc(&dt)
+        }
+        _ => normalize_utc(&dt),
+    }
+}
+
+/// All-day events are floating: midnight to midnight in whatever zone Graph
+/// labels them with. The date must not shift, so the wall time is kept.
+fn dt_floating(v: &Value) -> String {
+    let dt = s(v, "dateTime");
+    match parse_naive(&dt) {
+        Some(n) => Utc.from_utc_datetime(&n).to_rfc3339_opts(SecondsFormat::Secs, true),
+        None => normalize_utc(&dt),
     }
 }
 
@@ -198,18 +411,21 @@ pub fn calendar_color_hex(name: &str) -> Option<&'static str> {
 }
 
 fn recurrence_from_graph(v: &Value) -> Option<Recurrence> {
-    if v.is_null() {
+    let p = v.get("pattern")?;
+    let r = &v["range"];
+    let pattern = s(p, "type");
+    if pattern.is_empty() {
         return None;
     }
-    let p = &v["pattern"];
-    let r = &v["range"];
     let range_type = s(r, "type");
+    let relative = pattern.starts_with("relative");
     Some(Recurrence {
-        pattern: s(p, "type"),
-        interval: p["interval"].as_i64().unwrap_or(1),
+        interval: p["interval"].as_i64().unwrap_or(1).max(1),
         days_of_week: string_list(p, "daysOfWeek"),
         day_of_month: p["dayOfMonth"].as_i64().unwrap_or(0),
         month: p["month"].as_i64().unwrap_or(0),
+        index: relative.then(|| opt_s(p, "index").unwrap_or_else(|| "first".into())),
+        pattern,
         start_date: s(r, "startDate"),
         end_date: if range_type == "endDate" {
             opt_s(r, "endDate").filter(|d| d != "0001-01-01")
@@ -217,7 +433,7 @@ fn recurrence_from_graph(v: &Value) -> Option<Recurrence> {
             None
         },
         occurrences: if range_type == "numbered" {
-            r["numberOfOccurrences"].as_i64()
+            r["numberOfOccurrences"].as_i64().filter(|n| *n > 0)
         } else {
             None
         },
@@ -229,14 +445,24 @@ pub fn recurrence_to_graph(r: &Recurrence, time_zone: &str) -> Value {
         "type": r.pattern,
         "interval": r.interval.max(1),
     });
+    let index = || r.index.clone().filter(|i| !i.is_empty()).unwrap_or_else(|| "first".into());
     match r.pattern.as_str() {
         "weekly" => {
             pattern["daysOfWeek"] = json!(r.days_of_week);
             pattern["firstDayOfWeek"] = json!("monday");
         }
-        "absoluteMonthly" => pattern["dayOfMonth"] = json!(r.day_of_month.max(1)),
+        "absoluteMonthly" => pattern["dayOfMonth"] = json!(r.day_of_month.clamp(1, 31)),
+        "relativeMonthly" => {
+            pattern["daysOfWeek"] = json!(r.days_of_week);
+            pattern["index"] = json!(index());
+        }
         "absoluteYearly" => {
-            pattern["dayOfMonth"] = json!(r.day_of_month.max(1));
+            pattern["dayOfMonth"] = json!(r.day_of_month.clamp(1, 31));
+            pattern["month"] = json!(r.month.clamp(1, 12));
+        }
+        "relativeYearly" => {
+            pattern["daysOfWeek"] = json!(r.days_of_week);
+            pattern["index"] = json!(index());
             pattern["month"] = json!(r.month.clamp(1, 12));
         }
         _ => {}
@@ -249,6 +475,23 @@ pub fn recurrence_to_graph(r: &Recurrence, time_zone: &str) -> Value {
         json!({"type": "noEnd", "startDate": r.start_date, "recurrenceTimeZone": time_zone})
     };
     json!({"pattern": pattern, "range": range})
+}
+
+/// Whether two recurrences describe the same series (ignoring fields that do
+/// not apply to the pattern). Re-sending an unchanged recurrence would make
+/// Exchange drop all exceptions of the series.
+pub fn same_recurrence(a: &Recurrence, b: &Recurrence) -> bool {
+    let norm = |r: &Recurrence| {
+        let mut v = recurrence_to_graph(r, "");
+        if let Some(days) = v["pattern"]["daysOfWeek"].as_array_mut() {
+            let mut d: Vec<String> = days.iter().filter_map(|x| x.as_str().map(str::to_lowercase)).collect();
+            d.sort();
+            d.dedup();
+            *days = d.into_iter().map(Value::from).collect();
+        }
+        v
+    };
+    norm(a) == norm(b)
 }
 
 pub fn event(v: &Value, account_id: &str, calendar_id: &str) -> Event {
@@ -271,14 +514,16 @@ pub fn event(v: &Value, account_id: &str, calendar_id: &str) -> Event {
         .filter(|x| !x.is_empty())
         .map(str::to_string)
         .or_else(|| opt_s(v, "onlineMeetingUrl"));
+    let is_all_day = v["isAllDay"].as_bool().unwrap_or(false);
+    let when = |key: &str| if is_all_day { dt_floating(&v[key]) } else { dt_tz(&v[key]) };
     Event {
         id: s(v, "id"),
         account_id: account_id.to_string(),
         calendar_id: calendar_id.to_string(),
         subject: s(v, "subject"),
-        start: dt_tz(&v["start"]),
-        end: dt_tz(&v["end"]),
-        is_all_day: v["isAllDay"].as_bool().unwrap_or(false),
+        start: when("start"),
+        end: when("end"),
+        is_all_day,
         location: s(&v["location"], "displayName"),
         organizer: v.get("organizer").and_then(address),
         attendees,
@@ -435,6 +680,7 @@ mod tests {
             days_of_week: vec!["monday".into()],
             day_of_month: 0,
             month: 0,
+            index: None,
             start_date: "2026-10-19".into(),
             end_date: Some("2026-12-31".into()),
             occurrences: None,

@@ -626,6 +626,18 @@ impl SharedState {
         evs.into_iter().map(|e| crate::calendar::render_event(e, None, "UTC")).collect()
     }
 
+    /// Relabels the time zone of a stored event (test hook, e.g. "Customized
+    /// Time Zone" as Exchange uses for foreign ICS invites). Times stay put.
+    pub fn set_event_time_zone(&self, mailbox: &str, id: &str, label: &str) -> bool {
+        let mut st = self.lock();
+        let Some(idx) = st.mailbox_idx(mailbox) else { return false };
+        let Some(ev) = st.mailboxes[idx].events.get_mut(id) else { return false };
+        ev.tz = label.to_string();
+        ev.json["originalStartTimeZone"] = json!(label);
+        ev.json["originalEndTimeZone"] = json!(label);
+        true
+    }
+
     /// Master category list of a mailbox.
     pub fn categories(&self, mailbox: &str) -> Vec<Value> {
         let st = self.lock();

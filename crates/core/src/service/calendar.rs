@@ -106,6 +106,21 @@ impl Service {
         Ok((v, ev))
     }
 
+    /// Converts a POST/PATCH response. Those come back in the event's own time
+    /// zone; known zones are converted locally, unknown ("Customized Time
+    /// Zone") ones are re-read with the UTC preference.
+    async fn event_from_response(&self, c: &Arc<GraphClient>, account_id: &str, calendar_id: &str, v: &Value) -> Result<Event> {
+        let all_day = v["isAllDay"].as_bool().unwrap_or(false);
+        let id = v["id"].as_str().unwrap_or("");
+        if !all_day && !id.is_empty() && !(convert::dt_tz_resolvable(&v["start"]) && convert::dt_tz_resolvable(&v["end"])) {
+            let fresh = c
+                .get_h(&format!("/me/events/{}?$select={EVENT_SELECT}", seg(id)), &utc_header())
+                .await?;
+            return Ok(convert::event(&fresh, account_id, calendar_id));
+        }
+        Ok(convert::event(v, account_id, calendar_id))
+    }
+
     /// Calendar that holds an event: from the cache, else via Graph.
     async fn calendar_of(&self, account_id: &str, event_id: &str, c: &Arc<GraphClient>) -> String {
         if let Ok(Some(cid)) = self.store.event_calendar(account_id, event_id) {
@@ -139,11 +154,76 @@ impl Service {
     }
 
     fn validate_event(input: &EventInput) -> Result<()> {
-        if input.start.len() < 10 || input.end.len() < 10 {
+        let parse = |ts: &str| {
+            let ts = ts.trim();
+            chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M"))
+                .or_else(|_| chrono::DateTime::parse_from_rfc3339(ts).map(|d| d.naive_utc()))
+                .or_else(|_| {
+                    chrono::NaiveDate::parse_from_str(ts.get(..10).unwrap_or(ts), "%Y-%m-%d")
+                        .map(|d| d.and_time(chrono::NaiveTime::MIN))
+                })
+                .ok()
+        };
+        let (Some(start), Some(end)) = (parse(&input.start), parse(&input.end)) else {
             return Err(Error::invalid("Beginn und Ende müssen angegeben werden."));
-        }
-        if input.end < input.start {
+        };
+        if input.is_all_day {
+            if end.date() <= start.date() {
+                return Err(Error::invalid("Ein ganztägiger Termin muss mindestens einen Tag dauern."));
+            }
+        } else if end < start {
             return Err(Error::invalid("Das Ende liegt vor dem Beginn."));
+        }
+        if convert::resolve_tz(&input.time_zone).is_none() {
+            return Err(Error::invalid(format!("Unbekannte Zeitzone: {}", input.time_zone)));
+        }
+        if let Some(r) = &input.recurrence {
+            Self::validate_recurrence(r)?;
+        }
+        Ok(())
+    }
+
+    fn validate_recurrence(r: &Recurrence) -> Result<()> {
+        const DAYS: [&str; 7] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+        let needs_days = matches!(r.pattern.as_str(), "weekly" | "relativeMonthly" | "relativeYearly");
+        match r.pattern.as_str() {
+            "daily" | "weekly" | "absoluteMonthly" | "relativeMonthly" | "absoluteYearly" | "relativeYearly" => {}
+            other => return Err(Error::invalid(format!("Unbekanntes Serienmuster: {other}"))),
+        }
+        if needs_days && r.days_of_week.is_empty() {
+            return Err(Error::invalid("Bitte mindestens einen Wochentag für die Serie wählen."));
+        }
+        if let Some(d) = r.days_of_week.iter().find(|d| !DAYS.contains(&d.to_lowercase().as_str())) {
+            return Err(Error::invalid(format!("Ungültiger Wochentag: {d}")));
+        }
+        if let Some(i) = r.index.as_deref().filter(|i| !i.is_empty()) {
+            if !matches!(i, "first" | "second" | "third" | "fourth" | "last") {
+                return Err(Error::invalid(format!("Ungültige Woche im Monat: {i}")));
+            }
+        }
+        if r.interval < 1 || r.interval > 999 {
+            return Err(Error::invalid("Das Intervall der Serie muss zwischen 1 und 999 liegen."));
+        }
+        if matches!(r.pattern.as_str(), "absoluteMonthly" | "absoluteYearly") && !(1..=31).contains(&r.day_of_month) {
+            return Err(Error::invalid("Der Tag im Monat muss zwischen 1 und 31 liegen."));
+        }
+        if r.pattern.ends_with("Yearly") && !(1..=12).contains(&r.month) {
+            return Err(Error::invalid("Der Monat muss zwischen 1 und 12 liegen."));
+        }
+        let date = |d: &str| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok();
+        let Some(start) = date(&r.start_date) else {
+            return Err(Error::invalid("Die Serie braucht ein gültiges Startdatum."));
+        };
+        if let Some(end) = r.end_date.as_deref() {
+            match date(end) {
+                Some(e) if e >= start => {}
+                Some(_) => return Err(Error::invalid("Das Ende der Serie liegt vor ihrem Beginn.")),
+                None => return Err(Error::invalid("Ungültiges Enddatum der Serie.")),
+            }
+        }
+        if r.occurrences.is_some_and(|n| !(1..=999).contains(&n)) {
+            return Err(Error::invalid("Die Anzahl der Termine muss zwischen 1 und 999 liegen."));
         }
         Ok(())
     }
@@ -166,10 +246,11 @@ impl Service {
                 &utc_header(),
             )
             .await?;
-        let ev = convert::event(&created, account_id, calendar_id);
         let _ = self
             .store
-            .kv_set(&format!("evcal|{account_id}|{}", ev.id), calendar_id);
+            .kv_set(&format!("evcal|{account_id}|{}", created["id"].as_str().unwrap_or("")), calendar_id);
+        // Graph answers POST in the event's own zone (not the Prefer zone).
+        let ev = self.event_from_response(&c, account_id, calendar_id, &created).await?;
         self.emit("calendar-changed", json!({"accountId": account_id}));
         Ok(ev)
     }
@@ -188,8 +269,16 @@ impl Service {
                 "occurrence" | "exception" => {
                     o.remove("recurrence");
                 }
-                // Removing the recurrence of a series is explicit (null).
-                "seriesMaster" => {}
+                // Removing the recurrence of a series is explicit (null); an
+                // unchanged recurrence is not re-sent, Exchange would drop all
+                // exceptions of the series.
+                "seriesMaster" => {
+                    if let (Some(new), Some(old)) = (&input.recurrence, &existing.recurrence) {
+                        if convert::same_recurrence(new, old) {
+                            o.remove("recurrence");
+                        }
+                    }
+                }
                 _ if input.recurrence.is_none() => {
                     o.remove("recurrence");
                 }
@@ -208,8 +297,8 @@ impl Service {
                 &utc_header(),
             )
             .await?;
-        let ev = if updated.is_object() {
-            convert::event(&updated, account_id, &existing.calendar_id)
+        let ev = if updated.is_object() && updated["id"].is_string() {
+            self.event_from_response(&c, account_id, &existing.calendar_id, &updated).await?
         } else {
             self.fetch_event(&c, account_id, event_id).await?.1
         };
