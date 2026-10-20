@@ -593,7 +593,7 @@ impl Service {
         if c.client_id.trim().is_empty() && !builtin.is_empty() {
             c.client_id = builtin.to_string();
         }
-        if c.tenant.trim().is_empty() {
+        if c.tenant.trim().is_empty() || c.tenant.trim() == LEGACY_SYMBIOSIKA_TENANT_ID {
             c.tenant = builtin_tenant().to_string();
         }
         if c.snooze_options.is_empty() {
@@ -845,5 +845,27 @@ impl Service {
         )
         .await?;
         self.get_auto_reply(account_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_tenant_id_is_migrated_to_multi_tenant_default() {
+        let mut c = Config {
+            tenant: LEGACY_SYMBIOSIKA_TENANT_ID.into(),
+            ..Config::default()
+        };
+        Service::apply_defaults(&mut c, false);
+        assert_eq!(c.tenant, builtin_tenant());
+
+        let mut custom = Config {
+            tenant: "contoso.onmicrosoft.com".into(),
+            ..Config::default()
+        };
+        Service::apply_defaults(&mut custom, false);
+        assert_eq!(custom.tenant, "contoso.onmicrosoft.com");
     }
 }
