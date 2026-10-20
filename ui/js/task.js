@@ -1,9 +1,9 @@
 // "Aufgabe (Mail)": a mail from yourself to yourself – only subject, notes and due time.
 // Created directly on the server (create_task): "Sofort" → inbox, otherwise → Wiedervorlage.
 import { call, params, closeWindow, isTauri } from './api.js';
-import { h, $, initials, avatarColor } from './util.js';
+import { h, $ } from './util.js';
 import { icon } from './icons.js';
-import { reportError, toast, confirmDialog, showMenuAt } from './dialogs.js';
+import { reportError, toast, confirmDialog } from './dialogs.js';
 import { createEditor } from './editor.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById } from './state.js';
 import { duePicker } from './due.js';
@@ -20,22 +20,6 @@ function render() {
   $('#head').append(h('span', { html: icon('task', 18) }), h('div.cw-title', 'Neue Aufgabe'), h('span.cw-flags'));
 
   const form = $('#form');
-  const mbs = mailboxes();
-  const fromChip = h('div.from-chip#from-chip', { dataset: { testid: 'task-account' } });
-  const paintFrom = () => {
-    const mb = mailboxById(st.mailboxId) || mbs[0];
-    fromChip.innerHTML = '';
-    if (!mb) return;
-    fromChip.append(...[h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address)),
-      h('span.from-text', mb.address), mbs.length > 1 ? h('span', { html: icon('chevronDown', 14) }) : null].filter(Boolean));
-  };
-  if (mbs.length > 1) {
-    fromChip.classList.add('clickable');
-    fromChip.addEventListener('click', () => showMenuAt(fromChip, mbs.map((m) => ({
-      label: `${m.displayName} <${m.address}>`, checked: m.id === st.mailboxId, onClick: () => { st.mailboxId = m.id; paintFrom(); },
-    }))));
-  }
-  paintFrom();
 
   subject = h('input.task-subject#subject', { type: 'text', name: 'subject', placeholder: 'Was ist zu tun?', 'aria-label': 'Betreff', autocomplete: 'off' });
   subject.addEventListener('input', () => { markDirty(); document.title = subject.value.trim() ? `Aufgabe: ${subject.value.trim()}` : 'Neue Aufgabe'; });
@@ -47,7 +31,6 @@ function render() {
   const repeatHint = h('span.task-hint');
 
   form.append(
-    h('div.task-row.task-meta', h('span.task-lbl', 'Für'), fromChip, h('span.task-hint', 'Aufgabe an mich selbst – ohne Empfänger')),
     h('div.task-row', subject),
     h('div.task-row.task-due', h('span.task-lbl', { html: icon('snooze', 15) + '<span>Fällig</span>' }), due.el),
     h('div.task-row', h('span.task-lbl', { html: icon('repeat', 15) + '<span>Wiederholen</span>' }), repeat, repeatHint),
