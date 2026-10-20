@@ -35,6 +35,9 @@ impl Service {
     // ---- folders ----
 
     pub(crate) async fn sync_folders(&self, mailbox_id: &str) -> Result<Vec<Folder>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_sync_folders(mailbox_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let known: Vec<(String, String)> = self
@@ -114,6 +117,9 @@ impl Service {
     }
 
     pub(crate) async fn create_folder(&self, mailbox_id: &str, parent_id: Option<&str>, name: &str) -> Result<Folder> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_create_folder(mailbox_id, parent_id, name).await;
+        }
         let name = name.trim();
         if name.is_empty() {
             return Err(Error::invalid("Ordnername darf nicht leer sein."));
@@ -138,6 +144,9 @@ impl Service {
     }
 
     pub(crate) async fn rename_folder(&self, mailbox_id: &str, folder_id: &str, name: &str) -> Result<Folder> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_rename_folder(mailbox_id, folder_id, name).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let name = name.trim();
         if name.is_empty() {
@@ -159,6 +168,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_folder(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_delete_folder(mailbox_id, folder_id).await;
+        }
         if let Some(f) = self.store.get_folder(mailbox_id, folder_id)? {
             if f.well_known.is_some() {
                 return Err(Error::invalid("Standardordner können nicht gelöscht werden."));
@@ -175,6 +187,9 @@ impl Service {
     }
 
     pub(crate) async fn mark_folder_read(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_mark_folder_read(mailbox_id, folder_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let unread = c
             .get_all(
@@ -208,6 +223,9 @@ impl Service {
     }
 
     pub(crate) async fn empty_folder(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_empty_folder(mailbox_id, folder_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let all = c
             .get_all(
@@ -269,6 +287,9 @@ impl Service {
 
     /// Delta sync of one folder. `quiet` suppresses new-mail notifications.
     pub(crate) async fn sync_folder(&self, mailbox_id: &str, folder_id: &str, quiet: bool) -> Result<SyncResult> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_sync_folder(mailbox_id, folder_id, quiet).await;
+        }
         let lock = self.folder_lock(mailbox_id, folder_id);
         let _g = lock.lock().await;
         let (mb, c) = self.mailbox(mailbox_id)?;
@@ -281,7 +302,12 @@ impl Service {
             }
             other => other?,
         };
-        let (result, new_unread) = res;
+        let (result, mut new_unread) = res;
+        if !initial && !new_unread.is_empty() && self.is_inbox(mailbox_id, folder_id) {
+            // Rule chain runs before the new mails are announced to the UI.
+            let moved = self.apply_inbox_rules(mailbox_id, &new_unread).await;
+            new_unread.retain(|m| !moved.contains(&m.id));
+        }
         if initial {
             // Fill up folders whose recent window is sparse (e.g. Archive).
             let page = self.store.list_messages(&ListQuery {
@@ -324,6 +350,16 @@ impl Service {
             self.host.notify(&title, &first.subject);
         }
         Ok(result)
+    }
+
+    pub(crate) fn is_inbox(&self, mailbox_id: &str, folder_id: &str) -> bool {
+        self.store
+            .get_folder(mailbox_id, folder_id)
+            .ok()
+            .flatten()
+            .and_then(|f| f.well_known)
+            .as_deref()
+            == Some("inbox")
     }
 
     async fn run_delta(
@@ -421,6 +457,9 @@ impl Service {
     }
 
     pub(crate) async fn load_older(&self, mailbox_id: &str, folder_id: &str) -> Result<i64> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_load_older(mailbox_id, folder_id).await;
+        }
         let lock = self.folder_lock(mailbox_id, folder_id);
         let _g = lock.lock().await;
         let (mb, c) = self.mailbox(mailbox_id)?;
@@ -465,6 +504,9 @@ impl Service {
         field: &str,
         has_attachments: bool,
     ) -> Result<Vec<MessageSummary>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_search(mailbox_id, text, folder_id, field, has_attachments).await;
+        }
         let text = text.trim();
         if text.is_empty() {
             return Ok(vec![]);
@@ -492,6 +534,9 @@ impl Service {
     // ---- single message ----
 
     pub(crate) async fn get_message(&self, mailbox_id: &str, message_id: &str) -> Result<MessageDetail> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_get_message(mailbox_id, message_id).await;
+        }
         let (mb, c) = match self.mailbox(mailbox_id) {
             Ok(x) => x,
             Err(e) => {
@@ -608,6 +653,9 @@ impl Service {
     }
 
     pub(crate) async fn get_message_source(&self, mailbox_id: &str, message_id: &str) -> Result<String> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_message_source(mailbox_id, message_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let bytes = c
             .get_bytes(&format!("{}/messages/{}/$value", mb.graph_prefix(), seg(message_id)))
@@ -665,6 +713,9 @@ impl Service {
     }
 
     pub(crate) async fn set_read(&self, mailbox_id: &str, ids: &[String], is_read: bool) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_set_read(mailbox_id, ids, is_read).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         self.patch_many(&mb, &c, ids, json!({"isRead": is_read})).await?;
         let folders = self.update_cached(mailbox_id, ids, |m| m.is_read = is_read)?;
@@ -673,6 +724,9 @@ impl Service {
     }
 
     pub(crate) async fn set_flag(&self, mailbox_id: &str, ids: &[String], flag: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_set_flag(mailbox_id, ids, flag).await;
+        }
         if !matches!(flag, "notFlagged" | "flagged" | "complete") {
             return Err(Error::invalid("Ungültige Kennzeichnung"));
         }
@@ -685,6 +739,9 @@ impl Service {
     }
 
     pub(crate) async fn set_categories(&self, mailbox_id: &str, ids: &[String], categories: &[String]) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_set_categories(mailbox_id, ids, categories).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         self.patch_many(&mb, &c, ids, json!({"categories": categories}))
             .await?;
@@ -701,6 +758,9 @@ impl Service {
         dest: &str,
         copy: bool,
     ) -> Result<Vec<(String, String)>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_move(mailbox_id, ids, dest, copy).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let action = if copy { "copy" } else { "move" };
@@ -745,6 +805,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_messages(&self, mailbox_id: &str, ids: &[String], permanent: bool) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_delete(mailbox_id, ids, permanent).await;
+        }
         let deleted = self.store.folder_by_well_known(mailbox_id, "deleteditems")?;
         let (mut to_move, mut to_delete) = (Vec::new(), Vec::new());
         for id in ids {
@@ -803,6 +866,9 @@ impl Service {
         attachment_id: &str,
         action: &str,
     ) -> Result<Option<String>> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_download_attachment(mailbox_id, message_id, attachment_id, action).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let meta = c

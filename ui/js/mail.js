@@ -4,7 +4,7 @@ import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, 
 import { icon } from './icons.js';
 import { isImap, kindLabel } from './accounts.js';
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
-import { chipHtml, getCategories, presetHex, swatchHtml } from './categories.js';
+import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, laneCats, isLaneCategory, laneCategory, laneName } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
@@ -501,7 +501,7 @@ function msgRow(m, accountId, toMode, snoozedView) {
   const time = snoozedView && m.dueAt
     ? `<span class="m-due" title="Auf Wiedervorlage bis ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 13)} bis ${esc(fmtDueShort(m.dueAt))}</span>`
     : esc(fmtListDate(m.receivedAt));
-  const cats = (m.categories || []).map((c) => chipHtml(accountId, c)).join('');
+  const cats = visibleCats(m.categories).map((c) => chipHtml(accountId, c)).join('');
   el.innerHTML =
     `<span class="m-dot readcell" title="${m.isRead ? 'Als ungelesen markieren' : 'Als gelesen markieren'}"></span>` +
     `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
@@ -972,7 +972,7 @@ export function categoryMenuItems() {
       onClick: () => toggleCategory(c.displayName),
     })),
     cats.length ? { separator: true } : null,
-    { label: 'Alle Kategorien entfernen', disabled: !s.items.some((m) => (m.categories || []).length), onClick: () => setCategoriesFor(s.items.map((m) => ({ m, cats: [] }))) },
+    { label: 'Alle Kategorien entfernen', disabled: !s.items.some((m) => visibleCats(m.categories).length), onClick: () => setCategoriesFor(s.items.map((m) => ({ m, cats: laneCats(m.categories) }))) },
     { label: 'Kategorien verwalten…', icon: 'settings', onClick: () => openCategoryManager(accountId) },
   ].filter(Boolean);
 }

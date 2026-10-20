@@ -38,7 +38,7 @@ impl Service {
     }
 
     /// Finds or creates a top-level folder with a fixed role.
-    async fn ensure_folder(&self, mailbox_id: &str, well_known: &str, name: &str) -> Result<Folder> {
+    pub(crate) async fn ensure_folder(&self, mailbox_id: &str, well_known: &str, name: &str) -> Result<Folder> {
         if let Some(f) = self.store.folder_by_well_known(mailbox_id, well_known)? {
             return Ok(f);
         }
@@ -65,12 +65,18 @@ impl Service {
     }
 
     pub(crate) async fn archive_messages(&self, mailbox_id: &str, ids: &[String]) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_archive(mailbox_id, ids).await;
+        }
         let archive = self.ensure_folder(mailbox_id, "archive", ARCHIVE_FOLDER_NAME).await?;
         self.move_messages(mailbox_id, ids, &archive.id, false).await?;
         Ok(())
     }
 
     pub(crate) async fn snooze_messages(&self, mailbox_id: &str, ids: &[String], until: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_snooze(mailbox_id, ids, until).await;
+        }
         let until: DateTime<Utc> = DateTime::parse_from_rfc3339(until)
             .map_err(|_| Error::invalid("Ungültiger Zeitpunkt für die Wiedervorlage"))?
             .with_timezone(&Utc);
@@ -110,6 +116,9 @@ impl Service {
     }
 
     pub(crate) async fn unsnooze_messages(&self, mailbox_id: &str, ids: &[String]) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_unsnooze(mailbox_id, ids).await;
+        }
         let inbox = self
             .store
             .folder_by_well_known(mailbox_id, "inbox")?
@@ -135,6 +144,9 @@ impl Service {
 
     /// Returns due snoozed mails to the inbox. Called by the background sync.
     pub(crate) async fn process_due_snoozes(&self, mailbox_id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_process_due_snoozes(mailbox_id).await;
+        }
         let Some(folder) = self.store.folder_by_well_known(mailbox_id, "snoozed")? else {
             return Ok(());
         };

@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use serde_json::json;
 
+use super::imap_account::with_imap;
 use super::Service;
 use crate::error::{Error, Result};
 use crate::imap::conn::{timed, Conn, OP_TIMEOUT};
@@ -155,8 +156,7 @@ impl Service {
             special: Option<&'static str>,
             selectable: bool,
         }
-        let raws: Vec<(Raw, Option<(u32, u32)>)> = self
-            .with_imap(mb, async |c: &mut Conn| {
+        let raws: Vec<(Raw, Option<(u32, u32)>)> = with_imap!(self, mb, |c| {
                 let names: Vec<async_imap::types::Name> = {
                     let stream = timed(c.s().list(Some(""), Some("*"))).await?;
                     stream.try_collect().await.map_err(crate::imap::conn::imap_err)?
@@ -195,8 +195,7 @@ impl Service {
                     with_status.push((r, status));
                 }
                 Ok(with_status)
-            })
-            .await?;
+            })?;
 
         if let Some(d) = raws.iter().find_map(|(r, _)| r.delim.clone()) {
             self.store.kv_set(&delim_key(mb), &d)?;
@@ -286,12 +285,11 @@ impl Service {
 
     pub(crate) async fn imap_create_folder(&self, mb: &str, parent: Option<&str>, name: &str) -> Result<Folder> {
         let full = self.imap_child_name(mb, parent, name)?;
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             timed(c.s().create(&full)).await?;
             let _ = timed(c.s().subscribe(&full)).await;
             Ok(())
-        })
-        .await?;
+        })?;
         self.imap_sync_folders(mb).await?;
         self.emit_mail_changed(mb, None);
         self.store
@@ -302,13 +300,12 @@ impl Service {
     pub(crate) async fn imap_rename_folder(&self, mb: &str, folder: &str, name: &str) -> Result<Folder> {
         let f = self.store.get_folder(mb, folder)?.ok_or_else(|| Error::NotFound("Ordner".into()))?;
         let full = self.imap_child_name(mb, f.parent_id.as_deref(), name)?;
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             c.selected = None;
             timed(c.s().rename(folder, &full)).await?;
             let _ = timed(c.s().subscribe(&full)).await;
             Ok(())
-        })
-        .await?;
+        })?;
         self.imap_sync_folders(mb).await?;
         self.emit_mail_changed(mb, None);
         self.store
@@ -322,12 +319,11 @@ impl Service {
                 return Err(Error::invalid("Standardordner können nicht gelöscht werden."));
             }
         }
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             c.selected = None;
             let _ = timed(c.s().unsubscribe(folder)).await;
             timed(c.s().delete(folder)).await
-        })
-        .await?;
+        })?;
         self.store.delete_folder(mb, folder)?;
         self.imap_sync_folders(mb).await?;
         self.emit_mail_changed(mb, None);
@@ -335,15 +331,14 @@ impl Service {
     }
 
     pub(crate) async fn imap_mark_folder_read(&self, mb: &str, folder: &str) -> Result<()> {
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             c.select(folder).await?;
             let unseen = uid_search(c, "UNSEEN").await?;
             if !unseen.is_empty() {
                 store_flags(c, &im::uid_set(&unseen), "+FLAGS.SILENT (\\Seen)").await?;
             }
             Ok(())
-        })
-        .await?;
+        })?;
         let ids = self.store.folder_message_ids(mb, folder, true)?;
         self.update_cached(mb, &ids, |m| m.is_read = true)?;
         if let Some(mut f) = self.store.get_folder(mb, folder)? {
@@ -355,12 +350,11 @@ impl Service {
     }
 
     pub(crate) async fn imap_empty_folder(&self, mb: &str, folder: &str) -> Result<()> {
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             c.select(folder).await?;
             let all = uid_search(c, "ALL").await?;
             expunge_uids(c, &all).await
-        })
-        .await?;
+        })?;
         self.store.delete_folder_messages(mb, folder)?;
         if let Some(mut f) = self.store.get_folder(mb, folder)? {
             f.unread_count = 0;
@@ -408,7 +402,7 @@ impl Service {
 
     pub(crate) async fn imap_sync_folder(&self, mb: &str, folder: &str, quiet: bool) -> Result<SyncResult> {
         let lock = self.folder_lock(mb, folder);
-        let _g = lock.lock().await;
+        let guard = lock.lock().await;
         let snoozed = self.store.get_folder(mb, folder)?.and_then(|f| f.well_known).as_deref() == Some("snoozed");
         let stored_uv: Option<u32> = self.store.kv_get(&uv_key(mb, folder))?.and_then(|v| v.parse().ok());
         let cached_before = self.cached_uids(mb, folder)?;
@@ -422,8 +416,7 @@ impl Service {
             all_new: bool,
             reset: bool,
         }
-        let out = self
-            .with_imap(mb, async |c: &mut Conn| {
+        let out = with_imap!(self, mb, |c| {
                 let sel = c.select(folder).await?;
                 let uv = sel.uid_validity.unwrap_or(0);
                 let reset = stored_uv.is_some_and(|s| s != uv);
@@ -467,8 +460,7 @@ impl Service {
                     all_new,
                     reset,
                 })
-            })
-            .await?;
+            })?;
 
         let mut result = SyncResult::default();
         let initial = cached_before.is_empty() || out.reset;
@@ -503,7 +495,7 @@ impl Service {
         self.store.kv_set(&uv_key(mb, folder), &out.uv.to_string())?;
         let new = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
         result.added = new.len() as i64;
-        let new_unread: Vec<MessageSummary> = new.iter().filter(|m| !m.is_read && !m.is_draft).cloned().collect();
+        let mut new_unread: Vec<MessageSummary> = new.iter().filter(|m| !m.is_read && !m.is_draft).cloned().collect();
         self.store.upsert_messages(&new)?;
         if initial && out.all_new {
             self.store.set_fully_loaded(mb, folder, true)?;
@@ -513,10 +505,16 @@ impl Service {
             f.unread_count = out.unseen as i64;
             self.store.upsert_folder(&f)?;
         }
+        drop(guard);
+        let is_inbox = folder.eq_ignore_ascii_case("INBOX");
+        if !initial && is_inbox && !new_unread.is_empty() {
+            // Rule chain runs before the new mails are announced to the UI.
+            let moved = Box::pin(self.apply_inbox_rules(mb, &new_unread)).await;
+            new_unread.retain(|m| !moved.contains(&m.id));
+        }
         if result.added + result.updated + result.removed > 0 {
             self.emit_mail_changed(mb, Some(folder));
         }
-        let is_inbox = folder.eq_ignore_ascii_case("INBOX");
         if !quiet && !initial && is_inbox && !new_unread.is_empty() {
             let first = &new_unread[0];
             let from = first
@@ -551,8 +549,7 @@ impl Service {
             return Ok(0);
         }
         let snoozed = self.store.get_folder(mb, folder)?.and_then(|f| f.well_known).as_deref() == Some("snoozed");
-        let (uv, items, more) = self
-            .with_imap(mb, async |c: &mut Conn| {
+        let (uv, items, more) = with_imap!(self, mb, |c| {
                 let sel = c.select(folder).await?;
                 let older = uid_search(c, &format!("UID 1:{}", min - 1)).await?;
                 let older: Vec<u32> = older.into_iter().filter(|u| *u < min).collect();
@@ -560,8 +557,7 @@ impl Service {
                 let take: Vec<u32> = older.into_iter().rev().take(OLDER_FETCH).collect();
                 let items = if take.is_empty() { vec![] } else { uid_fetch(c, &im::uid_set(&take), &summary_query()).await? };
                 Ok((sel.uid_validity.unwrap_or(0), items, more))
-            })
-            .await?;
+            })?;
         let list = self.summaries_from(mb, folder, uv, items, snoozed);
         self.store.upsert_messages(&list)?;
         if !more {
@@ -607,8 +603,7 @@ impl Service {
                 .map(|f| f.id)
                 .collect(),
         };
-        let found: Vec<(String, u32, Vec<Fetched>)> = self
-            .with_imap(mb, async |c: &mut Conn| {
+        let found: Vec<(String, u32, Vec<Fetched>)> = with_imap!(self, mb, |c| {
                 let mut out = Vec::new();
                 for f in &folders {
                     let sel = c.select(f).await?;
@@ -623,8 +618,7 @@ impl Service {
                     }
                 }
                 Ok(out)
-            })
-            .await?;
+            })?;
         let mut out = Vec::new();
         for (f, uv, items) in found {
             out.extend(self.summaries_from(mb, &f, uv, items, false));
@@ -639,7 +633,7 @@ impl Service {
     pub(crate) async fn imap_raw(&self, mb: &str, id: &str) -> Result<(Vec<u8>, Vec<String>, Option<DateTime<chrono::FixedOffset>>)> {
         let (uv, uid, folder) = im::parse_message_id(id).ok_or_else(|| Error::invalid("Ungültige Nachrichten-ID"))?;
         let folder = folder.to_string();
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             let sel = c.select(&folder).await?;
             if sel.uid_validity.unwrap_or(0) != uv {
                 return Err(Error::NotFound("Nachricht (Ordner wurde neu aufgebaut)".into()));
@@ -651,7 +645,6 @@ impl Service {
                 .ok_or_else(|| Error::NotFound("Nachricht".into()))?;
             Ok((f.body.unwrap_or_default(), f.flags, f.internal_date))
         })
-        .await
     }
 
     pub(crate) async fn imap_get_message(&self, mb: &str, id: &str) -> Result<MessageDetail> {
@@ -710,7 +703,7 @@ impl Service {
 
     async fn imap_store(&self, mb: &str, ids: &[String], ops: &[String]) -> Result<()> {
         let groups = by_folder(ids)?;
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             for (folder, (_, uids)) in &groups {
                 c.select(folder).await?;
                 for op in ops {
@@ -719,7 +712,6 @@ impl Service {
             }
             Ok(())
         })
-        .await
     }
 
     fn emit_changed_folders(&self, mb: &str, folders: HashSet<String>) {
@@ -755,7 +747,7 @@ impl Service {
     pub(crate) async fn imap_set_categories(&self, mb: &str, ids: &[String], categories: &[String]) -> Result<()> {
         let groups = by_folder(ids)?;
         let wanted: HashSet<String> = categories.iter().map(|c| im::category_keyword(c)).collect();
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             for (folder, (_, uids)) in &groups {
                 let sel = c.select(folder).await?;
                 if !may_create_keywords(&sel) {
@@ -777,8 +769,7 @@ impl Service {
                 }
             }
             Ok(())
-        })
-        .await?;
+        })?;
         self.imap_remember_categories(mb, categories)?;
         let f = self.update_cached(mb, ids, |m| m.categories = categories.to_vec())?;
         self.emit_changed_folders(mb, f);
@@ -789,7 +780,7 @@ impl Service {
 
     pub(crate) async fn imap_move(&self, mb: &str, ids: &[String], dest: &str, copy: bool) -> Result<Vec<(String, String)>> {
         let groups = by_folder(ids)?;
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             for (folder, (_, uids)) in &groups {
                 if folder == dest && !copy {
                     continue;
@@ -798,8 +789,7 @@ impl Service {
                 transfer(c, uids, dest, copy).await?;
             }
             Ok(())
-        })
-        .await?;
+        })?;
         let mut folders: HashSet<String> = HashSet::from([dest.to_string()]);
         if !copy {
             for id in ids {
@@ -836,14 +826,13 @@ impl Service {
             self.imap_move(mb, &to_trash, t, false).await?;
         }
         if !purge.is_empty() {
-            self.with_imap(mb, async |c: &mut Conn| {
+            with_imap!(self, mb, |c| {
                 for (folder, uids) in &purge {
                     c.select(folder).await?;
                     expunge_uids(c, uids).await?;
                 }
                 Ok(())
-            })
-            .await?;
+            })?;
             let mut folders = HashSet::new();
             for id in ids {
                 if let Some(old) = self.store.get_summary(mb, id)? {
@@ -866,13 +855,11 @@ impl Service {
             return Ok(f);
         }
         let full = self.imap_child_name(mb, None, name)?;
-        let r = self
-            .with_imap(mb, async |c: &mut Conn| {
+        let r = with_imap!(self, mb, |c| {
                 timed(c.s().create(&full)).await?;
                 let _ = timed(c.s().subscribe(&full)).await;
                 Ok(())
-            })
-            .await;
+            });
         if let Err(e) = r {
             // It may already exist (e.g. created by another client).
             tracing::debug!("CREATE {full}: {e}");
@@ -911,16 +898,14 @@ impl Service {
         }
         if !missing.is_empty() {
             let groups = by_folder(&missing)?;
-            let fetched = self
-                .with_imap(mb, async |c: &mut Conn| {
+            let fetched = with_imap!(self, mb, |c| {
                     let mut v = Vec::new();
                     for (folder, (_, uids)) in &groups {
                         c.select(folder).await?;
                         v.extend(uid_fetch(c, &im::uid_set(uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?);
                     }
                     Ok(v)
-                })
-                .await?;
+                })?;
             for f in fetched {
                 let raw = f.header.or(f.body).unwrap_or_default();
                 if let Some(m) = mime::parse(&raw).and_then(|p| p.message_id().map(str::to_string)) {

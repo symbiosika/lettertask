@@ -85,9 +85,8 @@ impl Conn {
 
     /// SELECTs `folder`; returns its status.
     pub async fn select(&mut self, folder: &str) -> Result<async_imap::types::Mailbox> {
-        let mb = timed(self.s().select(folder)).await.map_err(|e| {
+        let mb = timed(self.s().select(folder)).await.inspect_err(|_| {
             self.selected = None;
-            e
         })?;
         self.selected = Some(folder.to_string());
         Ok(mb)

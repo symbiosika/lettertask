@@ -7,6 +7,7 @@ import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { splitBtn } from './toolbar.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById, accountOfMailbox } from './state.js';
+import { duePicker } from './due.js';
 import { loadSignatures, defaultSignatureFor, applySignature, currentSignatureId, signatureMenuItems, signaturesPanel } from './signatures.js';
 
 const P = params();
@@ -27,7 +28,7 @@ const st = {
   closing: false,
 };
 
-let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn;
+let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind;
 
 function markDirty() { st.dirty = true; }
 
@@ -107,7 +108,8 @@ function renderForm() {
   ccRow = row('Cc', cc);
   bccRow = row('Bcc', bcc);
   ccRow.classList.add('hidden'); bccRow.classList.add('hidden');
-  form.append(toRow, ccRow, bccRow, row('Betreff', subject));
+  remind = reminderRow();
+  form.append(toRow, ccRow, bccRow, remind.el, row('Betreff', subject));
 
   attList = $('#atts');
 
@@ -231,6 +233,36 @@ function applyDraft(d) {
   updateTitle();
 }
 
+/** "Erinnerung an mich: Aus | Ein [Zeitpunkt]" – a follow-up copy in Wiedervorlage after sending. */
+function reminderRow() {
+  let on = false;
+  const picker = duePicker({ config: state.config, variant: 'select', testid: 'remind-when' });
+  const seg = h('div.segmented.remind-seg', { role: 'radiogroup', 'aria-label': 'Erinnerung an mich' });
+  const mk = (val, label) => {
+    const b = h('button.seg', { type: 'button', role: 'radio', dataset: { testid: 'remind-' + (val ? 'on' : 'off') } }, label);
+    b.addEventListener('click', () => { on = val; paint(); });
+    seg.appendChild(b);
+    return b;
+  };
+  const off = mk(false, 'Aus');
+  const onBtn = mk(true, 'Ein');
+  const paint = () => {
+    off.classList.toggle('on', !on); onBtn.classList.toggle('on', on);
+    off.setAttribute('aria-checked', String(!on)); onBtn.setAttribute('aria-checked', String(on));
+    picker.el.classList.toggle('hidden', !on);
+    el.classList.toggle('active', on);
+  };
+  const el = h('div.cw-row.remind-row', { dataset: { testid: 'remind-row' } },
+    h('label.cw-lbl.remind-lbl', { title: 'Nach dem Senden landet eine Kopie zum Nachfassen auf Wiedervorlage' }, 'Erinnerung'),
+    h('div.cw-val.remind-val', h('span.remind-text', { html: icon('bell', 15) + '<span>an mich:</span>' }), seg, picker.el));
+  paint();
+  return {
+    el,
+    /** null = off; { date } or { error }. */
+    get() { return on ? picker.get() : null; },
+  };
+}
+
 function buildInput() {
   return {
     id: st.draft ? st.draft.id : null,
@@ -265,10 +297,15 @@ async function send_() {
     const ok = await confirmDialog('Diese Nachricht hat keinen Betreff. Möchten Sie sie trotzdem senden?', { title: 'Kein Betreff', ok: 'Trotzdem senden', cancel: 'Nicht senden' });
     if (!ok) { subject.focus(); return; }
   }
+  const r = remind ? remind.get() : null;
+  if (r && r.error) { toast(r.error, 'error'); return; }
+  const remindAt = r && r.date ? r.date : null;
   st.busy = true;
   document.body.style.cursor = 'progress';
   try {
-    await call('send_draft', { draft: buildInput() });
+    const draft = buildInput();
+    if (remindAt) draft.remindAt = remindAt.toISOString();
+    await call('send_draft', { draft });
     st.dirty = false; st.serverCreated = false;
     await finish();
   } catch (e) {

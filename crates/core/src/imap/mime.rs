@@ -276,8 +276,11 @@ pub fn attachment(raw: &[u8], idx: usize) -> Result<(String, String, Vec<u8>)> {
     Ok((part_name(p, i), part_type(p), part_bytes(p)))
 }
 
-/// All non-inline attachments (for forwarding / keeping draft attachments).
-pub fn all_attachments(raw: &[u8]) -> Vec<(usize, String, String, Vec<u8>, Option<String>)> {
+/// An attachment part: (index, file name, content type, bytes, content id).
+pub type Part = (usize, String, String, Vec<u8>, Option<String>);
+
+/// All attachment parts (for forwarding / keeping draft attachments).
+pub fn all_attachments(raw: &[u8]) -> Vec<Part> {
     let Some(msg) = parse(raw) else { return vec![] };
     attachments(&msg)
         .map(|(i, p)| (i, part_name(p, i), part_type(p), part_bytes(p), content_id(p)))
@@ -291,6 +294,7 @@ pub struct Outgoing {
     pub to: Vec<Address>,
     pub cc: Vec<Address>,
     pub bcc: Vec<Address>,
+    pub reply_to: Vec<Address>,
     pub subject: String,
     pub html: String,
     pub importance: String,
@@ -336,6 +340,9 @@ pub fn build(o: &Outgoing, draft: bool) -> Result<lettre::Message> {
     }
     for a in &o.bcc {
         b = b.bcc(mailbox(a)?);
+    }
+    for a in &o.reply_to {
+        b = b.reply_to(mailbox(a)?);
     }
     if let Some(r) = &o.in_reply_to {
         b = b.in_reply_to(r.clone());

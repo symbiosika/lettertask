@@ -1,7 +1,7 @@
 // Renders a MessageDetail (reading pane and message window share this).
 import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fmtSize } from './util.js';
 import { icon } from './icons.js';
-import { pillHtml } from './categories.js';
+import { pillHtml, visibleCats, laneCats } from './categories.js';
 import { call, openUrl, openWindow } from './api.js';
 import { showMenu, showMenuAt, reportError, toast } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
@@ -85,7 +85,9 @@ export function renderMessage(container, msg, opts) {
   container.innerHTML = '';
   let allowRemote = !!(config && config.loadRemoteImages);
   const remote = hasRemoteContent(msg.bodyHtml);
-  let cats = [...(msg.categories || [])];
+  // Kanban lane markers ("[K_…]") stay hidden but must survive tag edits.
+  const lanes = laneCats(msg.categories);
+  let cats = visibleCats(msg.categories);
 
   const card = h('article.rp-card');
   const from = msg.from || { name: '(Unbekannt)', address: '' };
@@ -103,7 +105,7 @@ export function renderMessage(container, msg, opts) {
   const applyCats = async (next) => {
     cats = next;
     renderTags();
-    await opts.setCategories(next);
+    await opts.setCategories([...next, ...lanes]);
   };
   const openPicker = (anchor) => openTagPicker(anchor || tags.querySelector('.tag-add'), {
     accountId,

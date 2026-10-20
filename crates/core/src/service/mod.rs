@@ -7,9 +7,11 @@ mod contacts;
 mod imap_account;
 mod imap_compose;
 mod imap_mail;
+mod lanes;
 mod mail;
 mod signatures;
 mod snooze;
+mod tasks;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -187,6 +189,13 @@ impl Service {
             "save_config" => ok(self.save_config(arg(a, "config")?)?),
             "list_accounts" => ok(self.store.list_accounts()?),
             "add_account" => ok(self.add_account().await?),
+            "discover_imap" => ok(self.discover_imap(&arg::<String>(a, "email")?).await),
+            "test_imap_account" => ok(self.test_imap_account(&arg(a, "input")?).await),
+            "add_imap_account" => ok(self.add_imap_account(arg(a, "input")?).await?),
+            "update_imap_account" => ok(self
+                .update_imap_account(&arg::<String>(a, "accountId")?, arg(a, "input")?)
+                .await?),
+            "get_imap_account" => ok(self.get_imap_account(&arg::<String>(a, "accountId")?)?),
             "remove_account" => {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
                 ok(Value::Null)
@@ -364,6 +373,29 @@ impl Service {
                 .await?),
 
             // ---- categories ----
+            // ---- inbox zero ----
+            "create_task" => ok(self
+                .create_task(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "subject")?,
+                    &arg::<Option<String>>(a, "bodyHtml")?.unwrap_or_default(),
+                    arg::<Option<String>>(a, "due")?.as_deref(),
+                )
+                .await?),
+            "get_lanes" => ok(self.get_lanes(&arg::<String>(a, "accountId")?)?),
+            "save_lanes" => ok(self
+                .save_lanes(&arg::<String>(a, "accountId")?, &arg::<Vec<String>>(a, "lanes")?)
+                .await?),
+            "set_lane" => {
+                self.set_lane(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    arg::<Option<String>>(a, "lane")?.as_deref(),
+                )
+                .await?;
+                ok(Value::Null)
+            }
+
             // ---- signatures ----
             "get_signatures" => ok(self.get_signatures(&arg::<String>(a, "accountId")?)?),
             "save_signatures" => ok(self.save_signatures(&arg::<String>(a, "accountId")?, arg(a, "settings")?)?),
@@ -449,7 +481,7 @@ impl Service {
             // ---- host ----
             "open_window" => {
                 let kind: String = arg(a, "kind")?;
-                if !matches!(kind.as_str(), "compose" | "message" | "event") {
+                if !matches!(kind.as_str(), "compose" | "message" | "event" | "task") {
                     return Err(Error::invalid("Unbekannter Fenstertyp"));
                 }
                 let params: HashMap<String, Value> = arg::<Option<_>>(a, "params")?.unwrap_or_default();
@@ -513,6 +545,9 @@ impl Service {
         }
         if c.snooze_options.is_empty() {
             c.snooze_options = default_snooze_options();
+        }
+        if !matches!(c.kanban_reading_pane.as_str(), "bottom" | "right") {
+            c.kanban_reading_pane = "bottom".into();
         }
         if !matches!(c.list_mode.as_str(), "comfortable" | "compact") {
             c.list_mode = "comfortable".into();
@@ -722,6 +757,9 @@ impl Service {
     // ---- mailbox settings ----
 
     async fn get_auto_reply(&self, account_id: &str) -> Result<AutoReply> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Abwesenheitsnotizen sind nur für Microsoft-365-Konten verfügbar."));
+        }
         let c = self.client(account_id)?;
         let v = c
             .get_h(
@@ -733,6 +771,9 @@ impl Service {
     }
 
     async fn set_auto_reply(&self, account_id: &str, a: AutoReply) -> Result<AutoReply> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Abwesenheitsnotizen sind nur für Microsoft-365-Konten verfügbar."));
+        }
         let c = self.client(account_id)?;
         c.patch(
             "/me/mailboxSettings",

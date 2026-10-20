@@ -958,3 +958,126 @@ async fn sent_recipients_are_collected() {
     let collected: ContactPage = call(&ctx.svc, "list_contacts", json!({"source": "collected"})).await;
     assert_eq!(collected.total, 0);
 }
+
+#[tokio::test]
+async fn tasks_are_created_directly_in_place() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    // "Sofort": unread, non-draft, from and to myself, in the inbox.
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Angebot an Alpha schreiben", "bodyHtml": "<p>bis Freitag</p>", "due": null}),
+    )
+    .await;
+    assert_eq!(t.folder_id, inbox.id);
+    assert!(!t.is_read && !t.is_draft);
+    assert_eq!(t.from.as_ref().unwrap().address, ME);
+    assert_eq!(t.to[0].address, ME);
+    assert!(ctx.list(&inbox.id).await.items.iter().any(|m| m.id == t.id));
+    // With a due date: straight into "Wiedervorlage", read, due set – also on the server.
+    let due = (chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+    let t2: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Steuer vorbereiten", "bodyHtml": "", "due": due}),
+    )
+    .await;
+    let snoozed = ctx.folder("snoozed").await;
+    assert_eq!(t2.folder_id, snoozed.id);
+    assert!(t2.is_read && !t2.is_draft && t2.due_at.is_some());
+    let raw = ctx.fake.as_ref().unwrap().state.message("me", &t2.id).unwrap();
+    assert_eq!(raw["isDraft"], false);
+    assert_eq!(raw["flag"]["flagStatus"], "flagged");
+    // Never shows up in the inbox.
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == "Steuer vorbereiten"));
+    assert!(call_err(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": " ", "due": null})).await.contains("Betreff"));
+}
+
+#[tokio::test]
+async fn send_with_reminder_creates_follow_up() {
+    let ctx = setup().await;
+    let remind = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let input = json!({"id": null, "mailboxId": ctx.account, "mode": "new",
+        "to": [{"name": "Erika Beispiel", "address": "erika@fabrikam.example"}], "cc": [], "bcc": [],
+        "subject": "Bitte Rechnung prüfen", "bodyHtml": "<p>Anbei die Rechnung.</p>", "importance": "normal",
+        "requestReadReceipt": false, "newAttachments": [], "removedAttachmentIds": [], "remindAt": remind});
+    let _: Value = call(&ctx.svc, "send_draft", json!({"draft": input})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let items = ctx.list(&snoozed.id).await.items;
+    let r = items.iter().find(|m| m.subject == "Nachfassen: Bitte Rechnung prüfen").expect("reminder");
+    assert!(r.due_at.is_some());
+    assert_eq!(r.to[0].address, "erika@fabrikam.example");
+    // Reply goes to the original recipient.
+    let reply: Draft = call(&ctx.svc, "create_draft", json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": r.id})).await;
+    assert_eq!(reply.to[0].address, "erika@fabrikam.example");
+    let d: MessageDetail = call(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": r.id})).await;
+    assert!(d.body_html.contains("Anbei die Rechnung"));
+}
+
+#[tokio::test]
+async fn inbox_rules_snooze_self_mails_before_display() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let fake = ctx.fake.as_ref().unwrap();
+    let token = fake.issue_token();
+    let http = reqwest::Client::new();
+    for subject in ["Angebot prüfen #morgen", "Normale Mail an mich"] {
+        http.post(format!("{}/v1.0/me/sendMail", fake.base_url))
+            .bearer_auth(&token)
+            .json(&json!({"message": {"subject": subject, "body": {"contentType": "text", "content": "x"},
+                "toRecipients": [{"emailAddress": {"address": ME}}]}, "saveToSentItems": false}))
+            .send().await.unwrap().error_for_status().unwrap();
+    }
+    ctx.sync(&inbox.id).await;
+    let in_inbox = ctx.list(&inbox.id).await.items;
+    assert!(!in_inbox.iter().any(|m| m.subject.contains("#morgen")), "rule must move it before display");
+    assert!(in_inbox.iter().any(|m| m.subject == "Normale Mail an mich"));
+    let snoozed = ctx.folder("snoozed").await;
+    let s = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.subject.contains("#morgen")).unwrap();
+    let due = chrono::DateTime::parse_from_rfc3339(s.due_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Local);
+    assert_eq!(due.date_naive(), chrono::Local::now().date_naive() + chrono::Duration::days(1));
+    let events = ctx.host.events.lock().unwrap();
+    assert!(events.iter().any(|(e, p)| e == "rules-applied" && p["count"] == 1));
+    // The moved mail does not trigger a new-mail notification.
+    assert!(!events.iter().any(|(e, p)| e == "new-mail" && p["subject"].as_str().unwrap_or("").contains("#morgen")));
+}
+
+#[tokio::test]
+async fn kanban_lanes_as_hidden_categories() {
+    let ctx = setup().await;
+    let bad = call_err(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["To[Do]"]})).await;
+    assert!(bad.contains("Ungültiger Lane-Name"));
+    let lanes: Vec<String> = call(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["ToDo", "Warten auf", "Review"]})).await;
+    assert_eq!(lanes, ["ToDo", "Warten auf", "Review"]);
+    let cats: Vec<Category> = call(&ctx.svc, "list_categories", json!({"accountId": ctx.account})).await;
+    assert!(cats.iter().any(|c| c.display_name == "[K_ToDo]"));
+    assert!(cats.iter().any(|c| c.display_name == "[K_Warten auf]"));
+
+    let inbox = ctx.folder("inbox").await;
+    let m = ctx.list(&inbox.id).await.items.into_iter().find(|m| !m.categories.is_empty()).unwrap();
+    let other = m.categories.clone();
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "ToDo"})).await;
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "Review"})).await;
+    let after = ctx.list(&inbox.id).await.items.into_iter().find(|x| x.id == m.id).unwrap();
+    let mut expect = other.clone();
+    expect.push("[K_Review]".into());
+    assert_eq!(after.categories, expect, "other categories kept, only one lane");
+    let raw = ctx.fake.as_ref().unwrap().state.message("me", &m.id).unwrap();
+    assert!(raw["categories"].as_array().unwrap().iter().any(|c| c == "[K_Review]"));
+    assert!(call_err(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "Gibtsnicht"})).await.contains("existiert nicht"));
+
+    // Removing a lane deletes its category and strips it from mails.
+    let lanes: Vec<String> = call(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["ToDo", "Warten auf"]})).await;
+    assert_eq!(lanes.len(), 2);
+    let after = ctx.list(&inbox.id).await.items.into_iter().find(|x| x.id == m.id).unwrap();
+    assert_eq!(after.categories, other);
+    let cats: Vec<Category> = call(&ctx.svc, "list_categories", json!({"accountId": ctx.account})).await;
+    assert!(!cats.iter().any(|c| c.display_name == "[K_Review]"));
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": null})).await;
+    let got: Vec<String> = call(&ctx.svc, "get_lanes", json!({"accountId": ctx.account})).await;
+    assert_eq!(got, ["ToDo", "Warten auf"]);
+    let c: Config = call(&ctx.svc, "get_config", json!({})).await;
+    assert_eq!(c.kanban_reading_pane, "bottom");
+}

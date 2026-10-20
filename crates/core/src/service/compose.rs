@@ -29,6 +29,9 @@ pub(crate) fn prepend_to_body(html: &str, fragment: &str) -> String {
 
 impl Service {
     pub(crate) async fn create_draft(&self, mailbox_id: &str, mode: &str, source: Option<&str>) -> Result<Draft> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_create_draft(mailbox_id, mode, source).await;
+        }
         let account_id = self.store.get_mailbox(mailbox_id)?.account_id;
         let sig = signature_block(self.signature_for(&account_id, mode).as_ref());
         if mode == "new" {
@@ -131,6 +134,9 @@ impl Service {
     }
 
     pub(crate) async fn get_draft(&self, mailbox_id: &str, message_id: &str) -> Result<Draft> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_get_draft(mailbox_id, message_id).await;
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         self.load_draft(&mb, &c, message_id).await
     }
@@ -148,6 +154,9 @@ impl Service {
     }
 
     pub(crate) async fn save_draft(&self, d: DraftInput) -> Result<Draft> {
+        if crate::imap::is_imap_id(&d.mailbox_id) {
+            return self.imap_save_draft(d).await;
+        }
         let (mb, c) = self.mailbox(&d.mailbox_id)?;
         let id = self.write_draft(&mb, &c, &d).await?;
         let mut draft = self.load_draft(&mb, &c, &id).await?;
@@ -239,6 +248,9 @@ impl Service {
     }
 
     pub(crate) async fn send_draft(&self, d: DraftInput) -> Result<()> {
+        if crate::imap::is_imap_id(&d.mailbox_id) {
+            return self.imap_send_draft(d).await;
+        }
         if d.to.is_empty() && d.cc.is_empty() && d.bcc.is_empty() {
             return Err(Error::invalid("Bitte mindestens einen Empfänger angeben."));
         }
@@ -248,6 +260,9 @@ impl Service {
             .await?;
         let recipients: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
         self.collect_addresses(&mb.account_id, &recipients)?;
+        if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
+            self.create_send_reminder(&d, at).await?;
+        }
         self.store.delete_message(&mb.id, &id)?;
         for wk in ["drafts", "sentitems", "inbox"] {
             if let Some(f) = self.store.folder_by_well_known(&mb.id, wk)? {
@@ -259,6 +274,9 @@ impl Service {
     }
 
     pub(crate) async fn discard_draft(&self, mailbox_id: &str, draft_id: Option<&str>) -> Result<()> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            return self.imap_discard_draft(mailbox_id, draft_id).await;
+        }
         let Some(id) = draft_id else { return Ok(()) };
         let (mb, c) = self.mailbox(mailbox_id)?;
         match c

@@ -7,9 +7,10 @@ use base64::Engine;
 use super::compose::{cid_to_data, data_to_cid, prepend_to_body};
 use super::imap_mail::{expunge_uids, uid_search};
 use super::signatures::signature_block;
+use super::imap_account::with_imap;
 use super::Service;
 use crate::error::{Error, Result};
-use crate::imap::conn::{timed, Conn};
+use crate::imap::conn::timed;
 use crate::imap::mime::{self, Outgoing};
 use crate::imap::{self as im};
 use crate::model::*;
@@ -62,8 +63,7 @@ struct StoredDraft {
     message_id: String,
     in_reply_to: Option<String>,
     references: Option<String>,
-    /// (index, name, content type, bytes, content id)
-    parts: Vec<(usize, String, String, Vec<u8>, Option<String>)>,
+    parts: Vec<mime::Part>,
 }
 
 impl Service {
@@ -78,7 +78,7 @@ impl Service {
     /// Appends `raw` to `folder` and returns the new message id.
     async fn imap_append(&self, mb: &str, folder: &str, flags: &str, raw: &[u8], message_id: &str) -> Result<String> {
         let header = format!("HEADER Message-ID {}", im::quote(message_id));
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             c.selected = None;
             timed(c.s().append(folder, Some(flags), None, raw)).await?;
             let sel = c.select(folder).await?;
@@ -89,7 +89,6 @@ impl Service {
                 .ok_or_else(|| Error::Other("Gespeicherte Nachricht nicht gefunden".into()))?;
             Ok(im::message_id(sel.uid_validity.unwrap_or(0), uid, folder))
         })
-        .await
     }
 
     async fn imap_remove(&self, mb: &str, id: &str) -> Result<()> {
@@ -97,11 +96,10 @@ impl Service {
             return Ok(());
         };
         let folder = folder.to_string();
-        self.with_imap(mb, async |c: &mut Conn| {
+        with_imap!(self, mb, |c| {
             c.select(&folder).await?;
             expunge_uids(c, &[uid]).await
-        })
-        .await?;
+        })?;
         self.store.delete_message(mb, id)?;
         Ok(())
     }
@@ -383,7 +381,46 @@ impl Service {
         }
         let all: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
         self.collect_addresses(&mb, &all)?;
+        if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
+            self.create_send_reminder(&d, at).await?;
+        }
         Ok(())
+    }
+
+    /// Tasks/reminders: a normal (non-draft) mail from yourself, unread in
+    /// the inbox, or read in "Wiedervorlage" with its due time.
+    pub(crate) async fn imap_place_mail(&self, mb: &str, m: super::tasks::NewMail) -> Result<MessageSummary> {
+        let me = self.imap_from(mb)?;
+        let folder = match m.due {
+            Some(_) => self.imap_ensure_folder(mb, "snoozed", super::imap_mail::SNOOZE_FOLDER).await?,
+            None => self
+                .store
+                .folder_by_well_known(mb, "inbox")?
+                .ok_or_else(|| Error::NotFound("Posteingang".into()))?,
+        };
+        let o = Outgoing {
+            from: me.clone(),
+            to: m.to.clone(),
+            reply_to: m.reply_to.clone(),
+            subject: m.subject.clone(),
+            html: m.body_html.clone(),
+            importance: "normal".into(),
+            message_id: mime::new_message_id(&me.address),
+            ..Default::default()
+        };
+        if let Some(due) = m.due {
+            let key = super::imap_mail::snooze_key(mb, o.message_id.trim_matches(['<', '>']));
+            self.store
+                .kv_set(&key, &due.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))?;
+        }
+        let flags = if m.due.is_some() { "(\\Seen \\Flagged)" } else { "()" };
+        let raw = mime::build(&o, true)?.formatted();
+        let id = self.imap_append(mb, &folder.id, flags, &raw, &o.message_id).await?;
+        self.imap_sync_folder(mb, &folder.id, true).await?;
+        self.emit_mail_changed(mb, Some(&folder.id));
+        self.store
+            .get_summary(mb, &id)?
+            .ok_or_else(|| Error::NotFound("Nachricht".into()))
     }
 
     pub(crate) async fn imap_discard_draft(&self, mb: &str, id: Option<&str>) -> Result<()> {

@@ -331,9 +331,26 @@ fn build_message(mb: &Mailbox, body: &Value, draft: bool) -> Result<(Value, Vec<
     Ok((json, atts))
 }
 
+/// `PR_MESSAGE_FLAGS` (0x0E07) given on creation, like Exchange: bit 0x1 = read,
+/// bit 0x8 = unsent (draft). Lets clients import non-draft messages into any folder.
+fn message_flags(body: &Value) -> Option<i64> {
+    body["singleValueExtendedProperties"]
+        .as_array()?
+        .iter()
+        .find(|p| p["id"].as_str().is_some_and(|id| id.eq_ignore_ascii_case("Integer 0x0E07")))
+        .and_then(|p| p["value"].as_str().and_then(|v| v.parse().ok()).or(p["value"].as_i64()))
+}
+
 fn create_message(mb: &mut Mailbox, folder_id: &str, req: &Req) -> GResult {
     let body = req.json()?;
-    let (json, atts) = build_message(mb, &body, true)?;
+    let flags = message_flags(&body);
+    let (mut json, atts) = build_message(mb, &body, flags.is_none_or(|f| f & 8 != 0))?;
+    if let Some(f) = flags {
+        json["isRead"] = json!(f & 1 != 0);
+        if f & 8 == 0 {
+            json["sentDateTime"] = json["receivedDateTime"].clone();
+        }
+    }
     let m = Msg { id: new_id("AAMkAD"), folder_id: folder_id.to_string(), json, received: Utc::now(), attachments: atts, event_id: None };
     let id = mb.insert(m);
     created(mb.messages[&id].render())

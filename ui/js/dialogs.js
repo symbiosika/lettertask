@@ -82,11 +82,15 @@ export function promptDialog(message, { title = 'Eingabe', value = '', ok = 'OK'
 
 // ---------------- toast ----------------
 let toastHost;
-export function toast(message, kind = 'info', ms = 4500) {
+/** opts: { action: { label, onClick }, title } – optional button (e.g. "Rückgängig") and tooltip. */
+export function toast(message, kind = 'info', ms = 4500, opts = {}) {
   if (!toastHost) { toastHost = h('div.toast-host'); document.body.appendChild(toastHost); }
-  const t = h('div.toast.' + kind, { role: kind === 'error' ? 'alert' : 'status' },
+  const actionBtn = opts.action ? h('button.toast-action', { type: 'button', dataset: { testid: 'toast-action' } }, opts.action.label) : null;
+  const t = h('div.toast.' + kind, { role: kind === 'error' ? 'alert' : 'status', title: opts.title || null },
     h('span', { html: icon(kind === 'error' ? 'warning' : 'info', 16) }), h('span.toast-msg', message),
+    actionBtn,
     h('button.toast-x', { html: icon('close', 10), onclick: () => t.remove() }));
+  if (actionBtn) actionBtn.addEventListener('click', () => { t.remove(); Promise.resolve().then(opts.action.onClick).catch(reportError); });
   toastHost.appendChild(t);
   setTimeout(() => t.classList.add('out'), ms);
   setTimeout(() => t.remove(), ms + 400);

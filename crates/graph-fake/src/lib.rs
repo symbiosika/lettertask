@@ -12,6 +12,7 @@ mod mail;
 mod misc;
 mod png;
 mod seed;
+pub mod smtp;
 mod state;
 mod util;
 

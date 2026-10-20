@@ -342,6 +342,9 @@ pub struct DraftInput {
     pub new_attachments: Vec<NewAttachment>,
     #[serde(default)]
     pub removed_attachment_ids: Vec<String>,
+    /// "Erinnerung an mich" after sending (ISO UTC).
+    #[serde(default)]
+    pub remind_at: Option<String>,
 }
 
 fn new_mode() -> String {
@@ -360,6 +363,7 @@ pub struct Config {
     pub list_mode: String,
     pub show_date_separators: bool,
     pub snooze_options: Vec<SnoozeOption>,
+    pub kanban_reading_pane: String,
     /// Read-only for the UI: set when running against the demo server.
     pub demo: bool,
     /// Read-only for the UI: a client ID was compiled into this build.
@@ -412,6 +416,7 @@ impl Default for Config {
             list_mode: "comfortable".into(),
             show_date_separators: true,
             snooze_options: default_snooze_options(),
+            kanban_reading_pane: "bottom".into(),
             demo: false,
             builtin_client_id: false,
         }

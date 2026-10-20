@@ -90,7 +90,10 @@ Draft {
   importance: "low"|"normal"|"high", requestReadReceipt: bool, attachments: Attachment[]
 }
 DraftInput = Draft (without attachments) & {
-  newAttachments: { name, contentType, contentBase64 }[], removedAttachmentIds: string[]
+  newAttachments: { name, contentType, contentBase64 }[], removedAttachmentIds: string[],
+  remindAt?: string|null   // "Erinnerung an mich": ISO UTC. After sending, a reminder mail
+                           // ("Nachfassen: <subject>", to = original recipients, replyTo = them,
+                           // body = sent text) is created directly in "Wiedervorlage", due at remindAt.
 }
 Config {
   clientId: string, tenant: string /* "organizations" default */, syncIntervalSecs: number,
@@ -102,6 +105,10 @@ Config {
   builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" */
 }
 SnoozeOption { label: string, rule: string }
+// Kanban lanes are categories named "[K_<lane>]" (LANE_PREFIX "[K_", suffix "]").
+// The UI hides them everywhere except the Kanban board. Lane names: letters, digits,
+// space, "-" and "_", 1–30 chars, unique per account.
+// Config also has: kanbanReadingPane: "bottom"|"right" (default "bottom").
 // rule grammar (evaluated in the UI, local time):  "<base>@HH:MM"
 //   base = "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
 // defaults: Morgen 8 Uhr = tomorrow@08:00, Übermorgen 8 Uhr = days:2@08:00, Am Wochenende = weekend@08:00,
@@ -152,6 +159,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `set_categories` | `{ mailboxId, ids, categories: string[] }` | `null` (replaces the list) |
 | `move_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `copy_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
+| `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)": a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" → Posteingang (unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
 | `get_message_source` | `{ mailboxId, messageId }` | `string` (MIME source, for "Quelltext anzeigen") |
@@ -167,6 +175,19 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 `create_draft` inserts the account's default signature according to SignatureSettings
 (`useOnNew` / `useOnReply` for reply+replyAll / `useOnForward`). The signature is wrapped in
 `<div class="signature" data-signature-id="…">…</div>` so the compose window can swap it.
+
+### Inbox rules (automatic, before display)
+New mails arriving in the inbox pass a rule chain during sync **before** `mail-changed` is emitted;
+matched mails are moved server-side and never show up in the inbox list. Rule 1: mails from
+yourself to yourself whose subject contains a due token are snoozed accordingly:
+`#heute` (today 17:00, or +1h if later), `#morgen`, `#übermorgen`, `#wochenende`, `#nächstewoche`,
+`#<N>t` / `#<N>d` (in N days), `#<N>w` (in N weeks) — times per the matching snooze option or 08:00.
+Event `rules-applied` `{ mailboxId, count, subjects: string[] }` after mails were moved.
+
+### Kanban lanes (per account)
+| `get_lanes` | `{ accountId }` | `string[]` lane names in order |
+| `save_lanes` | `{ accountId, lanes: string[] }` | `string[]` — validates names, creates missing "[K_…]" categories (O365 master categories / IMAP local), deletes categories of removed lanes and strips them from cached messages; renaming = remove + add |
+| `set_lane` | `{ mailboxId, ids, lane: string\|null }` | `null` — replaces any "[K_…]" category on the messages, keeps all other categories; null = no lane |
 
 ### Signatures (per account, stored locally)
 | `get_signatures` | `{ accountId }` | `SignatureSettings` |

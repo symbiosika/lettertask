@@ -13,6 +13,34 @@ use crate::model::{Account, Mailbox};
 
 const SETTINGS_KEY: &str = "imap";
 
+/// Exclusive use of an account's IMAP session.
+pub(crate) struct ImapGuard(tokio::sync::OwnedMutexGuard<Option<Conn>>);
+
+impl ImapGuard {
+    pub(crate) fn conn(&mut self) -> &mut Conn {
+        self.0.as_mut().expect("connected")
+    }
+
+    /// Passes `r` through; drops the session after connection errors.
+    pub(crate) fn finish<T>(mut self, r: Result<T>) -> Result<T> {
+        if r.as_ref().is_err_and(|e| e.is_network()) {
+            *self.0 = None;
+        }
+        r
+    }
+}
+
+/// Runs a block with `$c: &mut Conn` on the account's IMAP session.
+macro_rules! with_imap {
+    ($svc:expr, $acc:expr, |$c:ident| $body:block) => {{
+        let mut guard = $svc.imap_conn($acc).await?;
+        let $c: &mut $crate::imap::conn::Conn = guard.conn();
+        let r: $crate::error::Result<_> = async { $body }.await;
+        guard.finish(r)
+    }};
+}
+pub(crate) use with_imap;
+
 fn pass_key(account_id: &str) -> String {
     format!("imap-pass:{account_id}")
 }
@@ -65,31 +93,24 @@ impl Service {
         }
     }
 
-    /// Runs `f` on the account's cached IMAP session, connecting on demand.
-    /// A failed reused session (e.g. dropped by the server while idle) is
-    /// replaced once and `f` is retried.
-    pub(crate) async fn with_imap<T>(&self, account_id: &str, f: impl AsyncFn(&mut Conn) -> Result<T>) -> Result<T> {
+    /// The account's cached IMAP session (connecting on demand). A reused
+    /// session is checked with NOOP first, so sessions the server dropped
+    /// while idle are replaced transparently.
+    pub(crate) async fn imap_conn(&self, account_id: &str) -> Result<ImapGuard> {
         let slot = self.imap.slot(account_id);
-        let mut guard = slot.lock().await;
-        let mut fresh = false;
-        if guard.is_none() {
-            *guard = Some(self.imap_connect(account_id).await?);
-            fresh = true;
-        }
-        loop {
-            let conn = guard.as_mut().expect("connected");
-            match f(conn).await {
-                Err(e) if e.is_network() => {
-                    *guard = None;
-                    if fresh {
-                        return Err(e);
-                    }
-                    *guard = Some(self.imap_connect(account_id).await?);
-                    fresh = true;
-                }
-                other => return other,
+        let mut guard = slot.lock_owned().await;
+        if let Some(c) = guard.as_mut() {
+            let alive = tokio::time::timeout(std::time::Duration::from_secs(10), c.s().noop())
+                .await
+                .is_ok_and(|r| r.is_ok());
+            if !alive {
+                *guard = None;
             }
         }
+        if guard.is_none() {
+            *guard = Some(self.imap_connect(account_id).await?);
+        }
+        Ok(ImapGuard(guard))
     }
 
     async fn imap_connect(&self, account_id: &str) -> Result<Conn> {

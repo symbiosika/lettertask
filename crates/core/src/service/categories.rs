@@ -10,6 +10,9 @@ const CACHE_KEY: &str = "categories";
 
 impl Service {
     pub(crate) async fn list_categories(&self, account_id: &str) -> Result<Vec<Category>> {
+        if crate::imap::is_imap_id(account_id) {
+            return self.imap_categories(account_id);
+        }
         let c = self.client(account_id)?;
         match c.get_all("/me/outlook/masterCategories", &[], 1000).await {
             Ok(list) => {
@@ -26,6 +29,9 @@ impl Service {
     }
 
     pub(crate) async fn create_category(&self, account_id: &str, name: &str, color: &str) -> Result<Category> {
+        if crate::imap::is_imap_id(account_id) {
+            return self.imap_create_category(account_id, name, color);
+        }
         let name = name.trim();
         if name.is_empty() {
             return Err(Error::invalid("Name der Kategorie fehlt."));
@@ -49,6 +55,9 @@ impl Service {
     }
 
     pub(crate) async fn update_category(&self, account_id: &str, id: &str, color: &str) -> Result<Category> {
+        if crate::imap::is_imap_id(account_id) {
+            return self.imap_update_category(account_id, id, color);
+        }
         validate_color(color)?;
         let c = self.client(account_id)?;
         let path = format!("/me/outlook/masterCategories/{}", seg(id));
@@ -59,6 +68,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_category(&self, account_id: &str, id: &str) -> Result<()> {
+        if crate::imap::is_imap_id(account_id) {
+            return self.imap_delete_category(account_id, id);
+        }
         let c = self.client(account_id)?;
         c.delete(&format!("/me/outlook/masterCategories/{}", seg(id)))
             .await?;
