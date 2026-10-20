@@ -8,10 +8,11 @@ import { createEditor } from './editor.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById } from './state.js';
 import { duePicker } from './due.js';
 import { broadcast } from './bus.js';
+import { RECURRENCE_OPTIONS } from './recurrence.js';
 
 const P = params();
 const st = { mailboxId: P.mailboxId || null, dirty: false, busy: false, closing: false };
-let subject, editor, due, createBtn;
+let subject, editor, due, createBtn, repeat;
 
 function markDirty() { st.dirty = true; }
 
@@ -40,10 +41,16 @@ function render() {
   subject.addEventListener('input', () => { markDirty(); document.title = subject.value.trim() ? `Aufgabe: ${subject.value.trim()}` : 'Neue Aufgabe'; });
   due = duePicker({ config: state.config, allowNow: true, variant: 'chips', testid: 'task-due', onChange: markDirty });
 
+  repeat = h('select.input.task-repeat', { name: 'recurrence', dataset: { testid: 'task-repeat' }, 'aria-label': 'Wiederholen' });
+  for (const [k, label] of RECURRENCE_OPTIONS) repeat.appendChild(h('option', { value: k || '' }, label));
+  repeat.addEventListener('change', () => { markDirty(); repeatHint.textContent = repeat.value ? 'Beim Archivieren wird die nächste Wiederholung automatisch auf Wiedervorlage gelegt.' : ''; });
+  const repeatHint = h('span.task-hint');
+
   form.append(
     h('div.task-row.task-meta', h('span.task-lbl', 'Für'), fromChip, h('span.task-hint', 'Aufgabe an mich selbst – ohne Empfänger')),
     h('div.task-row', subject),
     h('div.task-row.task-due', h('span.task-lbl', { html: icon('snooze', 15) + '<span>Fällig</span>' }), due.el),
+    h('div.task-row', h('span.task-lbl', { html: icon('repeat', 15) + '<span>Wiederholen</span>' }), repeat, repeatHint),
   );
 
   editor = createEditor({ onInput: markDirty, minHeight: 180 });
@@ -65,7 +72,7 @@ async function create() {
   st.busy = true;
   createBtn.disabled = true;
   try {
-    await call('create_task', { mailboxId: st.mailboxId, subject: text, bodyHtml: editor.getHtml(), due: d.date ? d.date.toISOString() : null });
+    await call('create_task', { mailboxId: st.mailboxId, subject: text, bodyHtml: editor.getHtml(), due: d.date ? d.date.toISOString() : null, recurrence: repeat.value || null });
     broadcast({ type: 'task-created', subject: text, due: d.date ? due.label() : null });
     st.dirty = false; st.closing = true;
     await closeWindow();

@@ -378,8 +378,20 @@ impl Service {
         Ok(v)
     }
 
-    fn summaries_from(&self, mb: &str, folder: &str, uv: u32, items: Vec<Fetched>, snoozed: bool) -> Vec<MessageSummary> {
-        items
+    /// Summaries of fetched messages. In the snooze folder, mails without a
+    /// `$due_` keyword fall back to a locally stored due time (servers without
+    /// custom keywords, or data from older versions); those are returned as
+    /// `(uid, due, kv key)` so the caller can migrate them to a keyword.
+    fn summaries_from(
+        &self,
+        mb: &str,
+        folder: &str,
+        uv: u32,
+        items: Vec<Fetched>,
+        snoozed: bool,
+    ) -> (Vec<MessageSummary>, Vec<(u32, String, String)>) {
+        let mut local = Vec::new();
+        let list = items
             .into_iter()
             .filter_map(|f| {
                 let header = f.header.as_deref().or(f.body.as_deref())?;
@@ -392,12 +404,19 @@ impl Service {
                     &f.flags,
                     f.internal_date,
                 );
-                if snoozed && !s.conversation_id.is_empty() {
-                    s.due_at = self.store.kv_get(&snooze_key(mb, &s.conversation_id)).ok().flatten().filter(|d| !d.is_empty());
+                if snoozed && s.due_at.is_none() {
+                    if let Some(mid) = mime::message_id_of(header) {
+                        let key = snooze_key(mb, &mid);
+                        if let Some(due) = self.store.kv_get(&key).ok().flatten().filter(|d| !d.is_empty()) {
+                            s.due_at = Some(due.clone());
+                            local.push((f.uid, due, key));
+                        }
+                    }
                 }
                 Some(s)
             })
-            .collect()
+            .collect();
+        (list, local)
     }
 
     pub(crate) async fn imap_sync_folder(&self, mb: &str, folder: &str, quiet: bool) -> Result<SyncResult> {
@@ -415,6 +434,7 @@ impl Service {
             flags: HashMap<u32, Vec<String>>,
             all_new: bool,
             reset: bool,
+            keywords_ok: bool,
         }
         let out = with_imap!(self, mb, |c| {
                 let sel = c.select(folder).await?;
@@ -452,6 +472,7 @@ impl Service {
                 }
                 let unseen = if sel.exists > 0 { uid_search(c, "UNSEEN").await?.len() } else { 0 };
                 Ok(Outcome {
+                    keywords_ok: may_create_keywords(&sel),
                     uv,
                     exists: sel.exists,
                     unseen,
@@ -463,6 +484,7 @@ impl Service {
             })?;
 
         let mut result = SyncResult::default();
+        let mut migrate: Vec<(u32, String, String)> = Vec::new();
         let initial = cached_before.is_empty() || out.reset;
         if out.reset {
             self.store.delete_folder_messages(mb, folder)?;
@@ -479,10 +501,24 @@ impl Service {
                     Some(fl) => {
                         if let Some(mut m) = self.store.get_summary(mb, id)? {
                             let (r, f, cats) = (mime::has_flag(fl, "\\Seen"), mime::flag_status(fl), mime::categories(fl));
-                            if m.is_read != r || m.flag != f || m.categories != cats {
+                            let due = match mime::due(fl) {
+                                Some(d) => Some(d),
+                                // Locally known due time: keep it, and move it onto the
+                                // server when keywords are possible.
+                                None if m.due_at.is_some() && snoozed => {
+                                    if out.keywords_ok {
+                                        migrate.push((*uid, m.due_at.clone().unwrap_or_default(), String::new()));
+                                    }
+                                    m.due_at.clone()
+                                }
+                                None => None,
+                            };
+                            if m.is_read != r || m.flag != f || m.categories != cats || m.due_at != due {
                                 m.is_read = r;
                                 m.flag = f;
+                                m.recurrence = crate::model::recurrence_of(&cats);
                                 m.categories = cats;
+                                m.due_at = due;
                                 changed.push(m);
                             }
                         }
@@ -493,7 +529,10 @@ impl Service {
             self.store.upsert_messages(&changed)?;
         }
         self.store.kv_set(&uv_key(mb, folder), &out.uv.to_string())?;
-        let new = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
+        let (new, local_due) = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
+        if out.keywords_ok {
+            migrate.extend(local_due);
+        }
         result.added = new.len() as i64;
         let mut new_unread: Vec<MessageSummary> = new.iter().filter(|m| !m.is_read && !m.is_draft).cloned().collect();
         self.store.upsert_messages(&new)?;
@@ -506,6 +545,9 @@ impl Service {
             self.store.upsert_folder(&f)?;
         }
         drop(guard);
+        if !migrate.is_empty() {
+            self.imap_migrate_due(mb, folder, &migrate).await?;
+        }
         let is_inbox = folder.eq_ignore_ascii_case("INBOX");
         if !initial && is_inbox && !new_unread.is_empty() {
             // Rule chain runs before the new mails are announced to the UI.
@@ -558,7 +600,7 @@ impl Service {
                 let items = if take.is_empty() { vec![] } else { uid_fetch(c, &im::uid_set(&take), &summary_query()).await? };
                 Ok((sel.uid_validity.unwrap_or(0), items, more))
             })?;
-        let list = self.summaries_from(mb, folder, uv, items, snoozed);
+        let (list, _) = self.summaries_from(mb, folder, uv, items, snoozed);
         self.store.upsert_messages(&list)?;
         if !more {
             self.store.set_fully_loaded(mb, folder, true)?;
@@ -621,7 +663,7 @@ impl Service {
             })?;
         let mut out = Vec::new();
         for (f, uv, items) in found {
-            out.extend(self.summaries_from(mb, &f, uv, items, false));
+            out.extend(self.summaries_from(mb, &f, uv, items, false).0);
         }
         out.sort_by(|a, b| b.received_at.cmp(&a.received_at));
         out.truncate(100);
