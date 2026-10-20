@@ -59,6 +59,36 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
     serde_json::from_value(v).map_err(|e| Error::invalid(format!("Parameter '{name}': {e}")))
 }
 
+/// Ids become URL path segments ("…/mailFolders/{id}/messages"). "." and ".."
+/// (also percent-encoded) would be normalised away and silently retarget the
+/// request – e.g. emptying "folder .." would delete the whole mailbox.
+fn check_ids(v: &Value) -> Result<()> {
+    fn dot_segment(s: &str) -> bool {
+        let t = s.trim().to_ascii_lowercase().replace("%2e", ".");
+        t == "." || t == ".."
+    }
+    fn check_value(v: &Value) -> Result<()> {
+        match v {
+            Value::String(s) if dot_segment(s) => Err(Error::invalid(format!("Ungültige ID: {s}"))),
+            Value::Array(a) => a.iter().try_for_each(check_value),
+            _ => Ok(()),
+        }
+    }
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k == "id" || k == "ids" || k.ends_with("Id") || k.ends_with("Ids") {
+                    check_value(x)?;
+                }
+                check_ids(x)?;
+            }
+            Ok(())
+        }
+        Value::Array(a) => a.iter().try_for_each(check_ids),
+        _ => Ok(()),
+    }
+}
+
 fn ok<T: serde::Serialize>(v: T) -> Result<Value> {
     Ok(serde_json::to_value(v)?)
 }
@@ -66,6 +96,12 @@ fn ok<T: serde::Serialize>(v: T) -> Result<Value> {
 impl Service {
     pub fn new(opts: ServiceOptions, host: Arc<dyn Host>) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&opts.data_dir)?;
+        // The cache holds whole mailboxes (and maybe the token file): owner only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&opts.data_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
         let store = Store::open(&opts.data_dir.join("cache.db"))?;
         let mut config: Config = std::fs::read_to_string(opts.data_dir.join("config.json"))
             .ok()
@@ -84,7 +120,7 @@ impl Service {
             store,
             config: RwLock::new(config),
             clients: RwLock::new(HashMap::new()),
-            host,
+            host: Arc::new(crate::host::Guarded(host)),
             active_folders: RwLock::new(HashMap::new()),
             folder_locks: Default::default(),
             sync_all_lock: tokio::sync::Mutex::new(()),
@@ -182,6 +218,7 @@ impl Service {
 
     /// Single entry point for the UI.
     pub async fn dispatch(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
+        check_ids(&args)?;
         let a = &args;
         match cmd {
             // ---- app / accounts ----
