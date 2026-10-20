@@ -96,3 +96,65 @@ test('Standardsignatur bei Neu und Antwort, nicht bei Weiterleitung; Wechsel per
   expect(first).toBeLessThan(3);
   await popup.close({ runBeforeUnload: false });
 });
+
+// Pastes into the signature editor like the browser would (clipboard event with
+// HTML and/or an image file). In `html`, {{data}} / {{blob}} stand for PNG as
+// data: or blob: URL; `file` also puts the PNG itself on the clipboard.
+// 4×3 px red PNG.
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAEklEQVR4nGM4wMDwHxkzEBQAABIxFPWBseCeAAAAAElFTkSuQmCC';
+
+async function pasteIntoSig(page, { html = '', file = false }) {
+  const f = await (await page.locator('.sig-editor-box iframe.editor-frame').elementHandle()).contentFrame();
+  await f.locator('body').click();
+  // Synchronous on purpose: the sandboxed editor frame runs no scripts of its
+  // own, so promise callbacks queued in its realm would never run.
+  await f.evaluate(({ html, file, png }) => {
+    const blob = new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: 'image/png' });
+    html = html.replaceAll('{{data}}', 'data:image/png;base64,' + png).replaceAll('{{blob}}', () => URL.createObjectURL(blob));
+    const dt = new DataTransfer();
+    if (html) dt.setData('text/html', html);
+    if (file) dt.items.add(new File([blob], 'logo.png', { type: 'image/png' }));
+    document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, { html, file, png: PNG });
+}
+
+async function savedSig(page, name) {
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+  const accountId = (await api(page, 'list_accounts'))[0].id;
+  const saved = await api(page, 'get_signatures', { accountId });
+  return saved.signatures.find((s) => s.name === name);
+}
+
+test('Aus einer Mail kopierte HTML-Signatur mit Bild wird gespeichert', async ({ page }) => {
+  await openApp(page);
+  await openSignatures(page);
+  await page.locator('[data-testid=sig-new]').click();
+  // focused once the editor has loaded the new (empty) signature
+  await expect(page.locator('input[name=sigName]')).toBeFocused();
+  await page.locator('input[name=sigName]').fill('Eingefügt');
+  await pasteIntoSig(page, { html: '<html><head><style>p.MsoNormal{margin:0}</style></head><body><!--StartFragment--><p class="MsoNormal">Viele Grüße<o:p></o:p></p><p><img src="{{data}}" width="120"></p><p>Contoso GmbH</p><!--EndFragment--></body></html>' });
+  await expect(page.frameLocator('.sig-editor-box iframe.editor-frame').locator('img')).toHaveCount(1);
+  const sig = await savedSig(page, 'Eingefügt');
+  expect(sig.html).toContain('Contoso GmbH');
+  expect(sig.html).toMatch(/<img[^>]+src="data:image\/png;base64,/);
+});
+
+test('Eingefügte blob:-Bilder und reine Bilder werden als data-URL eingebettet', async ({ page }) => {
+  await openApp(page);
+  await openSignatures(page);
+  await page.locator('[data-testid=sig-new]').click();
+  // focused once the editor has loaded the new (empty) signature
+  await expect(page.locator('input[name=sigName]')).toBeFocused();
+  await page.locator('input[name=sigName]').fill('Blob');
+  // WebKit hands out pasted images as blob: URLs.
+  await pasteIntoSig(page, { html: '<p>Logo:</p><img src="{{blob}}">' });
+  const imgs = page.frameLocator('.sig-editor-box iframe.editor-frame').locator('img');
+  await expect(imgs.first()).toHaveAttribute('src', /^data:image\/png;base64,/);
+  // Image only on the clipboard (no HTML).
+  await pasteIntoSig(page, { file: true });
+  await expect(imgs).toHaveCount(2);
+  const sig = await savedSig(page, 'Blob');
+  expect(sig.html).not.toContain('blob:');
+  expect(sig.html.match(/src="data:image\/png;base64,/g)).toHaveLength(2);
+});

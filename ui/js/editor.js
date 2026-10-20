@@ -22,6 +22,34 @@ function splitHtml(html) {
   return { styles, body: doc.body ? doc.body.innerHTML : '' };
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+/**
+ * WebKit hands out pasted images as blob: URLs, which only live as long as the
+ * document. Replace them with data URLs so the HTML can be stored and sent.
+ */
+async function embedBlobImages(doc) {
+  const imgs = [...doc.querySelectorAll('img')].filter((i) => /^blob:/i.test(i.getAttribute('src') || ''));
+  await Promise.all(imgs.map(async (img) => {
+    try {
+      if (!img.complete) await new Promise((r) => { img.addEventListener('load', r, { once: true }); img.addEventListener('error', r, { once: true }); });
+      if (!img.naturalWidth) return;
+      const c = doc.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      img.setAttribute('src', c.toDataURL('image/png'));
+    } catch (e) { console.warn('Bild konnte nicht übernommen werden', e); }
+  }));
+}
+
 export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
@@ -36,10 +64,22 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
-        const raw = e.clipboardData && e.clipboardData.getData('text/html');
-        if (!raw) return;
+        const cd = e.clipboardData;
+        const raw = cd && cd.getData('text/html');
+        const files = cd ? [...cd.files].filter((f) => /^image\//.test(f.type)) : [];
+        if (!raw && !files.length) return;
         e.preventDefault();
-        doc.execCommand('insertHTML', false, splitHtml(raw).body);
+        const target = doc;
+        (async () => {
+          let html = raw ? splitHtml(raw).body : '';
+          // Image only (screenshot, copied picture): embed it as data URL.
+          if (!html) html = (await Promise.all(files.map(fileToDataUrl))).map((u) => `<img src="${u}">`).join('');
+          if (target !== doc) return;
+          doc.execCommand('insertHTML', false, html);
+          await embedBlobImages(doc);
+          // Not every engine reports insertHTML as an input event.
+          onInput && onInput();
+        })().catch(console.warn);
       });
       doc.addEventListener('keydown', (e) => {
         // forward window shortcuts (Ctrl+Enter send, Ctrl+S save, Esc)
@@ -54,7 +94,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
 
   function setContent(x) {
     const { styles, body } = splitHtml(x);
-    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}</style>${styles}</head><body>${body}</body></html>`;
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}</style>${styles}</head><body>${body}</body></html>`;
   }
 
   const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
@@ -137,7 +177,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
     doc: () => doc,
     /** Notifies listeners after programmatic changes. */
     changed: () => onInput && onInput(),
-    setHtml: async (x) => { pending = x; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
+    setHtml: async (x) => { pending = x; doc = null; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
     focus: async () => {
       await ready;
       frame.contentWindow.focus();
