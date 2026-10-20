@@ -474,3 +474,39 @@ async fn throttled_delta_page_is_retried_mid_sync() {
     let r = ctx.sync(&inbox.id).await;
     assert_eq!(r.added, 60);
 }
+
+/// App restart with a stored Microsoft 365 login: the restored client starts
+/// with an expired access token and must refresh it – not panic (0.3.0 crashed
+/// with "`DateTime - TimeDelta` overflowed" and the UI stayed empty).
+#[tokio::test]
+async fn restart_with_stored_login_syncs() {
+    use mailcore::host::NullHost;
+    use mailcore::tokens::{MemoryTokenStore, TokenStore};
+    use mailcore::{Service, ServiceOptions};
+
+    let fake = graph_fake::spawn(graph_fake::FakeOptions { seed_demo: true, now: chrono::Utc::now() }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let tokens: std::sync::Arc<dyn TokenStore> = std::sync::Arc::new(MemoryTokenStore::default());
+    let opts = || ServiceOptions {
+        data_dir: dir.path().to_path_buf(),
+        graph_base: format!("{}/v1.0", fake.base_url),
+        authority: fake.base_url.clone(),
+        demo: true,
+        token_store: tokens.clone(),
+    };
+    let first = Service::new(opts(), std::sync::Arc::new(NullHost::default())).unwrap();
+    first.ensure_demo_account().await.unwrap();
+    drop(first);
+
+    let svc = Service::new(opts(), std::sync::Arc::new(NullHost::default())).unwrap();
+    let accounts: Vec<Account> = call(&svc, "list_accounts", json!({})).await;
+    let mb = accounts[0].id.clone();
+    let folders = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        svc.dispatch("sync_folders", json!({"mailboxId": mb})),
+    )
+    .await
+    .expect("sync_folders hangs")
+    .expect("sync_folders failed");
+    assert!(folders.as_array().is_some_and(|f| !f.is_empty()));
+}

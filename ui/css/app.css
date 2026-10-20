@@ -156,6 +156,8 @@ kbd { font-family: inherit; }
 .dot.syncing { background: #e0a100; animation: pulse 1s ease-in-out infinite alternate; }
 .dot.offline { background: #9aa1ab; }
 .dot.error { background: var(--danger); }
+.sb-status .st.err { color: var(--danger); cursor: pointer; }
+.err-detail { white-space: pre-wrap; word-break: break-word; background: var(--hover); padding: 10px; border-radius: var(--radius-sm); font-size: 12px; max-height: 240px; overflow: auto; margin: 0; }
 @keyframes pulse { to { opacity: .35; } }
 .badge { padding: 1px 7px; border-radius: 999px; background: #fff1c2; color: #7a5800; font-weight: 600; font-size: 10.5px; letter-spacing: .02em; }
 .sb-nav { flex: none; display: flex; border-top: 1px solid var(--border); background: var(--side); }

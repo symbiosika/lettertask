@@ -37,13 +37,42 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: "lettertask v__VERSION__"
           releaseDraft: true
-      - uses: actions/upload-artifact@v4
+      # Each installer as its own artifact, downloadable as the file itself
+      # (no ZIP): upload-artifact v7 with archive: false takes exactly one file.
+      - name: Installer-Dateien finden
+        id: files
+        shell: bash
+        run: |
+          pick() { ls target/release/bundle/$1 2>/dev/null | head -n 1; }
+          {
+            echo "deb=$(pick 'deb/*.deb')"
+            echo "appimage=$(pick 'appimage/*.AppImage')"
+            echo "msi=$(pick 'msi/*.msi')"
+            echo "exe=$(pick 'nsis/*.exe')"
+            echo "dmg=$(pick 'dmg/*.dmg')"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.files.outputs.deb != ''
+        uses: actions/upload-artifact@v7
         with:
-          name: installer-${{ matrix.platform }}
-          path: |
-            target/release/bundle/**/*.msi
-            target/release/bundle/**/*.exe
-            target/release/bundle/**/*.dmg
-            target/release/bundle/**/*.deb
-            target/release/bundle/**/*.AppImage
-          if-no-files-found: ignore
+          path: ${{ steps.files.outputs.deb }}
+          archive: false
+      - if: steps.files.outputs.appimage != ''
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.files.outputs.appimage }}
+          archive: false
+      - if: steps.files.outputs.msi != ''
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.files.outputs.msi }}
+          archive: false
+      - if: steps.files.outputs.exe != ''
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.files.outputs.exe }}
+          archive: false
+      - if: steps.files.outputs.dmg != ''
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.files.outputs.dmg }}
+          archive: false
