@@ -42,8 +42,10 @@ pub fn build(base_url: &str, opts: &FakeOptions) -> State {
         mailboxes: vec![primary, shared],
         auth: AuthState::default(),
         uploads: HashMap::new(),
-        fail_next: None,
+        faults: Default::default(),
         request_count: 0,
+        token_requests: 0,
+        refresh_revoked: false,
     }
 }
 

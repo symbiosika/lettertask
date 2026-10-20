@@ -24,11 +24,12 @@ fn opt_s(v: &Value, key: &str) -> Option<String> {
 }
 
 pub fn address(v: &Value) -> Option<Address> {
-    let ea = v.get("emailAddress")?;
-    Some(Address {
-        name: s(ea, "name"),
-        address: s(ea, "address"),
-    })
+    let ea = v.get("emailAddress").filter(|e| e.is_object())?;
+    let a = Address {
+        name: s(ea, "name").trim().to_string(),
+        address: s(ea, "address").trim().to_string(),
+    };
+    (!a.name.is_empty() || !a.address.is_empty()).then_some(a)
 }
 
 pub fn addresses(v: &Value, key: &str) -> Vec<Address> {
@@ -234,15 +235,15 @@ pub fn resolve_tz(name: &str) -> Option<chrono_tz::Tz> {
     n.parse::<chrono_tz::Tz>().ok()
 }
 
-/// Wall time in `tz` → UTC. Times in a DST gap move forward by the gap (like
-/// Outlook), ambiguous times take the first (summer time) instant.
+/// Wall time in `tz` → UTC. Times in a DST gap move to the first valid wall
+/// time after it, ambiguous times take the first (summer time) instant.
 pub fn local_to_utc(local: NaiveDateTime, tz: chrono_tz::Tz) -> DateTime<Utc> {
     use chrono::LocalResult;
     match tz.from_local_datetime(&local) {
         LocalResult::Single(d) => d.with_timezone(&Utc),
         LocalResult::Ambiguous(a, _) => a.with_timezone(&Utc),
         LocalResult::None => {
-            // Skip forward minute by minute until the wall clock exists again.
+            // Move to the first wall time after the gap.
             (1..=180)
                 .find_map(|m| tz.from_local_datetime(&(local + chrono::Duration::minutes(m))).earliest())
                 .map(|d| d.with_timezone(&Utc))
@@ -315,9 +316,11 @@ pub fn message_summary(v: &Value, mailbox_id: &str, fallback_folder: &str) -> Me
         has_attachments: v["hasAttachments"].as_bool().unwrap_or(false),
         categories: string_list(v, "categories"),
         preview: s(v, "bodyPreview"),
+        // A completed flag keeps its old due date on the server; it is no longer due.
         due_at: v["flag"]
             .get("dueDateTime")
             .filter(|d| !s(d, "dateTime").is_empty())
+            .filter(|_| v["flag"]["flagStatus"].as_str() != Some("complete"))
             .map(dt_tz),
         recurrence: recurrence_of(&string_list(v, "categories")),
     }
@@ -702,5 +705,279 @@ mod tests {
         assert_eq!(g["start"]["dateTime"], "2026-10-20T00:00:00");
         assert_eq!(g["end"]["dateTime"], "2026-10-21T00:00:00");
         assert!(g["recurrence"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    fn dtz(dt: &str, tz: &str) -> String {
+        dt_tz(&json!({"dateTime": dt, "timeZone": tz}))
+    }
+
+    #[test]
+    fn every_windows_zone_resolves() {
+        for (win, iana) in WINDOWS_ZONES {
+            assert!(iana.parse::<chrono_tz::Tz>().is_ok(), "{win} → {iana}");
+            assert!(resolve_tz(win).is_some(), "{win}");
+        }
+        assert_eq!(resolve_tz("w. europe standard time"), Some(chrono_tz::Europe::Berlin));
+        assert_eq!(resolve_tz(" Europe/Berlin "), Some(chrono_tz::Europe::Berlin));
+        for utc in ["", "UTC", "utc", "Etc/GMT", "GMT", "tzone://Microsoft/Utc", "Coordinated Universal Time"] {
+            assert!(resolve_tz(utc).is_some_and(|z| z.name().contains("UTC")), "{utc:?}");
+        }
+        assert!(resolve_tz("Customized Time Zone").is_none());
+        assert!(resolve_tz("Mars/Olympus_Mons").is_none());
+    }
+
+    #[test]
+    fn date_time_time_zone_conversion() {
+        // The live bug: wall time in the event's zone must not be read as UTC.
+        assert_eq!(dtz("2026-11-19T10:00:00.0000000", "Europe/Berlin"), "2026-11-19T09:00:00Z");
+        assert_eq!(dtz("2026-11-19T10:00:00.0000000", "W. Europe Standard Time"), "2026-11-19T09:00:00Z");
+        assert_eq!(dtz("2026-07-01T10:00:00", "W. Europe Standard Time"), "2026-07-01T08:00:00Z");
+        assert_eq!(dtz("2026-11-19T10:00:00", "Eastern Standard Time"), "2026-11-19T15:00:00Z");
+        assert_eq!(dtz("2026-11-19T10:00:00", "India Standard Time"), "2026-11-19T04:30:00Z");
+        assert_eq!(dtz("2026-11-19T10:00:00", "UTC"), "2026-11-19T10:00:00Z");
+        assert_eq!(dtz("2026-11-19T10:00", "UTC"), "2026-11-19T10:00:00Z");
+        // Explicit offsets win over the label.
+        assert_eq!(dtz("2026-11-19T10:00:00+01:00", "Pacific Standard Time"), "2026-11-19T09:00:00Z");
+        // Unknown zone: wall time is kept (better than failing).
+        assert_eq!(dtz("2026-11-19T10:00:00", "Customized Time Zone"), "2026-11-19T10:00:00Z");
+        assert_eq!(dtz("", "Europe/Berlin"), "");
+        assert_eq!(dt_tz(&Value::Null), "");
+        assert_eq!(dtz("kaputt", "Europe/Berlin"), "kaputt");
+        assert!(dt_tz_resolvable(&json!({"dateTime": "2026-11-19T10:00:00", "timeZone": "Romance Standard Time"})));
+        assert!(!dt_tz_resolvable(&json!({"dateTime": "2026-11-19T10:00:00", "timeZone": "Customized Time Zone"})));
+    }
+
+    #[test]
+    fn dst_gaps_and_overlaps() {
+        let berlin = chrono_tz::Europe::Berlin;
+        let n = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").unwrap();
+        // 02:30 does not exist on 2027-03-28: moves to 03:00 CEST.
+        assert_eq!(local_to_utc(n("2027-03-28T02:30:00"), berlin).to_rfc3339(), "2027-03-28T01:00:00+00:00");
+        // 02:30 exists twice on 2026-10-25: the first (CEST) instant.
+        assert_eq!(local_to_utc(n("2026-10-25T02:30:00"), berlin).to_rfc3339(), "2026-10-25T00:30:00+00:00");
+        assert_eq!(dtz("2026-10-25T03:00:00", "Europe/Berlin"), "2026-10-25T02:00:00Z");
+        assert_eq!(dtz("2027-03-28T03:00:00", "Europe/Berlin"), "2027-03-28T01:00:00Z");
+    }
+
+    #[test]
+    fn all_day_events_are_floating() {
+        let v = json!({"id": "e", "isAllDay": true,
+            "start": {"dateTime": "2026-10-24T00:00:00.0000000", "timeZone": "W. Europe Standard Time"},
+            "end": {"dateTime": "2026-10-27T00:00:00.0000000", "timeZone": "W. Europe Standard Time"}});
+        let e = event(&v, "a", "c");
+        assert_eq!((e.start.as_str(), e.end.as_str()), ("2026-10-24T00:00:00Z", "2026-10-27T00:00:00Z"));
+        let mut timed = v.clone();
+        timed["isAllDay"] = json!(false);
+        assert_eq!(event(&timed, "a", "c").start, "2026-10-23T22:00:00Z");
+    }
+
+    #[test]
+    fn missing_and_null_fields() {
+        let m = message_summary(&json!({}), "mb", "inbox");
+        assert_eq!(m.folder_id, "inbox");
+        assert!(m.from.is_none() && m.to.is_empty() && m.categories.is_empty());
+        assert_eq!((m.importance.as_str(), m.flag.as_str()), ("normal", "notFlagged"));
+        assert!(m.is_read && !m.is_draft && m.due_at.is_none() && m.recurrence.is_none());
+        let m = message_summary(
+            &json!({"from": null, "toRecipients": null, "categories": null, "flag": null, "importance": null,
+                    "subject": null, "receivedDateTime": null, "isRead": null, "parentFolderId": ""}),
+            "mb",
+            "x",
+        );
+        assert_eq!(m.folder_id, "x");
+        assert!(m.from.is_none() && m.subject.is_empty() && m.received_at.is_empty());
+
+        let e = event(&json!({"id": "e1", "start": null, "location": null, "organizer": null, "attendees": null, "recurrence": null}), "a", "c");
+        assert!(e.start.is_empty() && e.location.is_empty() && e.organizer.is_none() && e.attendees.is_empty());
+        assert!(e.recurrence.is_none());
+        assert_eq!((e.kind.as_str(), e.show_as.as_str(), e.response_status.as_str()), ("singleInstance", "busy", "none"));
+        // Attendee without status/type.
+        let e = event(&json!({"attendees": [{"emailAddress": {"address": "x@y"}}]}), "a", "c");
+        assert_eq!((e.attendees[0].kind.as_str(), e.attendees[0].response.as_str()), ("required", "none"));
+        // onlineMeeting null but legacy url present.
+        let e = event(&json!({"onlineMeeting": null, "onlineMeetingUrl": "https://teams/x"}), "a", "c");
+        assert_eq!(e.online_meeting_url.as_deref(), Some("https://teams/x"));
+
+        let a = attachment(&json!({"size": null}));
+        assert_eq!((a.content_type.as_str(), a.size), ("application/octet-stream", 0));
+        let c = category(&json!({"displayName": "Info"}));
+        assert_eq!(c.color, "none");
+        let cal = calendar(&json!({"name": "K", "hexColor": "", "color": "lightBlue"}), "a");
+        assert_eq!(cal.color.as_deref(), Some("#a6d1f5"));
+        let cal = calendar(&json!({"name": "K", "color": "auto"}), "a");
+        assert!(cal.color.is_none() && cal.can_edit && !cal.is_default);
+        let ar = auto_reply_from_graph(&json!({}));
+        assert_eq!((ar.status.as_str(), ar.external_audience.as_str()), ("disabled", "all"));
+        assert!(ar.scheduled_start.is_none());
+    }
+
+    #[test]
+    fn odd_addresses() {
+        let v = json!({
+            "from": {"emailAddress": null},
+            "toRecipients": [
+                {"emailAddress": {"name": " Erika ", "address": " erika@x.example "}},
+                {"emailAddress": {"name": "", "address": ""}},
+                {"emailAddress": null},
+                {"foo": 1},
+                {"emailAddress": {"name": "Nur Name"}},
+                {"emailAddress": {"address": "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=MAX"}}
+            ]
+        });
+        let m = message_summary(&v, "mb", "f");
+        assert!(m.from.is_none());
+        let to: Vec<(String, String)> = m.to.into_iter().map(|a| (a.name, a.address)).collect();
+        assert_eq!(to.len(), 3);
+        assert_eq!(to[0], ("Erika".into(), "erika@x.example".into()));
+        assert_eq!(to[1].0, "Nur Name");
+        // Outgoing: blank addresses dropped, name falls back to the address.
+        let out = recipients_json(&[
+            Address { name: "".into(), address: " a@b.example ".into() },
+            Address { name: "X".into(), address: "  ".into() },
+            Address { name: " Ünïcødé 😀 ".into(), address: "u@b.example".into() },
+        ]);
+        assert_eq!(out.as_array().unwrap().len(), 2);
+        assert_eq!(out[0]["emailAddress"]["name"], "a@b.example");
+        assert_eq!(out[1]["emailAddress"]["name"], "Ünïcødé 😀");
+    }
+
+    #[test]
+    fn flags_importance_and_categories() {
+        let base = |flag: Value| json!({"flag": flag, "importance": "high", "categories": ["Info", 3, null, "[#weekly]", "[K_ToDo]"]});
+        let m = message_summary(
+            &base(json!({"flagStatus": "flagged", "dueDateTime": {"dateTime": "2026-10-21T08:00:00.0000000", "timeZone": "W. Europe Standard Time"}})),
+            "mb",
+            "f",
+        );
+        assert_eq!(m.due_at.as_deref(), Some("2026-10-21T06:00:00Z"));
+        assert_eq!(m.importance, "high");
+        assert_eq!(m.categories, ["Info", "[#weekly]", "[K_ToDo]"]);
+        assert_eq!(m.recurrence.as_deref(), Some("weekly"));
+        // Completed flags keep a due date on the server, but nothing is due any more.
+        let m = message_summary(
+            &base(json!({"flagStatus": "complete", "dueDateTime": {"dateTime": "2026-10-21T08:00:00", "timeZone": "UTC"}})),
+            "mb",
+            "f",
+        );
+        assert_eq!(m.flag, "complete");
+        assert!(m.due_at.is_none());
+        let m = message_summary(&base(json!({"flagStatus": "flagged", "dueDateTime": {"dateTime": "", "timeZone": "UTC"}})), "mb", "f");
+        assert!(m.due_at.is_none());
+        // Unknown recurrence tags are plain categories.
+        let m = message_summary(&json!({"categories": ["[#hourly]"]}), "mb", "f");
+        assert!(m.recurrence.is_none());
+    }
+
+    fn rec(pattern: &str) -> Recurrence {
+        Recurrence {
+            pattern: pattern.into(),
+            interval: 2,
+            days_of_week: vec![],
+            day_of_month: 0,
+            month: 0,
+            index: None,
+            start_date: "2026-11-01".into(),
+            end_date: None,
+            occurrences: None,
+        }
+    }
+
+    #[test]
+    fn recurrence_patterns_roundtrip() {
+        let mut cases = vec![rec("daily")];
+        let mut w = rec("weekly");
+        w.days_of_week = vec!["monday".into(), "friday".into()];
+        w.occurrences = Some(10);
+        cases.push(w);
+        let mut am = rec("absoluteMonthly");
+        am.day_of_month = 31;
+        am.end_date = Some("2027-12-31".into());
+        cases.push(am);
+        let mut rm = rec("relativeMonthly");
+        rm.days_of_week = vec!["tuesday".into()];
+        rm.index = Some("last".into());
+        cases.push(rm);
+        let mut ay = rec("absoluteYearly");
+        ay.day_of_month = 29;
+        ay.month = 2;
+        cases.push(ay);
+        let mut ry = rec("relativeYearly");
+        ry.days_of_week = vec!["friday".into()];
+        ry.index = Some("first".into());
+        ry.month = 3;
+        cases.push(ry);
+        for r in cases {
+            let g = recurrence_to_graph(&r, "Europe/Berlin");
+            assert_eq!(g["range"]["recurrenceTimeZone"], "Europe/Berlin");
+            let back = recurrence_from_graph(&g).unwrap();
+            assert_eq!(back, r, "{}", r.pattern);
+            assert!(same_recurrence(&back, &r));
+        }
+        // Relative patterns without index default to "first" on the wire.
+        let mut rm = rec("relativeMonthly");
+        rm.days_of_week = vec!["monday".into()];
+        assert_eq!(recurrence_to_graph(&rm, "UTC")["pattern"]["index"], "first");
+        // Out-of-range values are clamped instead of producing invalid requests.
+        let mut am = rec("absoluteYearly");
+        am.day_of_month = 40;
+        am.month = 13;
+        am.interval = 0;
+        let g = recurrence_to_graph(&am, "UTC");
+        assert_eq!(
+            (g["pattern"]["dayOfMonth"].as_i64(), g["pattern"]["month"].as_i64(), g["pattern"]["interval"].as_i64()),
+            (Some(31), Some(12), Some(1))
+        );
+    }
+
+    #[test]
+    fn recurrence_from_graph_shapes() {
+        // Graph fills unused fields with defaults.
+        let g = json!({
+            "pattern": {"type": "weekly", "interval": 1, "month": 0, "dayOfMonth": 0, "daysOfWeek": ["monday"], "firstDayOfWeek": "sunday", "index": "first"},
+            "range": {"type": "noEnd", "startDate": "2026-11-02", "endDate": "0001-01-01", "recurrenceTimeZone": "W. Europe Standard Time", "numberOfOccurrences": 0}
+        });
+        let r = recurrence_from_graph(&g).unwrap();
+        assert!(r.end_date.is_none() && r.occurrences.is_none() && r.index.is_none());
+        let mut g2 = g.clone();
+        g2["range"]["type"] = json!("endDate");
+        assert!(recurrence_from_graph(&g2).unwrap().end_date.is_none(), "0001-01-01 is no end date");
+        g2["range"]["type"] = json!("numbered");
+        assert!(recurrence_from_graph(&g2).unwrap().occurrences.is_none(), "0 occurrences is no limit");
+        assert!(recurrence_from_graph(&Value::Null).is_none());
+        assert!(recurrence_from_graph(&json!({})).is_none());
+        assert!(recurrence_from_graph(&json!({"pattern": {}})).is_none());
+        // Day order and case do not make a different series.
+        let mut a = rec("weekly");
+        a.days_of_week = vec!["Friday".into(), "monday".into()];
+        let mut b = a.clone();
+        b.days_of_week = vec!["monday".into(), "friday".into(), "monday".into()];
+        assert!(same_recurrence(&a, &b));
+        b.interval = 3;
+        assert!(!same_recurrence(&a, &b));
+    }
+
+    #[test]
+    fn auto_reply_times_in_mailbox_zone() {
+        let v = json!({"status": "scheduled",
+            "scheduledStartDateTime": {"dateTime": "2026-12-20T08:00:00.0000000", "timeZone": "W. Europe Standard Time"},
+            "scheduledEndDateTime": {"dateTime": "2027-01-06T17:00:00.0000000", "timeZone": "UTC"}});
+        let a = auto_reply_from_graph(&v);
+        assert_eq!(a.scheduled_start.as_deref(), Some("2026-12-20T07:00:00Z"));
+        assert_eq!(a.scheduled_end.as_deref(), Some("2027-01-06T17:00:00Z"));
+        let back = auto_reply_to_graph(&a);
+        assert_eq!(back["scheduledStartDateTime"], json!({"dateTime": "2026-12-20T07:00:00", "timeZone": "UTC"}));
+    }
+
+    #[test]
+    fn normalize_odd_timestamps() {
+        assert_eq!(normalize_utc(""), "");
+        assert_eq!(normalize_utc("2026-10-15T14:40:00.1234567Z"), "2026-10-15T14:40:00Z");
+        assert_eq!(normalize_utc("2026-10-15T23:40:00-05:00"), "2026-10-16T04:40:00Z");
+        assert_eq!(normalize_utc("nicht-datum"), "nicht-datum");
     }
 }
