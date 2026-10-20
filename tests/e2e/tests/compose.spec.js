@@ -65,3 +65,20 @@ test('Empfängerprüfung verhindert Senden ohne Empfänger', async ({ page }) =>
   await expect(popup.locator('.toast.error')).toContainText('mindestens einen Empfänger');
   await popup.close({ runBeforeUnload: false });
 });
+
+test('Langsames Laden zieht den Cursor nicht aus dem Betreff', async ({ page }) => {
+  await openApp(page);
+  // Hold the draft back so the window finishes loading while the user types.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  await page.context().route('**/api/call/create_draft', async (route) => { await gate; await route.continue(); });
+  const popup = await popupFrom(page, () => page.locator('[data-testid=tb-new]').click());
+  await popup.locator('#subject').click();
+  await popup.keyboard.type('Schnell getippt');
+  release();
+  await popup.waitForResponse('**/api/call/create_draft');
+  await popup.keyboard.type(' und weiter');
+  await expect(popup.locator('#subject')).toHaveValue('Schnell getippt und weiter');
+  await page.context().unroute('**/api/call/create_draft');
+  await popup.close({ runBeforeUnload: false });
+});

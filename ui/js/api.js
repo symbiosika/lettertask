@@ -93,7 +93,9 @@ export async function openWindow(kind, params = {}) {
 
 export async function openUrl(url) {
   if (isTauri) return call('open_url', { url }, { silent: true });
-  window.open(url, '_blank', 'noopener');
+  // Same rule as the backend: only web links leave the app.
+  if (!/^https?:\/\//i.test(String(url || '').trim())) throw new Error('Nur http(s)-Links können geöffnet werden.');
+  window.open(String(url).trim(), '_blank', 'noopener');
 }
 
 /** Closes the current window (used by compose/message/event windows). */

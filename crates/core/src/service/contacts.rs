@@ -103,7 +103,12 @@ fn display_name(c: &ContactInput) -> String {
     if !n.is_empty() {
         return n;
     }
-    c.emails.first().cloned().unwrap_or_default()
+    c.emails
+        .iter()
+        .map(|e| e.trim())
+        .find(|e| !e.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn validate(c: &ContactInput) -> Result<()> {
@@ -154,12 +159,17 @@ impl Service {
             .filter(|l| !l.is_empty())
             .unwrap_or_else(|| format!("/me/contacts/delta?$select={CONTACT_SELECT}"));
         let headers = [("Prefer", "odata.maxpagesize=200".to_string())];
+        // A full round lists every contact but no deletions: whatever was not
+        // seen is gone on the server.
+        let mut full = !url.contains("deltatoken");
+        let mut seen = std::collections::HashSet::new();
         loop {
             let page = match c.get_h(&url, &headers).await {
                 Err(Error::Graph { status: 400 | 410, .. }) if url.contains("deltatoken") => {
                     // Expired sync state: full resync.
                     self.store.kv_set(&delta_key(account_id), "")?;
                     url = format!("/me/contacts/delta?$select={CONTACT_SELECT}");
+                    full = true;
                     continue;
                 }
                 other => other?,
@@ -170,6 +180,7 @@ impl Service {
                     continue;
                 }
                 let id = o365_id(account_id, gid);
+                seen.insert(id.clone());
                 if item.get("@removed").is_some() {
                     if self.store.get_contact(&id)?.is_some() {
                         self.store.delete_contact(&id)?;
@@ -193,6 +204,13 @@ impl Service {
                 self.store.kv_set(&delta_key(account_id), delta)?;
             }
             break;
+        }
+        if full {
+            let cached = self.store.list_contacts(None, Some(account_id), Some("o365"), 0, i64::MAX)?;
+            for stale in cached.items.iter().filter(|c| !seen.contains(&c.id)) {
+                self.store.delete_contact(&stale.id)?;
+                result.removed += 1;
+            }
         }
         if result.added + result.updated + result.removed > 0 {
             self.emit("contacts-changed", json!({}));

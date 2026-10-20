@@ -36,9 +36,12 @@ impl Service {
         if self.store.list_accounts()?.iter().all(|a| a.id != account_id) {
             return Err(Error::NotFound("Konto".into()));
         }
+        let mut ids = std::collections::HashSet::new();
         for (i, sig) in s.signatures.iter_mut().enumerate() {
-            if sig.id.trim().is_empty() {
+            // Empty or duplicate ids (copied signature) get a fresh one.
+            if sig.id.trim().is_empty() || !ids.insert(sig.id.clone()) {
                 sig.id = uuid::Uuid::new_v4().to_string();
+                ids.insert(sig.id.clone());
             }
             if sig.name.trim().is_empty() {
                 sig.name = format!("Signatur {}", i + 1);

@@ -23,10 +23,13 @@ impl ImapGuard {
 
     /// Passes `r` through; drops the session after connection errors.
     pub(crate) fn finish<T>(mut self, r: Result<T>) -> Result<T> {
-        if r.as_ref().is_err_and(|e| e.is_network()) {
-            *self.0 = None;
+        match r {
+            Err(e) if e.is_network() => {
+                *self.0 = None;
+                Err(conn::unreadable_to_rejection(e))
+            }
+            r => r,
         }
-        r
     }
 }
 
@@ -100,10 +103,7 @@ impl Service {
         let slot = self.imap.slot(account_id);
         let mut guard = slot.lock_owned().await;
         if let Some(c) = guard.as_mut() {
-            let alive = tokio::time::timeout(std::time::Duration::from_secs(10), c.s().noop())
-                .await
-                .is_ok_and(|r| r.is_ok());
-            if !alive {
+            if !c.alive().await {
                 *guard = None;
             }
         }
@@ -111,6 +111,12 @@ impl Service {
             *guard = Some(self.imap_connect(account_id).await?);
         }
         Ok(ImapGuard(guard))
+    }
+
+    /// Replaces a session that became unusable inside a `with_imap!` block.
+    pub(crate) async fn imap_reconnect(&self, account_id: &str, c: &mut Conn) -> Result<()> {
+        *c = self.imap_connect(account_id).await?;
+        Ok(())
     }
 
     async fn imap_connect(&self, account_id: &str) -> Result<Conn> {

@@ -87,6 +87,9 @@ fn delta(mb: &Mailbox, req: &Req) -> GResult {
         Some(t) => Some(t.parse().map_err(|_| GErr::bad("Invalid delta token"))?),
         None => None,
     };
+    if since.is_some_and(|s| s < mb.delta_floor) {
+        return Err(GErr::new(StatusCode::GONE, "SyncStateNotFound", "The sync state generation is not found. Restart synchronization."));
+    }
     let mut vals: Vec<Value> = mb
         .contacts
         .iter()

@@ -54,11 +54,22 @@ impl OAuthConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TokenSet {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: DateTime<Utc>,
+}
+
+/// Tokens never end up in logs or error texts via `{:?}`.
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet")
+            .field("access_token", &"<geheim>")
+            .field("refresh_token", &"<geheim>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl TokenSet {
@@ -278,8 +289,15 @@ const ERROR_PAGE: &str = "<!doctype html><html lang=\"de\"><head><meta charset=\
 <body style=\"font-family:Segoe UI,sans-serif;padding:40px\"><h2>Anmeldung fehlgeschlagen</h2>\
 <p>Bitte schließen Sie dieses Fenster und versuchen Sie es erneut.</p></body></html>";
 
-/// Result of a single redirect hit on the loopback listener.
-type Callback = std::result::Result<(String, String), String>;
+/// One redirect hit on the loopback listener: the `state` it carried and
+/// either the authorization `code` or the error text.
+struct Callback {
+    state: String,
+    result: std::result::Result<String, String>,
+}
+
+/// How long a single connection may take to send its request line.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Listens on 127.0.0.1 and (best effort) [::1] with the same port, because
 /// browsers may resolve `localhost` to either.
@@ -292,7 +310,7 @@ impl LoopbackListener {
     pub async fn bind() -> Result<Self> {
         let v4 = TcpListener::bind(("127.0.0.1", 0)).await?;
         let port = v4.local_addr()?.port();
-        let (tx, rx) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(16);
         tokio::spawn(accept_loop(v4, tx.clone()));
         if let Ok(v6) = TcpListener::bind(("::1", port)).await {
             tokio::spawn(accept_loop(v6, tx));
@@ -304,67 +322,93 @@ impl LoopbackListener {
         format!("http://localhost:{}", self.port)
     }
 
-    /// Waits for the redirect carrying `code` and checks `state`.
+    /// Waits for the redirect carrying `code` and checks `state`. Hits with a
+    /// different state (forged by another local program or a web page probing
+    /// localhost) are ignored instead of aborting the login.
     pub async fn wait_for_code(&mut self, expected_state: &str, timeout: Duration) -> Result<String> {
-        let res = tokio::time::timeout(timeout, self.rx.recv())
-            .await
-            .map_err(|_| Error::Auth("Zeitüberschreitung bei der Anmeldung".into()))?
-            .ok_or_else(|| Error::Auth("Anmeldung abgebrochen".into()))?;
-        match res {
-            Ok((code, state)) if state == expected_state => Ok(code),
-            Ok(_) => Err(Error::Auth("Ungültiger state-Parameter".into())),
-            Err(e) => Err(Error::Auth(e)),
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let cb = tokio::time::timeout_at(deadline, self.rx.recv())
+                .await
+                .map_err(|_| Error::Auth("Zeitüberschreitung bei der Anmeldung".into()))?
+                .ok_or_else(|| Error::Auth("Anmeldung abgebrochen".into()))?;
+            if cb.state != expected_state {
+                tracing::warn!("Anmelde-Rückruf mit falschem state-Parameter ignoriert");
+                continue;
+            }
+            return cb.result.map_err(Error::Auth);
         }
     }
 }
 
 async fn accept_loop(listener: TcpListener, tx: mpsc::Sender<Callback>) {
     loop {
-        let Ok((mut sock, _)) = listener.accept().await else {
+        let Ok((sock, _)) = listener.accept().await else {
             return;
         };
-        let mut buf = vec![0u8; 8192];
-        let n = match sock.read(&mut buf).await {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let req = String::from_utf8_lossy(&buf[..n]).to_string();
-        let target = req
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .unwrap_or("/")
-            .to_string();
-        let parsed = url::Url::parse(&format!("http://localhost{target}")).ok();
-        let params: std::collections::HashMap<String, String> = parsed
-            .as_ref()
-            .map(|u| u.query_pairs().into_owned().collect())
-            .unwrap_or_default();
-        let result: Option<Callback> = if let Some(code) = params.get("code") {
-            Some(Ok((code.clone(), params.get("state").cloned().unwrap_or_default())))
-        } else {
-            params.get("error").map(|err| {
-                Err(format!(
-                    "{} {}",
-                    err,
-                    params.get("error_description").cloned().unwrap_or_default()
-                ))
-            })
-        };
-        let (status, page) = match &result {
-            Some(Ok(_)) => ("200 OK", SUCCESS_PAGE),
-            Some(Err(_)) => ("400 Bad Request", ERROR_PAGE),
-            None => ("404 Not Found", ""),
-        };
-        let resp = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
-            page.len()
-        );
-        let _ = sock.write_all(resp.as_bytes()).await;
-        let _ = sock.shutdown().await;
-        if let Some(r) = result {
-            let _ = tx.send(r).await;
+        // Each connection on its own task: an idle or slow client must not
+        // block the browser's redirect.
+        tokio::spawn(handle_callback(sock, tx.clone()));
+    }
+}
+
+/// Reads the request head (bounded in size and time).
+async fn read_request_head(sock: &mut tokio::net::TcpStream) -> Option<String> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    let read = async {
+        while buf.len() < 8192 && !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = sock.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
         }
+        Some(())
+    };
+    tokio::time::timeout(REQUEST_TIMEOUT, read).await.ok()??;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+async fn handle_callback(mut sock: tokio::net::TcpStream, tx: mpsc::Sender<Callback>) {
+    let Some(req) = read_request_head(&mut sock).await else {
+        return;
+    };
+    let target = req
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("/")
+        .to_string();
+    let parsed = url::Url::parse(&format!("http://localhost{target}")).ok();
+    let params: std::collections::HashMap<String, String> = parsed
+        .as_ref()
+        .map(|u| u.query_pairs().into_owned().collect())
+        .unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
+    let result: Option<std::result::Result<String, String>> = if let Some(code) = params.get("code") {
+        Some(Ok(code.clone()))
+    } else {
+        params.get("error").map(|err| {
+            let desc = params.get("error_description").cloned().unwrap_or_default();
+            // first line only, bounded: the text ends up in the UI
+            let desc: String = desc.lines().next().unwrap_or("").chars().take(300).collect();
+            Err(format!("{} {}", err.chars().take(100).collect::<String>(), desc))
+        })
+    };
+    let (status, page) = match &result {
+        Some(Ok(_)) => ("200 OK", SUCCESS_PAGE),
+        Some(Err(_)) => ("400 Bad Request", ERROR_PAGE),
+        None => ("404 Not Found", ""),
+    };
+    let resp = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+        page.len()
+    );
+    let _ = sock.write_all(resp.as_bytes()).await;
+    let _ = sock.shutdown().await;
+    if let Some(result) = result {
+        let _ = tx.send(Callback { state, result }).await;
     }
 }
 
@@ -464,17 +508,61 @@ mod tests {
         tokio::spawn(async move {
             let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=XYZ&state=other")).await;
         });
-        assert!(l.wait_for_code("s1", Duration::from_secs(5)).await.is_err());
+        assert!(l.wait_for_code("s1", Duration::from_secs(1)).await.is_err());
 
         let mut l = LoopbackListener::bind().await.unwrap();
         let port = l.port;
         tokio::spawn(async move {
             let _ = reqwest::get(format!(
-                "http://127.0.0.1:{port}/?error=access_denied&error_description=nope"
+                "http://127.0.0.1:{port}/?error=access_denied&error_description=nope&state=s1"
             ))
             .await;
         });
         let e = l.wait_for_code("s1", Duration::from_secs(5)).await.unwrap_err();
         assert!(e.to_string().contains("access_denied"));
+    }
+
+    #[tokio::test]
+    async fn loopback_survives_idle_and_malformed_connections() {
+        let mut l = LoopbackListener::bind().await.unwrap();
+        let port = l.port;
+        // A local process connects and never sends anything (or garbage).
+        let idle = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut junk = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        junk.write_all(&[0xff, 0xfe, b' ', b'X', b'\r', b'\n', b'\r', b'\n']).await.unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=OK&state=s1")).await;
+        });
+        let code = l.wait_for_code("s1", Duration::from_secs(10)).await.unwrap();
+        assert_eq!(code, "OK");
+        drop(idle);
+    }
+
+    #[tokio::test]
+    async fn loopback_ignores_forged_callbacks_with_wrong_state() {
+        let mut l = LoopbackListener::bind().await.unwrap();
+        let port = l.port;
+        tokio::spawn(async move {
+            // e.g. a web page in the user's browser probing localhost ports
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/?error=access_denied&state=forged")).await;
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/?error=x")).await;
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=EVIL&state=forged")).await;
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/favicon.ico")).await;
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=GOOD&state=s1")).await;
+        });
+        let code = l.wait_for_code("s1", Duration::from_secs(10)).await.unwrap();
+        assert_eq!(code, "GOOD");
+    }
+
+    #[test]
+    fn token_set_debug_hides_secrets() {
+        let t = TokenSet {
+            access_token: "eyJ-secret-access".into(),
+            refresh_token: "0.AAA-secret-refresh".into(),
+            expires_at: Utc::now(),
+        };
+        let s = format!("{t:?}");
+        assert!(!s.contains("secret"), "{s}");
     }
 }

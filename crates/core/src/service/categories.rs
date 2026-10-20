@@ -36,6 +36,9 @@ impl Service {
         if name.is_empty() {
             return Err(Error::invalid("Name der Kategorie fehlt."));
         }
+        if name.chars().count() > 255 {
+            return Err(Error::invalid("Der Name der Kategorie ist zu lang (max. 255 Zeichen)."));
+        }
         validate_color(color)?;
         let c = self.client(account_id)?;
         let v = c
@@ -72,8 +75,11 @@ impl Service {
             return self.imap_delete_category(account_id, id);
         }
         let c = self.client(account_id)?;
-        c.delete(&format!("/me/outlook/masterCategories/{}", seg(id)))
-            .await?;
+        match c.delete(&format!("/me/outlook/masterCategories/{}", seg(id))).await {
+            // Already deleted elsewhere: the goal is reached.
+            Err(e) if e.is_not_found() => {}
+            other => other?,
+        }
         self.categories_changed(account_id).await;
         Ok(())
     }
@@ -88,6 +94,7 @@ fn validate_color(color: &str) -> Result<()> {
     let ok = color == "none"
         || color
             .strip_prefix("preset")
+            .filter(|n| !n.is_empty() && n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()))
             .and_then(|n| n.parse::<u8>().ok())
             .is_some_and(|n| n <= 24);
     if ok {
@@ -106,5 +113,10 @@ mod tests {
         assert!(super::validate_color("none").is_ok());
         assert!(super::validate_color("preset25").is_err());
         assert!(super::validate_color("red").is_err());
+        assert!(super::validate_color("preset+1").is_err());
+        assert!(super::validate_color("preset").is_err());
+        assert!(super::validate_color("preset007").is_err());
+        assert!(super::validate_color("Preset1").is_err());
+        assert!(super::validate_color("").is_err());
     }
 }

@@ -1,6 +1,6 @@
 //! In-memory data model of the fake tenant.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
@@ -238,6 +238,8 @@ pub struct Mailbox {
     pub contacts: Vec<(u64, Value)>,
     /// Deleted contacts: (seq, id) – for delta queries.
     pub contact_tombstones: Vec<(u64, String)>,
+    /// Delta tokens below this change number are expired (410 syncStateNotFound).
+    pub delta_floor: u64,
 }
 
 impl Mailbox {
@@ -289,6 +291,7 @@ impl Mailbox {
             people: Vec::new(),
             contacts: Vec::new(),
             contact_tombstones: Vec::new(),
+            delta_floor: 0,
         }
     }
 
@@ -422,14 +425,51 @@ pub struct AuthState {
     pub device: HashMap<String, (String, String, u32)>,
 }
 
+/// An injected failure for the next matching Graph request.
+#[derive(Clone, Debug)]
+pub struct Fault {
+    pub status: u16,
+    /// `Retry-After` header value.
+    pub retry_after: Option<String>,
+    /// Raw response body; default is a Graph JSON error.
+    pub body: Option<String>,
+    pub content_type: Option<String>,
+    /// Only requests whose path (after `/v1.0`) contains this text.
+    pub path_contains: Option<String>,
+}
+
+impl Fault {
+    pub fn status(status: u16) -> Self {
+        Fault { status, retry_after: None, body: None, content_type: None, path_contains: None }
+    }
+    pub fn retry_after(mut self, v: &str) -> Self {
+        self.retry_after = Some(v.to_string());
+        self
+    }
+    /// Non-JSON body, e.g. an HTML page of a proxy.
+    pub fn body(mut self, content_type: &str, body: &str) -> Self {
+        self.content_type = Some(content_type.to_string());
+        self.body = Some(body.to_string());
+        self
+    }
+    pub fn on_path(mut self, part: &str) -> Self {
+        self.path_contains = Some(part.to_string());
+        self
+    }
+}
+
 pub struct State {
     pub base_url: String,
     pub mailboxes: Vec<Mailbox>,
     pub auth: AuthState,
     pub uploads: HashMap<String, Upload>,
     /// Injected failures: (status, remaining count).
-    pub fail_next: Option<(u16, usize)>,
+    pub faults: VecDeque<Fault>,
     pub request_count: u64,
+    /// Requests to the OAuth token endpoint.
+    pub token_requests: u64,
+    /// Refresh tokens are rejected (revoked sign-in, password change).
+    pub refresh_revoked: bool,
 }
 
 impl State {
@@ -509,7 +549,58 @@ impl SharedState {
 
     /// The next `count` Graph requests fail with `status` (429/503 add `Retry-After: 1`).
     pub fn fail_next(&self, status: u16, count: usize) {
-        self.lock().fail_next = Some((status, count));
+        let mut f = Fault::status(status);
+        if status == 429 || status == 503 {
+            f = f.retry_after("1");
+        }
+        let mut st = self.lock();
+        for _ in 0..count {
+            st.faults.push_back(f.clone());
+        }
+    }
+
+    /// Queues an arbitrary failure for the next matching Graph request.
+    pub fn inject_fault(&self, fault: Fault) {
+        self.lock().faults.push_back(fault);
+    }
+
+    /// Requests to the OAuth token endpoint (code exchange and refreshes).
+    pub fn token_requests(&self) -> u64 {
+        self.lock().token_requests
+    }
+
+    /// Rejects all refresh tokens from now on (`invalid_grant`), like a
+    /// revoked session.
+    pub fn revoke_refresh_tokens(&self) {
+        self.lock().refresh_revoked = true;
+    }
+
+    /// Expires all delta tokens (mail and contacts) issued so far: the next
+    /// delta round with them answers 410 `syncStateNotFound`.
+    pub fn expire_delta_tokens(&self) {
+        for mb in self.lock().mailboxes.iter_mut() {
+            mb.seq += 1;
+            mb.delta_floor = mb.seq;
+        }
+    }
+
+    /// Server-side deletion of a contact (by Graph id), e.g. in Outlook web.
+    pub fn delete_contact(&self, mailbox: &str, id: &str) -> bool {
+        let mut st = self.lock();
+        let Some(idx) = st.mailbox_idx(mailbox) else { return false };
+        let mb = &mut st.mailboxes[idx];
+        let Some(pos) = mb.contacts.iter().position(|(_, c)| c["id"] == json!(id)) else { return false };
+        mb.contacts.remove(pos);
+        mb.seq += 1;
+        let seq = mb.seq;
+        mb.contact_tombstones.push((seq, id.to_string()));
+        true
+    }
+
+    /// Server-side contacts (rendered).
+    pub fn contacts(&self, mailbox: &str) -> Vec<Value> {
+        let st = self.lock();
+        st.mailbox_idx(mailbox).map(|i| st.mailboxes[i].contacts.iter().map(|(_, c)| c.clone()).collect()).unwrap_or_default()
     }
 
     /// Number of Graph requests served (excluding OAuth/upload endpoints).
@@ -624,6 +715,18 @@ impl SharedState {
         let mut evs: Vec<&Ev> = mb.events.values().collect();
         evs.sort_by_key(|e| e.start);
         evs.into_iter().map(|e| crate::calendar::render_event(e, None, "UTC")).collect()
+    }
+
+    /// Relabels the time zone of a stored event (test hook, e.g. "Customized
+    /// Time Zone" as Exchange uses for foreign ICS invites). Times stay put.
+    pub fn set_event_time_zone(&self, mailbox: &str, id: &str, label: &str) -> bool {
+        let mut st = self.lock();
+        let Some(idx) = st.mailbox_idx(mailbox) else { return false };
+        let Some(ev) = st.mailboxes[idx].events.get_mut(id) else { return false };
+        ev.tz = label.to_string();
+        ev.json["originalStartTimeZone"] = json!(label);
+        ev.json["originalEndTimeZone"] = json!(label);
+        true
     }
 
     /// Master category list of a mailbox.

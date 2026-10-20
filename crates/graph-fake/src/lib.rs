@@ -28,7 +28,7 @@ use axum::Router;
 use chrono::{DateTime, Utc};
 use percent_encoding::percent_decode_str;
 
-pub use state::SharedState;
+pub use state::{Fault, SharedState};
 use util::{GErr, Req};
 
 /// Options for [`spawn`].
@@ -160,18 +160,33 @@ async fn graph(
                 return GErr::new(StatusCode::UNAUTHORIZED, "InvalidAuthenticationToken", "IDX14100: JWT is not well formed.").into_response()
             }
         }
-        if let Some((status, n)) = s.fail_next {
-            s.fail_next = if n > 1 { Some((status, n - 1)) } else { None };
-            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let gcode = match status {
-                429 => "TooManyRequests",
-                503 => "ServiceNotAvailable",
-                504 => "GatewayTimeout",
-                _ => "InternalServerError",
+        let pos = s
+            .faults
+            .iter()
+            .position(|f| f.path_contains.as_deref().is_none_or(|p| raw_path.contains(p)));
+        if let Some(f) = pos.and_then(|p| s.faults.remove(p)) {
+            let code = StatusCode::from_u16(f.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let mut resp = match &f.body {
+                Some(body) => (code, body.clone()).into_response(),
+                None => {
+                    let gcode = match f.status {
+                        401 => "InvalidAuthenticationToken",
+                        403 => "ErrorAccessDenied",
+                        404 => "ErrorItemNotFound",
+                        410 => "SyncStateNotFound",
+                        429 => "TooManyRequests",
+                        503 => "ServiceNotAvailable",
+                        504 => "GatewayTimeout",
+                        _ => "InternalServerError",
+                    };
+                    GErr::new(code, gcode, "Injected failure").into_response()
+                }
             };
-            let mut resp = GErr::new(code, gcode, "Injected failure").into_response();
-            if status == 429 || status == 503 {
-                resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            if let Some(ct) = f.content_type.as_deref().and_then(|c| HeaderValue::from_str(c).ok()) {
+                resp.headers_mut().insert(header::CONTENT_TYPE, ct);
+            }
+            if let Some(ra) = f.retry_after.as_deref().and_then(|r| HeaderValue::from_str(r).ok()) {
+                resp.headers_mut().insert(header::RETRY_AFTER, ra);
             }
             return resp;
         }

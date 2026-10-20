@@ -4,6 +4,9 @@
 //! any user name with password `secret`, special-use folders Sent/Drafts/
 //! Trash/Junk/Archive. Returns `None` (test skips) when Dovecot is missing.
 
+// Each test crate uses a different subset.
+#![allow(dead_code)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -43,8 +46,34 @@ fn current_user() -> (bool, String) {
     (uid.trim() == "0", name.trim().to_string())
 }
 
+/// Server layout variants.
+#[derive(Clone, Copy)]
+pub struct Options {
+    /// Hierarchy separator.
+    pub separator: char,
+    /// Personal namespace below INBOX ("INBOX." like Courier/Cyrus) and no
+    /// SPECIAL-USE folders: roles must be found by name.
+    pub inbox_prefix: bool,
+    /// Only IMAP4rev1 advertised (no MOVE, UIDPLUS, SPECIAL-USE …).
+    pub minimal_caps: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            separator: '/',
+            inbox_prefix: false,
+            minimal_caps: false,
+        }
+    }
+}
+
 impl Dovecot {
     pub fn start() -> Option<Dovecot> {
+        Self::start_with(Options::default())
+    }
+
+    pub fn start_with(opts: Options) -> Option<Dovecot> {
         let bin = match find_dovecot() {
             Some(b) => b,
             None => {
@@ -68,6 +97,18 @@ impl Dovecot {
             (me.clone(), me.clone(), me.clone())
         };
         let b = base.display();
+        let sep = opts.separator;
+        let caps = if opts.minimal_caps { "IMAP4rev1 LITERAL+" } else { "+SPECIAL-USE" };
+        let namespace = if opts.inbox_prefix {
+            format!("namespace inbox {{\n  inbox = yes\n  prefix = INBOX{sep}\n  separator = {sep}\n}}")
+        } else {
+            let mut ns = format!("namespace inbox {{\n  inbox = yes\n  separator = {sep}\n");
+            for (name, flag) in [("Sent", "Sent"), ("Drafts", "Drafts"), ("Trash", "Trash"), ("Junk", "Junk"), ("Archive", "Archive")] {
+                ns.push_str(&format!("  mailbox {name} {{\n    special_use = \\{flag}\n    auto = subscribe\n  }}\n"));
+            }
+            ns.push('}');
+            ns
+        };
         let conf = format!(
             r#"base_dir = {b}/run
 state_dir = {b}/state
@@ -104,32 +145,9 @@ userdb {{
   args = uid={mail_user} gid={mail_user} home={b}/home/%u
 }}
 mail_location = maildir:{b}/home/%u/Maildir
-namespace inbox {{
-  inbox = yes
-  separator = /
-  mailbox Sent {{
-    special_use = \Sent
-    auto = subscribe
-  }}
-  mailbox Drafts {{
-    special_use = \Drafts
-    auto = subscribe
-  }}
-  mailbox Trash {{
-    special_use = \Trash
-    auto = subscribe
-  }}
-  mailbox Junk {{
-    special_use = \Junk
-    auto = subscribe
-  }}
-  mailbox Archive {{
-    special_use = \Archive
-    auto = subscribe
-  }}
-}}
+{namespace}
 protocol imap {{
-  imap_capability = +SPECIAL-USE
+  imap_capability = {caps}
   mail_max_userip_connections = 50
 }}
 "#
@@ -177,6 +195,24 @@ protocol imap {{
         }
         let log = std::fs::read_to_string(self.dir.path().join("dovecot.log")).unwrap_or_default();
         panic!("dovecot not ready:\n{log}");
+    }
+
+    /// Kills all established IMAP sessions (the server keeps running), like
+    /// a NAT timeout or a server restart would.
+    pub fn kill_sessions(&self) {
+        let Some(c) = &self.child else { return };
+        let out = Command::new("pgrep")
+            .arg("-P")
+            .arg(c.id().to_string())
+            .arg("-x")
+            .arg("imap")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for pid in out {
+            let _ = Command::new("kill").arg("-KILL").arg(pid).stderr(Stdio::null()).status();
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
 
     pub fn stop(&mut self) {
