@@ -614,3 +614,78 @@ async fn discover_settings() {
     assert_eq!(g["imap"]["host"], "imap.unbekannt.invalid");
     assert_eq!(g["smtp"]["security"], "starttls");
 }
+
+#[tokio::test]
+async fn tasks_rules_and_send_reminders() {
+    let Some(ctx) = setup().await else { return };
+    let inbox = ctx.folder("inbox").await;
+
+    // "Aufgabe (Mail)" without due → unread in the inbox, not a draft.
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Steuer vorbereiten", "bodyHtml": "<p>Belege</p>", "due": null}),
+    )
+    .await;
+    assert_eq!(t.folder_id, inbox.id);
+    assert!(!t.is_read && !t.is_draft);
+    let f = &server_flags(ctx.dv.port, "INBOX").await;
+    let task_flags = &f.iter().find(|(s, _)| s == "Steuer vorbereiten").unwrap().1;
+    assert!(!task_flags.contains(&"\\Draft".to_string()) && !task_flags.contains(&"\\Seen".to_string()));
+
+    // With due → read in Wiedervorlage with dueAt.
+    let due = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let t2: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Angebot prüfen", "bodyHtml": "", "due": due}),
+    )
+    .await;
+    let snoozed = ctx.folder("snoozed").await;
+    assert_eq!(t2.folder_id, snoozed.id);
+    assert!(t2.is_read);
+    assert!(t2.due_at.is_some());
+
+    // Inbox rule: a mail from myself with "#morgen" never shows up in the inbox.
+    let mut c = raw_conn(ctx.dv.port).await;
+    c.session
+        .append(
+            "INBOX",
+            None,
+            None,
+            format!("From: Anna <{ME}>\r\nTo: {ME}\r\nSubject: Rechnung nachfassen #morgen\r\nMessage-ID: <rule1@example.org>\r\n\r\nx\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+    c.session.logout().await.unwrap();
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.subject.contains("#morgen")));
+    let ruled = ctx.by_subject(&snoozed.id, "Rechnung nachfassen #morgen").await;
+    assert!(ruled.due_at.is_some());
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, _)| e == "rules-applied"));
+    assert!(!ctx
+        .host
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(e, p)| e == "new-mail" && p["subject"] == "Rechnung nachfassen #morgen"));
+
+    // "Erinnerung an mich" after sending.
+    let remind = (chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+    let _: Value = call(
+        &ctx.svc,
+        "send_draft",
+        json!({"draft": {"id": null, "mailboxId": ctx.account, "to": [{"name": "Erik", "address": "erik@example.com"}],
+            "subject": "Angebot 4711", "bodyHtml": "<p>Anbei das Angebot</p>", "remindAt": remind}}),
+    )
+    .await;
+    assert_eq!(ctx.sink.messages().len(), 1);
+    let page = ctx.list(&snoozed.id).await;
+    let reminder = page
+        .items
+        .iter()
+        .find(|m| m.subject.contains("Angebot 4711"))
+        .unwrap_or_else(|| panic!("reminder missing: {:?}", page.items.iter().map(|m| &m.subject).collect::<Vec<_>>()));
+    assert!(reminder.due_at.is_some());
+}

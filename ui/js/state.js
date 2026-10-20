@@ -9,6 +9,7 @@ export const state = {
   current: { mailboxId: null, folderId: null },
   mode: 'mail',
   sync: { state: 'idle', message: '', lastSync: null },
+  lanes: new Map(), // accountId -> string[] (Kanban lanes)
 };
 
 export function mailboxes() {
@@ -39,6 +40,14 @@ export async function loadFolders(mailboxId) {
 export async function loadCategories(accountId) {
   const list = (await call('list_categories', { accountId }, { silent: true })) || [];
   setCategories(accountId, list);
+  return list;
+}
+
+export function lanesOf(accountId) { return state.lanes.get(accountId) || []; }
+export async function loadLanes(accountId) {
+  let list = [];
+  try { list = (await call('get_lanes', { accountId }, { silent: true })) || []; } catch { list = []; }
+  state.lanes.set(accountId, list);
   return list;
 }
 

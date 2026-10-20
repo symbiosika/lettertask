@@ -192,7 +192,7 @@ protocol imap {{
             let _ = Command::new("kill").arg("-TERM").arg(c.id().to_string()).status();
             let _ = c.wait();
             for pid in children {
-                let _ = Command::new("kill").arg("-KILL").arg(pid).status();
+                let _ = Command::new("kill").arg("-KILL").arg(pid).stderr(Stdio::null()).status();
             }
             // Give children a moment to exit before the temp dir goes.
             std::thread::sleep(Duration::from_millis(200));
