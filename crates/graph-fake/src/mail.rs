@@ -209,28 +209,38 @@ fn unsupported_filter(s: &str) -> GErr {
     )
 }
 
+/// KQL subset: bare words (subject/body/from/to/attachment names), and
+/// `from:` `to:` `subject:` `body:` `hasAttachments:true|false` restrictions.
 fn search_matches(m: &Msg, terms: &[String]) -> bool {
     let j = &m.json;
-    let mut hay = String::new();
-    for p in ["/subject", "/bodyPreview", "/body/content", "/from/emailAddress/name", "/from/emailAddress/address"] {
-        if let Some(s) = j.pointer(p).and_then(Value::as_str) {
-            hay.push_str(&s.to_lowercase());
-            hay.push(' ');
+    let text = |p: &str| j.pointer(p).and_then(Value::as_str).unwrap_or("").to_lowercase();
+    let recipients = || {
+        let mut s = String::new();
+        for key in ["toRecipients", "ccRecipients"] {
+            for r in j[key].as_array().into_iter().flatten() {
+                s.push_str(&email_addr(r));
+                s.push(' ');
+                s.push_str(&r.pointer("/emailAddress/name").and_then(Value::as_str).unwrap_or("").to_lowercase());
+                s.push(' ');
+            }
         }
-    }
-    for key in ["toRecipients", "ccRecipients"] {
-        for r in j[key].as_array().into_iter().flatten() {
-            hay.push_str(&email_addr(r));
-            hay.push(' ');
-            hay.push_str(&r.pointer("/emailAddress/name").and_then(Value::as_str).unwrap_or("").to_lowercase());
-            hay.push(' ');
-        }
-    }
+        s
+    };
+    let from = format!("{} {}", text("/from/emailAddress/name"), text("/from/emailAddress/address"));
+    let body = format!("{} {}", text("/bodyPreview"), text("/body/content"));
+    let mut all = format!("{} {} {} {}", text("/subject"), body, from, recipients());
     for a in &m.attachments {
-        hay.push_str(&a.name.to_lowercase());
-        hay.push(' ');
+        all.push_str(&a.name.to_lowercase());
+        all.push(' ');
     }
-    terms.iter().all(|t| hay.contains(t.as_str()))
+    terms.iter().all(|t| match t.split_once(':') {
+        Some(("from", v)) => from.contains(v),
+        Some(("to", v)) => recipients().contains(v),
+        Some(("subject", v)) => text("/subject").contains(v),
+        Some(("body", v)) => body.contains(v),
+        Some(("hasattachments", v)) => (v == "true") == m.attachments.iter().any(|a| !a.is_inline),
+        _ => all.contains(t.as_str()),
+    })
 }
 
 fn render_msg(mb: &Mailbox, m: &Msg, req: &Req) -> Value {

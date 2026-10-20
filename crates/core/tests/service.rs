@@ -94,16 +94,14 @@ impl Ctx {
 }
 
 #[tokio::test]
-async fn login_creates_account_with_shared_mailbox_and_folder_tree() {
+async fn login_creates_account_and_folder_tree() {
     let ctx = setup().await;
     let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
     assert_eq!(accounts.len(), 1);
     let acc = &accounts[0];
     assert_eq!(acc.email, ME);
-    assert_eq!(acc.mailboxes.len(), 2);
+    assert_eq!(acc.mailboxes.len(), 1);
     assert_eq!(acc.mailboxes[0].kind, "primary");
-    assert_eq!(acc.mailboxes[1].kind, "shared");
-    assert_eq!(acc.mailboxes[1].address, "datenschutz@contoso.example");
 
     let folders = ctx.folders(&ctx.account).await;
     let order: Vec<_> = folders.iter().filter_map(|f| f.well_known.clone()).collect();
@@ -115,9 +113,6 @@ async fn login_creates_account_with_shared_mailbox_and_folder_tree() {
     assert_eq!(alpha.parent_id.as_deref(), Some(projekte.id.as_str()));
     // Top level folders have no parent (root is hidden).
     assert!(inbox.parent_id.is_none());
-
-    let shared = ctx.folders(&acc.mailboxes[1].id).await;
-    assert!(shared.iter().any(|f| f.well_known.as_deref() == Some("inbox")));
 }
 
 #[tokio::test]
@@ -626,13 +621,6 @@ async fn unknown_commands_and_bad_args_are_errors() {
     assert!(call_err(&ctx.svc, "list_folders", json!({})).await.contains("mailboxId"));
     let err = call_err(&ctx.svc, "open_url", json!({"url": "file:///etc/passwd"})).await;
     assert!(err.contains("http"));
-    let err = call_err(
-        &ctx.svc,
-        "add_shared_mailbox",
-        json!({"accountId": ctx.account, "address": "gibtsnicht@contoso.example"}),
-    )
-    .await;
-    assert!(err.contains("Kein Zugriff"), "{err}");
 }
 
 #[tokio::test]
@@ -673,4 +661,122 @@ async fn meeting_invitation_links_to_event() {
     .await;
     let ev: EventDetail = call(&ctx.svc, "get_event", json!({"accountId": ctx.account, "eventId": event_id})).await;
     assert_eq!(ev.event.response_status, "tentativelyAccepted");
+}
+
+#[tokio::test]
+async fn config_has_snooze_defaults() {
+    let ctx = setup().await;
+    let c: Config = call(&ctx.svc, "get_config", json!({})).await;
+    assert_eq!(c.snooze_options.len(), 6);
+    assert_eq!(c.snooze_options[0].rule, "tomorrow@08:00");
+    assert!(c.show_date_separators);
+    // Saving an empty list restores the defaults; custom lists persist.
+    let mut c2 = c.clone();
+    c2.snooze_options = vec![SnoozeOption { label: "In 3 Tagen".into(), rule: "days:3@09:00".into() }];
+    let saved: Config = call(&ctx.svc, "save_config", json!({"config": c2})).await;
+    assert_eq!(saved.snooze_options.len(), 1);
+    let mut c3 = saved.clone();
+    c3.snooze_options.clear();
+    let saved: Config = call(&ctx.svc, "save_config", json!({"config": c3})).await;
+    assert_eq!(saved.snooze_options.len(), 6);
+}
+
+#[tokio::test]
+async fn archive_moves_to_archive_folder() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let archive = ctx.folder("archive").await;
+    let m = ctx.list(&inbox.id).await.items[0].clone();
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [m.id]})).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|x| x.id == m.id));
+    assert!(ctx.list(&archive.id).await.items.iter().any(|x| x.subject == m.subject));
+}
+
+#[tokio::test]
+async fn snooze_and_return_to_inbox() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let a = page.items[0].clone();
+    let b = page.items[1].clone();
+    let until = (chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339();
+    let later = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [a.id], "until": until})).await;
+    let _: Value = call(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [b.id], "until": later})).await;
+
+    // Folder "Wiedervorlage" exists, sorted right after the inbox.
+    let folders = ctx.folders(&ctx.account).await;
+    assert_eq!(folders[1].well_known.as_deref(), Some("snoozed"));
+    assert_eq!(folders[1].display_name, "Wiedervorlage");
+    let snoozed = folders[1].clone();
+    let in_snooze = ctx.list(&snoozed.id).await;
+    assert_eq!(in_snooze.total, 2);
+    assert!(in_snooze.items.iter().all(|m| m.due_at.is_some()));
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.id == a.id || m.id == b.id));
+
+    // A fresh sync of the folder keeps the due times (they live on the server).
+    let _: Value = ctx.svc.dispatch("set_active_folder", json!({"mailboxId": ctx.account, "folderId": snoozed.id})).await.unwrap();
+    // Time passes → background sync returns only the due one, unread.
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    ctx.svc.sync_all(true).await;
+    let back = ctx.list(&inbox.id).await;
+    let returned = back.items.iter().find(|m| m.subject == a.subject).expect("returned to inbox");
+    assert!(!returned.is_read);
+    assert_eq!(returned.flag, "notFlagged");
+    assert!(returned.due_at.is_none());
+    assert_eq!(ctx.list(&snoozed.id).await.total, 1);
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, p)| e == "new-mail" && p["subject"] == a.subject));
+
+    // Manual unsnooze.
+    let still = ctx.list(&snoozed.id).await.items[0].clone();
+    let _: Value = call(&ctx.svc, "unsnooze_messages", json!({"mailboxId": ctx.account, "ids": [still.id]})).await;
+    assert_eq!(ctx.list(&snoozed.id).await.total, 0);
+    assert!(ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == b.subject && !m.is_read));
+
+    // Past times are rejected.
+    let past = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let err = call_err(&ctx.svc, "snooze_messages", json!({"mailboxId": ctx.account, "ids": [a.id], "until": past})).await;
+    assert!(err.contains("Vergangenheit"));
+}
+
+#[tokio::test]
+async fn search_by_field_and_attachments() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let m = page.items.iter().find(|m| m.has_attachments).unwrap().clone();
+    let sender = m.from.clone().unwrap();
+    let last_name = sender.name.split_whitespace().last().unwrap().to_string();
+    let by_from: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": last_name, "folderId": null, "field": "from"}),
+    )
+    .await;
+    assert!(!by_from.is_empty());
+    assert!(by_from.iter().all(|x| x.from.as_ref().unwrap().name.contains(&last_name)
+        || x.from.as_ref().unwrap().address.to_lowercase().contains(&last_name.to_lowercase())));
+    let with_att: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": last_name, "folderId": null, "field": "from", "hasAttachments": true}),
+    )
+    .await;
+    assert!(with_att.iter().all(|x| x.has_attachments));
+    assert!(with_att.iter().any(|x| x.id == m.id));
+    let word = m.subject.split_whitespace().max_by_key(|w| w.len()).unwrap().to_string();
+    let by_subject: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": word, "folderId": inbox.id, "field": "subject"}),
+    )
+    .await;
+    assert!(by_subject.iter().any(|x| x.id == m.id));
+    let wrong_field: Vec<MessageSummary> = call(
+        &ctx.svc,
+        "search_messages",
+        json!({"mailboxId": ctx.account, "text": word, "folderId": inbox.id, "field": "to"}),
+    )
+    .await;
+    assert!(!wrong_field.iter().any(|x| x.id == m.id));
 }

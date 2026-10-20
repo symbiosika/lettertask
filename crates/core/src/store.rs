@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS messages (
     has_att INTEGER NOT NULL DEFAULT 0,
     categories_json TEXT NOT NULL DEFAULT '[]',
     preview TEXT NOT NULL DEFAULT '',
+    due_at TEXT,
     PRIMARY KEY (mailbox_id, id)
 );
 CREATE INDEX IF NOT EXISTS messages_folder ON messages(mailbox_id, folder_id, received);
@@ -95,12 +96,13 @@ CREATE TABLE IF NOT EXISTS kv (
 fn well_known_rank(w: Option<&str>) -> i32 {
     match w {
         Some("inbox") => 0,
-        Some("drafts") => 1,
-        Some("sentitems") => 2,
-        Some("deleteditems") => 3,
-        Some("archive") => 4,
-        Some("junkemail") => 5,
-        Some("outbox") => 6,
+        Some("snoozed") => 1,
+        Some("drafts") => 2,
+        Some("sentitems") => 3,
+        Some("deleteditems") => 4,
+        Some("archive") => 5,
+        Some("junkemail") => 6,
+        Some("outbox") => 7,
         _ => 100,
     }
 }
@@ -117,6 +119,13 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        // Migrations for caches created by older versions.
+        let has_due: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='due_at'")?
+            .exists([])?;
+        if !has_due {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN due_at TEXT")?;
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -250,8 +259,8 @@ impl Store {
             "INSERT INTO folders(mailbox_id,id,parent_id,display_name,well_known,unread,total,child_count)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(mailbox_id,id) DO UPDATE SET parent_id=excluded.parent_id,
-               display_name=excluded.display_name, unread=excluded.unread, total=excluded.total,
-               child_count=excluded.child_count",
+               display_name=excluded.display_name, well_known=excluded.well_known,
+               unread=excluded.unread, total=excluded.total, child_count=excluded.child_count",
             params![
                 f.mailbox_id,
                 f.id,
@@ -377,14 +386,14 @@ impl Store {
         {
             let mut st = tx.prepare(
                 "INSERT INTO messages(mailbox_id,id,folder_id,conversation_id,subject,from_name,from_addr,
-                   to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                   to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(mailbox_id,id) DO UPDATE SET folder_id=excluded.folder_id,
                    conversation_id=excluded.conversation_id, subject=excluded.subject,
                    from_name=excluded.from_name, from_addr=excluded.from_addr, to_json=excluded.to_json,
                    received=excluded.received, is_read=excluded.is_read, is_draft=excluded.is_draft,
                    importance=excluded.importance, flag=excluded.flag, has_att=excluded.has_att,
-                   categories_json=excluded.categories_json, preview=excluded.preview",
+                   categories_json=excluded.categories_json, preview=excluded.preview, due_at=excluded.due_at",
             )?;
             for m in msgs {
                 let (fname, faddr) = m
@@ -408,7 +417,8 @@ impl Store {
                     m.flag,
                     m.has_attachments,
                     serde_json::to_string(&m.categories)?,
-                    m.preview
+                    m.preview,
+                    m.due_at
                 ])?;
             }
         }
@@ -690,7 +700,7 @@ impl Store {
     }
 }
 
-const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview";
+const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at";
 
 fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     let from_name: String = r.get(5)?;
@@ -720,6 +730,7 @@ fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
         has_attachments: r.get(13)?,
         categories: serde_json::from_str(&cat_json).unwrap_or_default(),
         preview: r.get(15)?,
+        due_at: r.get(16)?,
     })
 }
 
@@ -770,6 +781,7 @@ mod tests {
             has_attachments: false,
             categories: cats.iter().map(|s| s.to_string()).collect(),
             preview: String::new(),
+            due_at: None,
         }
     }
 

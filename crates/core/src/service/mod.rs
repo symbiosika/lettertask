@@ -4,6 +4,7 @@ mod calendar;
 mod categories;
 mod compose;
 mod mail;
+mod snooze;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -62,9 +63,7 @@ impl Service {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         config.demo = opts.demo;
-        if opts.demo && config.client_id.is_empty() {
-            config.client_id = "demo-client".into();
-        }
+        Self::apply_defaults(&mut config, opts.demo);
         let http = reqwest::Client::builder()
             .user_agent(concat!("OutlookClone/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(120))
@@ -184,19 +183,6 @@ impl Service {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
                 ok(Value::Null)
             }
-            "add_shared_mailbox" => ok(self
-                .add_shared_mailbox(&arg::<String>(a, "accountId")?, &arg::<String>(a, "address")?)
-                .await?),
-            "remove_mailbox" => {
-                let id: String = arg(a, "mailboxId")?;
-                let mb = self.store.get_mailbox(&id)?;
-                if mb.is_primary() {
-                    return Err(Error::invalid("Das Hauptpostfach kann nur mit dem Konto entfernt werden."));
-                }
-                self.store.delete_mailbox(&id)?;
-                self.emit("accounts-changed", json!({}));
-                ok(Value::Null)
-            }
             "set_active_folder" => {
                 let mb: String = arg(a, "mailboxId")?;
                 let f: String = arg(a, "folderId")?;
@@ -258,6 +244,8 @@ impl Service {
                     &arg::<String>(a, "mailboxId")?,
                     &arg::<String>(a, "text")?,
                     arg::<Option<String>>(a, "folderId")?.as_deref(),
+                    &arg::<Option<String>>(a, "field")?.unwrap_or_else(|| "all".into()),
+                    arg::<Option<bool>>(a, "hasAttachments")?.unwrap_or(false),
                 )
                 .await?),
             "get_message" => ok(self
@@ -300,6 +288,25 @@ impl Service {
                     true,
                 )
                 .await?;
+                ok(Value::Null)
+            }
+            "archive_messages" => {
+                self.archive_messages(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?)
+                    .await?;
+                ok(Value::Null)
+            }
+            "snooze_messages" => {
+                self.snooze_messages(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    &arg::<String>(a, "until")?,
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "unsnooze_messages" => {
+                self.unsnooze_messages(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?)
+                    .await?;
                 ok(Value::Null)
             }
             "delete_messages" => {
@@ -463,11 +470,30 @@ impl Service {
 
     // ---- config & accounts ----
 
+    /// Fills values the user left empty: built-in client ID, snooze options.
+    fn apply_defaults(c: &mut Config, demo: bool) {
+        let builtin = builtin_client_id();
+        c.builtin_client_id = !demo && !builtin.is_empty();
+        if demo && c.client_id.is_empty() {
+            c.client_id = "demo-client".into();
+        }
+        if c.client_id.trim().is_empty() && !builtin.is_empty() {
+            c.client_id = builtin.to_string();
+        }
+        if c.snooze_options.is_empty() {
+            c.snooze_options = default_snooze_options();
+        }
+        if !matches!(c.list_mode.as_str(), "comfortable" | "compact") {
+            c.list_mode = "comfortable".into();
+        }
+    }
+
     fn save_config(&self, mut c: Config) -> Result<Config> {
         c.demo = self.opts.demo;
         if self.opts.demo {
             c.client_id = "demo-client".into();
         }
+        Self::apply_defaults(&mut c, self.opts.demo);
         c.sync_interval_secs = c.sync_interval_secs.clamp(15, 3600);
         let changed_auth = {
             let cur = self.config.read().unwrap();
@@ -574,38 +600,6 @@ impl Service {
         Ok(())
     }
 
-    async fn add_shared_mailbox(self: &Arc<Self>, account_id: &str, address: &str) -> Result<Mailbox> {
-        let address = address.trim().to_lowercase();
-        if !address.contains('@') {
-            return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse angeben."));
-        }
-        let client = self.client(account_id)?;
-        let mb = Mailbox {
-            id: format!("{account_id}|{address}"),
-            account_id: account_id.to_string(),
-            address: address.clone(),
-            display_name: address.clone(),
-            kind: "shared".into(),
-        };
-        // Verify access before storing.
-        client
-            .get(&format!("{}/mailFolders/inbox?$select=id", mb.graph_prefix()))
-            .await
-            .map_err(|e| match e {
-                Error::Graph { status: 403 | 404, .. } => Error::invalid(format!(
-                    "Kein Zugriff auf das Postfach {address}. Sind Sie dafür berechtigt (Vollzugriff)?"
-                )),
-                other => other,
-            })?;
-        self.store.upsert_mailbox(&mb)?;
-        self.sync_folders(&mb.id).await?;
-        if let Some(inbox) = self.store.folder_by_well_known(&mb.id, "inbox")? {
-            let _ = self.sync_folder(&mb.id, &inbox.id, true).await;
-        }
-        self.emit("accounts-changed", json!({}));
-        Ok(mb)
-    }
-
     // ---- background sync ----
 
     /// "Senden/Empfangen": folders, inbox and active folder of every mailbox.
@@ -631,6 +625,10 @@ impl Service {
                 offline |= e.is_network();
                 errors.push(format!("{}: {e}", mb.address));
                 continue;
+            }
+            if let Err(e) = self.process_due_snoozes(&mb.id).await {
+                offline |= e.is_network();
+                errors.push(format!("{}: {e}", mb.address));
             }
             let mut targets = Vec::new();
             if let Ok(Some(inbox)) = self.store.folder_by_well_known(&mb.id, "inbox") {
@@ -677,10 +675,7 @@ impl Service {
     /// Demo mode: sign in automatically when no account exists yet.
     pub async fn ensure_demo_account(self: &Arc<Self>) -> Result<()> {
         if self.opts.demo && self.store.list_accounts()?.is_empty() {
-            let acc = self.add_account().await?;
-            let _ = self
-                .add_shared_mailbox(&acc.id, "datenschutz@contoso.example")
-                .await;
+            self.add_account().await?;
         }
         Ok(())
     }

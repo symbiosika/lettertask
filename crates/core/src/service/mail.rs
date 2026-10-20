@@ -96,7 +96,10 @@ impl Service {
                     .iter()
                     .find(|(wid, _)| *wid == id)
                     .map(|(_, n)| n.to_string());
-                let f = convert::folder(&v, mailbox_id, root_id.as_deref(), well_known);
+                let mut f = convert::folder(&v, mailbox_id, root_id.as_deref(), well_known);
+                if f.well_known.is_none() && self.is_snooze_folder(mailbox_id, &f)? {
+                    f.well_known = Some("snoozed".into());
+                }
                 if f.child_folder_count > 0 {
                     queue.push(format!(
                         "{prefix}/mailFolders/{}/childFolders?$top=250",
@@ -459,6 +462,8 @@ impl Service {
         mailbox_id: &str,
         text: &str,
         folder_id: Option<&str>,
+        field: &str,
+        has_attachments: bool,
     ) -> Result<Vec<MessageSummary>> {
         let text = text.trim();
         if text.is_empty() {
@@ -469,8 +474,7 @@ impl Service {
             Some(f) => format!("{}/mailFolders/{}/messages", mb.graph_prefix(), seg(f)),
             None => format!("{}/messages", mb.graph_prefix()),
         };
-        // KQL phrase: quotes inside the term are not allowed.
-        let term = format!("\"{}\"", text.replace('"', " "));
+        let term = format!("\"{}\"", kql(text, field, has_attachments));
         let path = format!("{base}?$search={}&$select={}&$top=100", enc(&term), MESSAGE_SUMMARY_SELECT);
         let page = c.get(&path).await?;
         let mut out: Vec<MessageSummary> = page["value"]
@@ -613,7 +617,7 @@ impl Service {
 
     // ---- bulk updates ----
 
-    async fn patch_many(&self, mb: &Mailbox, c: &Arc<GraphClient>, ids: &[String], body: Value) -> Result<()> {
+    pub(crate) async fn patch_many(&self, mb: &Mailbox, c: &Arc<GraphClient>, ids: &[String], body: Value) -> Result<()> {
         let prefix = mb.graph_prefix();
         stream::iter(ids.to_vec())
             .map(|id| {
@@ -628,7 +632,7 @@ impl Service {
         Ok(())
     }
 
-    fn update_cached(&self, mailbox_id: &str, ids: &[String], f: impl Fn(&mut MessageSummary)) -> Result<HashSet<String>> {
+    pub(crate) fn update_cached(&self, mailbox_id: &str, ids: &[String], f: impl Fn(&mut MessageSummary)) -> Result<HashSet<String>> {
         let mut folders = HashSet::new();
         for id in ids {
             if let Some(mut m) = self.store.get_summary(mailbox_id, id)? {
@@ -689,7 +693,14 @@ impl Service {
         Ok(())
     }
 
-    pub(crate) async fn move_messages(&self, mailbox_id: &str, ids: &[String], dest: &str, copy: bool) -> Result<()> {
+    /// Moves/copies messages; returns `(old id, new id)` pairs (Graph assigns new ids).
+    pub(crate) async fn move_messages(
+        &self,
+        mailbox_id: &str,
+        ids: &[String],
+        dest: &str,
+        copy: bool,
+    ) -> Result<Vec<(String, String)>> {
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let action = if copy { "copy" } else { "move" };
@@ -704,7 +715,11 @@ impl Service {
             .try_collect()
             .await?;
         let mut folders = HashSet::from([dest.to_string()]);
+        let mut mapping = Vec::new();
         for (old_id, v) in results {
+            if let Some(new_id) = v["id"].as_str() {
+                mapping.push((old_id.clone(), new_id.to_string()));
+            }
             if !copy {
                 if let Some(old) = self.store.get_summary(mailbox_id, &old_id)? {
                     self.store.adjust_folder_counts(
@@ -726,7 +741,7 @@ impl Service {
             }
         }
         self.emit_folders(mailbox_id, folders);
-        Ok(())
+        Ok(mapping)
     }
 
     pub(crate) async fn delete_messages(&self, mailbox_id: &str, ids: &[String], permanent: bool) -> Result<()> {
@@ -841,6 +856,31 @@ impl Service {
     }
 }
 
+/// Builds the KQL expression for `$search` (without the surrounding quotes,
+/// which Graph requires around the whole value).
+pub(crate) fn kql(text: &str, field: &str, has_attachments: bool) -> String {
+    let clean: String = text
+        .chars()
+        .map(|c| if matches!(c, '"' | '\\' | '(' | ')') { ' ' } else { c })
+        .collect();
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    let prop = match field {
+        "from" => Some("from"),
+        "to" => Some("to"),
+        "subject" => Some("subject"),
+        "body" => Some("body"),
+        _ => None,
+    };
+    let mut q = match prop {
+        Some(p) => words.iter().map(|w| format!("{p}:{w}")).collect::<Vec<_>>().join(" "),
+        None => words.join(" "),
+    };
+    if has_attachments {
+        q.push_str(" hasAttachments:true");
+    }
+    q.trim().to_string()
+}
+
 pub(crate) fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -860,7 +900,14 @@ pub(crate) fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_filename;
+    use super::{kql, sanitize_filename};
+
+    #[test]
+    fn builds_kql() {
+        assert_eq!(kql("Rechnung März", "all", false), "Rechnung März");
+        assert_eq!(kql("anna \"x\"", "from", false), "from:anna from:x");
+        assert_eq!(kql("Angebot", "subject", true), "subject:Angebot hasAttachments:true");
+    }
 
     #[test]
     fn filenames_are_safe() {

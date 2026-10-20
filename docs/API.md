@@ -20,14 +20,15 @@ Address      { name: string, address: string }
 Account      { id: string, email: string, displayName: string, mailboxes: Mailbox[] }
 Mailbox      { id: string, accountId: string, address: string, displayName: string, kind: "primary" | "shared" }
 Folder       { id: string, mailboxId: string, parentId: string|null, displayName: string,
-               wellKnown: "inbox"|"drafts"|"sentitems"|"deleteditems"|"archive"|"junkemail"|"outbox"|null,
+               wellKnown: "inbox"|"drafts"|"sentitems"|"deleteditems"|"archive"|"junkemail"|"outbox"|"snoozed"|null,
                unreadCount: number, totalCount: number, childFolderCount: number }
 MessageSummary {
   id, mailboxId, folderId, conversationId: string,
   subject: string, from: Address|null, to: Address[], receivedAt: string,
   isRead: bool, isDraft: bool, importance: "low"|"normal"|"high",
   flag: "notFlagged"|"flagged"|"complete", hasAttachments: bool,
-  categories: string[], preview: string
+  categories: string[], preview: string,
+  dueAt: string|null   // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
 }
 Attachment   { id, name, contentType: string, size: number, isInline: bool, contentId: string|null }
 MessageDetail = MessageSummary & {
@@ -78,9 +79,17 @@ DraftInput = Draft (without attachments) & {
 Config {
   clientId: string, tenant: string /* "organizations" default */, syncIntervalSecs: number,
   loadRemoteImages: bool, signatureHtml: string, readingPane: "right"|"bottom"|"off",
-  markReadDelaySecs: number /* -1 = never automatically */, listMode: "columns"|"compact",
-  demo: bool /* read-only: running against the built-in demo server */
+  markReadDelaySecs: number /* -1 = never automatically */, listMode: "comfortable"|"compact",
+  showDateSeparators: bool /* thin "Heute / Gestern / Älter" separators in the list */,
+  snoozeOptions: SnoozeOption[] /* entries of the "Wiedervorlage" dropdown, editable in settings */,
+  demo: bool /* read-only: running against the built-in demo server */,
+  builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" */
 }
+SnoozeOption { label: string, rule: string }
+// rule grammar (evaluated in the UI, local time):  "<base>@HH:MM"
+//   base = "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
+// defaults: Morgen 8 Uhr = tomorrow@08:00, Übermorgen 8 Uhr = days:2@08:00, Am Wochenende = weekend@08:00,
+//           Nächste Woche = nextWeek@08:00, In 14 Tagen = days:14@08:00, In 30 Tagen = days:30@08:00
 AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage: string,
             externalReplyMessage: string, scheduledStart: string|null, scheduledEnd: string|null,
             externalAudience: "none"|"contactsOnly"|"all" }
@@ -96,8 +105,6 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `list_accounts` | `{}` | `Account[]` |
 | `add_account` | `{}` | `Account` — opens system browser, waits for login (up to 5 min) |
 | `remove_account` | `{ accountId }` | `null` |
-| `add_shared_mailbox` | `{ accountId, address }` | `Mailbox` |
-| `remove_mailbox` | `{ mailboxId }` | `null` |
 | `set_active_folder` | `{ mailboxId, folderId }` | `null` — background sync also syncs this folder |
 | `sync_all` | `{}` | `null` — "Senden/Empfangen": folders + inbox + active folder of every mailbox |
 
@@ -114,7 +121,10 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `list_messages` | `{ mailboxId, folderId, sortBy: "received"\|"from"\|"subject"\|"importance"\|"flag"\|"attachments"\|"categories", sortDesc: bool, unreadOnly: bool, flaggedOnly: bool, category: string\|null, text: string\|null, offset: number, limit: number }` | `{ items: MessageSummary[], total: number, unread: number, canLoadOlder: bool }` — from local cache; `text` filters subject/from/preview locally |
 | `sync_folder` | `{ mailboxId, folderId }` | `{ added, updated, removed }` |
 | `load_older` | `{ mailboxId, folderId }` | `number` loaded (0 = nothing older) |
-| `search_messages` | `{ mailboxId, text, folderId: string\|null }` | `MessageSummary[]` (server side search, max 100) |
+| `search_messages` | `{ mailboxId, text, folderId: string\|null, field?: "all"\|"from"\|"to"\|"subject"\|"body", hasAttachments?: bool }` | `MessageSummary[]` (server side search, max 100; folderId null = all folders) |
+| `archive_messages` | `{ mailboxId, ids }` | `null` — move to the Archive folder (created if missing) |
+| `snooze_messages` | `{ mailboxId, ids, until: ISO UTC }` | `null` — "Auf Wiedervorlage": moves to folder "Wiedervorlage" (Folder.wellKnown = "snoozed"), stores the time as follow-up due date; the background sync moves it back to the inbox (unread) when due and emits `new-mail` |
+| `unsnooze_messages` | `{ mailboxId, ids }` | `null` — back to the inbox now |
 | `get_message` | `{ mailboxId, messageId }` | `MessageDetail` |
 | `set_read` | `{ mailboxId, ids: string[], isRead: bool }` | `null` |
 | `set_flag` | `{ mailboxId, ids, flag }` | `null` |

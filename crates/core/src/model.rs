@@ -77,6 +77,9 @@ pub struct MessageSummary {
     pub has_attachments: bool,
     pub categories: Vec<String>,
     pub preview: String,
+    /// Follow-up due time (UTC); for snoozed mails the "Wiedervorlage" time.
+    #[serde(default)]
+    pub due_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -353,8 +356,46 @@ pub struct Config {
     pub reading_pane: String,
     pub mark_read_delay_secs: i64,
     pub list_mode: String,
+    pub show_date_separators: bool,
+    pub snooze_options: Vec<SnoozeOption>,
     /// Read-only for the UI: set when running against the demo server.
     pub demo: bool,
+    /// Read-only for the UI: a client ID was compiled into this build.
+    pub builtin_client_id: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeOption {
+    pub label: String,
+    /// `<base>@HH:MM`, base = tomorrow | days:N | weekend | nextWeek (evaluated by the UI).
+    pub rule: String,
+}
+
+/// Client ID of the app registration compiled into release builds
+/// (`OUTLOOK_CLASSIC_CLIENT_ID=<guid> cargo build`). Desktop apps are public
+/// clients, so the ID is not a secret.
+pub const BUILTIN_CLIENT_ID: Option<&str> = option_env!("OUTLOOK_CLASSIC_CLIENT_ID");
+
+pub fn builtin_client_id() -> &'static str {
+    BUILTIN_CLIENT_ID.map(str::trim).unwrap_or("")
+}
+
+pub fn default_snooze_options() -> Vec<SnoozeOption> {
+    [
+        ("Morgen 8 Uhr", "tomorrow@08:00"),
+        ("Übermorgen 8 Uhr", "days:2@08:00"),
+        ("Am Wochenende 8 Uhr", "weekend@08:00"),
+        ("Nächste Woche", "nextWeek@08:00"),
+        ("In 14 Tagen", "days:14@08:00"),
+        ("In 30 Tagen", "days:30@08:00"),
+    ]
+    .into_iter()
+    .map(|(label, rule)| SnoozeOption {
+        label: label.into(),
+        rule: rule.into(),
+    })
+    .collect()
 }
 
 impl Default for Config {
@@ -367,8 +408,11 @@ impl Default for Config {
             signature_html: String::new(),
             reading_pane: "right".into(),
             mark_read_delay_secs: 2,
-            list_mode: "columns".into(),
+            list_mode: "comfortable".into(),
+            show_date_separators: true,
+            snooze_options: default_snooze_options(),
             demo: false,
+            builtin_client_id: false,
         }
     }
 }
