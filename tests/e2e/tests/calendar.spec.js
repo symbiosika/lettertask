@@ -9,6 +9,7 @@ test('Wochenansicht zeigt Termine', async ({ page }) => {
   await page.locator('[data-testid=nav-calendar]').click();
   await page.locator('[data-testid=tb-view-week]').click();
   await expect(page.locator('.tg-dayhead')).toHaveCount(7);
+  await expect(page.locator('#ab-period')).toHaveText(/\d/);
   await expect(page.locator('.timegrid .ev').first()).toBeVisible();
   expect(await page.locator('.timegrid .ev').count()).toBeGreaterThan(2);
   // peek on click
@@ -17,6 +18,8 @@ test('Wochenansicht zeigt Termine', async ({ page }) => {
   // month view
   await page.locator('[data-testid=tb-view-month]').click();
   await expect(page.locator('.mg-cell')).toHaveCount(42);
+  await page.locator('[data-testid=tb-view-workweek]').click();
+  await expect(page.locator('.tg-dayhead')).toHaveCount(5);
 });
 
 test('Neuen Termin anlegen', async ({ page }) => {
@@ -36,10 +39,10 @@ test('Neuen Termin anlegen', async ({ page }) => {
   await popup.locator('[data-testid=ev-save]').click();
   await closed;
   await expect(page.locator('.timegrid .ev', { hasText: subject })).toBeVisible({ timeout: 15_000 });
-  // open again and verify values round-trip
   const edit = await popupFrom(page, () => page.locator('.timegrid .ev', { hasText: subject }).dblclick());
   await expect(edit.locator('input[name=subject]')).toHaveValue(subject);
   await expect(edit.locator('input[name=location]')).toHaveValue('Raum 1');
   await expect(edit.locator('input[name=startTime]')).toHaveValue('10:00');
   await edit.close({ runBeforeUnload: false });
+  await page.locator('[data-testid=nav-mail]').click();
 });

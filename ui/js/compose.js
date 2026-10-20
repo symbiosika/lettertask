@@ -1,15 +1,15 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
 import { call, params, closeWindow, isTauri } from './api.js';
-import { h, $, esc, fmtSize, fileToBase64 } from './util.js';
+import { h, $, esc, fmtSize, fileToBase64, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog } from './dialogs.js';
+import { modal, reportError, toast, confirmDialog, showMenuAt } from './dialogs.js';
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
-import { tbBtn, group, setPressed } from './toolbar.js';
+import { splitBtn } from './toolbar.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById } from './state.js';
 
 const P = params();
-const MODE_TITLE = { new: 'Unbenannt', reply: 'Antwort', replyAll: 'Antwort', forward: 'Weiterleitung' };
+const MODE_TITLE = { new: 'Neue Nachricht', reply: 'Antwort', replyAll: 'Antwort', forward: 'Weiterleitung' };
 
 const st = {
   draft: null,            // last Draft from the server
@@ -26,35 +26,39 @@ const st = {
   closing: false,
 };
 
-let to, cc, bcc, subject, editor, ccRow, bccRow, attRow, attList, fromSel;
+let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink;
 
 function markDirty() { st.dirty = true; }
 
-function renderToolbar() {
-  const tb = $('#toolbar');
-  const hi = tbBtn('Wichtigkeit: hoch', 'important', () => { st.importance = st.importance === 'high' ? 'normal' : 'high'; syncToggles(); markDirty(); }, { toggle: true, testid: 'imp-high' });
-  const lo = tbBtn('Wichtigkeit: niedrig', 'lowImportance', () => { st.importance = st.importance === 'low' ? 'normal' : 'low'; syncToggles(); markDirty(); }, { toggle: true, testid: 'imp-low' });
-  const rr = tbBtn('Lesebestätigung', 'receipt', () => { st.receipt = !st.receipt; syncToggles(); markDirty(); }, { toggle: true, testid: 'receipt' });
-  const bccBtn = tbBtn('Bcc', 'people', () => { bccRow.classList.toggle('hidden'); if (!bccRow.classList.contains('hidden')) bcc.focus(); }, { title: 'Bcc-Feld ein-/ausblenden' });
-  const fileInput = h('input', { type: 'file', multiple: true, style: { display: 'none' }, id: 'file-input' });
-  fileInput.addEventListener('change', async () => {
-    for (const f of fileInput.files) await addFile(f).catch(reportError);
-    fileInput.value = '';
-  });
-  tb.append(
-    group(
-      tbBtn('Datei anfügen', 'attach', () => fileInput.click(), { testid: 'compose-attach' }), fileInput,
-      tbBtn('Speichern', 'save', () => save(false), { testid: 'compose-save', title: 'Speichern (Strg+S)' }),
-      tbBtn('Verwerfen', 'delete', () => discard(), { testid: 'compose-discard' }),
-    ),
-    group(bccBtn, hi, lo, rr),
-  );
-  function syncToggles() {
-    setPressed(hi, st.importance === 'high');
-    setPressed(lo, st.importance === 'low');
-    setPressed(rr, st.receipt);
+function renderHead() {
+  const head = $('#head');
+  const more = h('button.icon-btn', { type: 'button', title: 'Weitere Optionen', 'aria-label': 'Weitere Optionen', dataset: { testid: 'compose-more' }, html: icon('menu', 18) });
+  more.addEventListener('click', () => showMenuAt(more, [
+    { label: 'Als Entwurf speichern', icon: 'save', shortcut: 'Strg+S', onClick: () => save(false), testid: 'compose-save' },
+    { label: 'Verwerfen', icon: 'delete', onClick: () => discard(), testid: 'compose-discard' },
+    { separator: true },
+    { label: 'Wichtigkeit: hoch', icon: 'important', checked: st.importance === 'high', onClick: () => setImportance(st.importance === 'high' ? 'normal' : 'high'), testid: 'imp-high' },
+    { label: 'Wichtigkeit: niedrig', icon: 'lowImportance', checked: st.importance === 'low', onClick: () => setImportance(st.importance === 'low' ? 'normal' : 'low'), testid: 'imp-low' },
+    { label: 'Lesebestätigung anfordern', icon: 'receipt', checked: st.receipt, onClick: () => { st.receipt = !st.receipt; markDirty(); syncToggles(); }, testid: 'receipt' },
+  ]));
+  titleEl = h('div.cw-title', 'Neue Nachricht');
+  head.append(more, titleEl, h('span.cw-flags'));
+}
+
+function setImportance(v) { st.importance = v; markDirty(); syncToggles(); }
+
+function syncToggles() {
+  if (impBtn) {
+    impBtn.classList.toggle('on', st.importance === 'high');
+    impBtn.title = st.importance === 'high' ? 'Wichtigkeit: hoch (aktiv)' : 'Wichtigkeit: hoch';
   }
-  renderToolbar.sync = syncToggles;
+  const flags = $('.cw-flags');
+  if (flags) {
+    flags.innerHTML = '';
+    if (st.importance === 'high') flags.appendChild(h('span.pill.warn', { html: icon('important', 13) + ' Wichtig' }));
+    if (st.importance === 'low') flags.appendChild(h('span.pill', { html: icon('lowImportance', 13) + ' Niedrig' }));
+    if (st.receipt) flags.appendChild(h('span.pill', { html: icon('receipt', 13) + ' Lesebestätigung' }));
+  }
 }
 
 function renderForm() {
@@ -63,41 +67,72 @@ function renderForm() {
   to = recipientField({ mailboxId: mbId, name: 'to', onChange: markDirty });
   cc = recipientField({ mailboxId: mbId, name: 'cc', onChange: markDirty });
   bcc = recipientField({ mailboxId: mbId, name: 'bcc', onChange: markDirty });
-  subject = h('input.input#subject', { type: 'text', name: 'subject', 'aria-label': 'Betreff' });
+  subject = h('input.cw-input#subject', { type: 'text', name: 'subject', 'aria-label': 'Betreff', placeholder: '' });
   subject.addEventListener('input', () => { markDirty(); updateTitle(); });
 
-  const rows = h('div.form-rows');
+  // send row: [Senden ▾] + Von
+  const sendrow = $('#sendrow');
+  const send = splitBtn('Senden', 'send', () => send_().catch(reportError), (b) => showMenuAt(b, [
+    { label: 'Senden', icon: 'send', shortcut: 'Strg+Eingabe', onClick: () => send_() },
+    { label: 'Speichern & schließen', icon: 'save', onClick: async () => { await save(true); await finish(); } },
+  ]), { testid: 'compose-send', menuTestid: 'compose-send-menu', primary: true, title: 'Senden (Strg+Eingabe)' });
   const mbs = mailboxes();
+  const fromChip = h('div.from-chip#from-chip');
+  const paintFrom = () => {
+    const mb = mailboxById(st.mailboxId) || mbs[0];
+    fromChip.innerHTML = '';
+    if (!mb) return;
+    fromChip.append(...[h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address)),
+      h('span.from-text', `${mb.displayName} <${mb.address}>`), mbs.length > 1 && !(st.draft && st.draft.id) ? h('span', { html: icon('chevronDown', 14) }) : null].filter(Boolean));
+  };
   if (mbs.length > 1) {
-    fromSel = h('select.input#from', { 'aria-label': 'Von' }, ...mbs.map((m) => h('option', { value: m.id, selected: m.id === st.mailboxId }, `${m.displayName} <${m.address}>`)));
-    fromSel.disabled = !!(st.draft && st.draft.id);
-    fromSel.title = fromSel.disabled ? 'Der Absender kann für einen vorhandenen Entwurf nicht geändert werden.' : '';
-    fromSel.addEventListener('change', () => { st.mailboxId = fromSel.value; markDirty(); });
-    rows.appendChild(h('div.frow', h('span.flabel', 'Von:'), h('div.fval', fromSel)));
+    fromChip.classList.add('clickable');
+    fromChip.addEventListener('click', () => {
+      if (st.draft && st.draft.id) { toast('Der Absender kann für einen vorhandenen Entwurf nicht geändert werden.'); return; }
+      showMenuAt(fromChip, mbs.map((m) => ({ label: `${m.displayName} <${m.address}>`, checked: m.id === st.mailboxId, onClick: () => { st.mailboxId = m.id; markDirty(); paintFrom(); } })));
+    });
   }
-  const lblBtn = (label, field) => h('button.flabel', { type: 'button', tabindex: '-1', onclick: () => field.focus() }, label);
-  rows.appendChild(h('div.frow', lblBtn('An…', to), h('div.fval', to.el)));
-  ccRow = h('div.frow', lblBtn('Cc…', cc), h('div.fval', cc.el));
-  bccRow = h('div.frow.hidden', lblBtn('Bcc…', bcc), h('div.fval', bcc.el));
-  rows.append(ccRow, bccRow);
-  rows.appendChild(h('div.frow', h('span.flabel', 'Betreff:'), h('div.fval', subject)));
-  attList = h('div.att-row');
-  attRow = h('div.frow.hidden', h('span.flabel', 'Angefügt:'), h('div.fval', attList));
-  rows.appendChild(attRow);
+  renderForm.paintFrom = paintFrom;
+  sendrow.append(send, h('span.cw-from-lbl', 'Von'), fromChip);
 
-  const sendBig = h('button.send-big', { type: 'button', dataset: { testid: 'compose-send' }, title: 'Senden (Strg+Eingabe)', html: icon('send', 30) + '<span>Senden</span>', onclick: () => send().catch(reportError) });
-  form.append(h('div.form-send', sendBig), rows);
+  // fields
+  ccLink = h('button.linkbtn.cc-link', { type: 'button', dataset: { testid: 'add-ccbcc' }, onclick: () => showCcBcc(true) }, 'Cc & Bcc hinzufügen');
+  const row = (label, field, extra) => h('div.cw-row', h('label.cw-lbl', { onclick: () => field.focus() }, label), h('div.cw-val', field.el || field, extra || null));
+  const toRow = row('An', to, ccLink);
+  ccRow = row('Cc', cc);
+  bccRow = row('Bcc', bcc);
+  ccRow.classList.add('hidden'); bccRow.classList.add('hidden');
+  form.append(toRow, ccRow, bccRow, row('Betreff', subject));
 
-  editor = createEditor({ onInput: markDirty });
+  attList = $('#atts');
+
+  // editor with attach + importance at the front of the toolbar
+  const fileInput = h('input', { type: 'file', multiple: true, style: { display: 'none' }, id: 'file-input' });
+  fileInput.addEventListener('change', async () => {
+    for (const f of fileInput.files) await addFile(f).catch(reportError);
+    fileInput.value = '';
+  });
+  const attachBtn = h('button.ed-btn', { type: 'button', title: 'Datei anfügen', 'aria-label': 'Datei anfügen', dataset: { testid: 'compose-attach' }, html: icon('attach', 18), onclick: () => fileInput.click() });
+  impBtn = h('button.ed-btn.imp', { type: 'button', title: 'Wichtigkeit: hoch', 'aria-label': 'Wichtigkeit hoch', dataset: { testid: 'compose-importance' }, html: icon('important', 18), onclick: () => setImportance(st.importance === 'high' ? 'normal' : 'high') });
+  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn] });
   $('#editor').append(editor.toolbar, editor.area);
 
   // drag & drop files onto the window
-  document.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+  document.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); document.body.classList.add('dropping'); } });
+  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
   document.addEventListener('drop', async (e) => {
+    document.body.classList.remove('dropping');
     if (!e.dataTransfer || !e.dataTransfer.files.length) return;
     e.preventDefault();
     for (const f of e.dataTransfer.files) await addFile(f).catch(reportError);
   });
+}
+
+function showCcBcc(focus) {
+  ccRow.classList.remove('hidden');
+  bccRow.classList.remove('hidden');
+  ccLink.classList.add('hidden');
+  if (focus) cc.focus();
 }
 
 async function addFile(file) {
@@ -114,22 +149,25 @@ function renderAttachments() {
     ...st.attachments.filter((a) => !st.removed.includes(a.id)).map((a) => ({ ...a, kind: 'existing' })),
     ...st.newAttachments.map((a) => ({ ...a, id: a.tmpId, kind: 'new' })),
   ];
-  attRow.classList.toggle('hidden', !all.length);
+  attList.classList.toggle('hidden', !all.length);
   for (const a of all) {
-    const x = h('button.att-x', { type: 'button', title: 'Entfernen', html: icon('close', 10) });
+    const x = h('button.att-x', { type: 'button', title: 'Entfernen', 'aria-label': 'Anhang entfernen', html: icon('close', 13) });
     x.addEventListener('click', () => {
       if (a.kind === 'existing') st.removed.push(a.id);
       else st.newAttachments = st.newAttachments.filter((n) => n.tmpId !== a.id);
       markDirty();
       renderAttachments();
     });
-    attList.appendChild(h('span.attachment', { title: a.name }, h('span', { html: icon(/^image\//.test(a.contentType) ? 'image' : 'file', 16) }), h('span.att-name', a.name), h('span.att-size', `(${fmtSize(a.size)})`), x));
+    attList.appendChild(h('span.attachment', { title: a.name },
+      h('span.att-ic', { html: icon(/^image\//.test(a.contentType) ? 'image' : 'file', 18) }),
+      h('span.att-text', h('span.att-name', a.name), h('span.att-size', fmtSize(a.size))), x));
   }
 }
 
 function updateTitle() {
   const s = subject.value.trim() || MODE_TITLE[(st.draft && st.draft.mode) || P.mode || 'new'];
-  document.title = `${s} – Nachricht (HTML)`;
+  document.title = s;
+  if (titleEl) titleEl.textContent = s;
   if (isTauri && window.__TAURI__.window) { try { window.__TAURI__.window.getCurrentWindow().setTitle(document.title); } catch { /* ignore */ } }
 }
 
@@ -140,9 +178,9 @@ function applyDraft(d) {
   st.receipt = !!d.requestReadReceipt;
   st.attachments = d.attachments || [];
   to.set(d.to); cc.set(d.cc); bcc.set(d.bcc);
-  if ((d.bcc || []).length) bccRow.classList.remove('hidden');
+  if ((d.bcc || []).length || (d.cc || []).length) showCcBcc(false);
   subject.value = d.subject || '';
-  renderToolbar.sync();
+  syncToggles();
   renderAttachments();
   updateTitle();
 }
@@ -174,7 +212,7 @@ function validate() {
   return true;
 }
 
-async function send() {
+async function send_() {
   if (st.busy) return;
   if (!validate()) return;
   if (!subject.value.trim()) {
@@ -204,7 +242,7 @@ async function save(quiet) {
     st.draft = { ...(st.draft || {}), ...d };
     st.attachments = d.attachments || st.attachments;
     st.userSaved = true; st.dirty = false;
-    if (fromSel) { fromSel.disabled = true; }
+    if (renderForm.paintFrom) renderForm.paintFrom();
     renderAttachments();
     if (!quiet) toast('Entwurf gespeichert.');
   } finally { st.busy = false; }
@@ -228,7 +266,7 @@ async function confirmClose() {
   if (st.closing) return true;
   if (st.dirty) {
     const choice = await modal({
-      title: 'Outlook Classic',
+      title: 'Nachricht schließen',
       body: h('div.confirm-body', h('span', { html: icon('warning', 32) }), h('div', 'Möchten Sie die Änderungen speichern?')),
       buttons: [{ label: 'Ja', value: 'yes', primary: true }, { label: 'Nein', value: 'no' }, { label: 'Abbrechen', value: 'cancel', cancel: true }],
     });
@@ -268,14 +306,14 @@ function setupClose() {
   window.addEventListener('keydown', (e) => {
     if (document.querySelector('.modal-overlay')) return;
     const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.key === 'Enter') { e.preventDefault(); send().catch(reportError); }
+    if (ctrl && e.key === 'Enter') { e.preventDefault(); send_().catch(reportError); }
     else if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); save(false).catch(reportError); }
     else if (e.key === 'Escape') { e.preventDefault(); confirmClose().then((ok) => ok && closeWindow()); }
   });
 }
 
 async function init() {
-  renderToolbar();
+  renderHead();
   try { await bootstrapSecondary(); } catch (e) { reportError(e); }
   if (!st.mailboxId) st.mailboxId = mailboxes()[0] && mailboxes()[0].id;
   renderForm();
@@ -291,8 +329,7 @@ async function init() {
       if (P.to) { const extra = P.to.split(/[;,]/).map((x) => x.trim()).filter(Boolean).map((a) => ({ name: a, address: a })); d.to = [...(d.to || []), ...extra]; }
     }
     applyDraft(d);
-    // From: show mailbox address even when only one exists
-    if (fromSel) fromSel.value = st.mailboxId;
+    if (renderForm.paintFrom) renderForm.paintFrom();
     await editor.setHtml(d.bodyHtml || '');
     st.dirty = !!P.to;
     if ((d.to || []).length) await editor.focus(); else to.focus();
@@ -300,8 +337,6 @@ async function init() {
     reportError(e);
     applyDraft({ id: null, mailboxId: st.mailboxId, mode: 'new', to: [], cc: [], bcc: [], subject: '', bodyHtml: '', importance: 'normal', requestReadReceipt: false, attachments: [] });
   }
-  const mb = mailboxById(st.mailboxId);
-  if (mb && !fromSel) $('#form').querySelector('.form-rows').prepend(h('div.frow', h('span.flabel', 'Von:'), h('div.fval', { style: { paddingTop: '4px', color: '#333' } }, `${mb.displayName} <${mb.address}>`)));
 }
 
 init().catch(reportError);

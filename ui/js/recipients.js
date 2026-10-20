@@ -1,6 +1,6 @@
 // Token input for recipients with autocomplete via suggest_recipients.
 import { call } from './api.js';
-import { h, esc, debounce, parseAddress, displayName } from './util.js';
+import { h, esc, debounce, parseAddress, displayName, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
 
 let openPopup = null;
@@ -51,9 +51,9 @@ export function recipientField(opts = {}) {
     closePopup();
     if (!suggestions.length) return;
     const r = box.getBoundingClientRect();
-    const pop = h('div.rcpt-pop', { style: { left: r.left + 'px', top: r.bottom + 'px', width: Math.max(280, r.width / 2) + 'px' }, role: 'listbox' });
+    const pop = h('div.rcpt-pop', { style: { left: r.left + 'px', top: r.bottom + 4 + 'px', width: Math.max(320, Math.min(420, r.width)) + 'px' }, role: 'listbox' });
     suggestions.forEach((s, i) => {
-      const row = h('div.rcpt-sugg' + (i === active ? '.active' : ''), { role: 'option', html: `<span class="sn">${esc(s.name || s.address)}</span> <span class="sa">${esc(s.address)}</span>` });
+      const row = h('div.rcpt-sugg' + (i === active ? '.active' : ''), { role: 'option', html: `<span class="avatar xs" style="background:${avatarColor(s.address)}">${esc(initials(s.name, s.address))}</span><span class="rs-text"><span class="sn">${esc(s.name || s.address)}</span><span class="sa">${esc(s.address)}</span></span>` });
       row.addEventListener('mousedown', (e) => { e.preventDefault(); pick(s); });
       pop.appendChild(row);
     });

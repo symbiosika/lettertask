@@ -9,7 +9,7 @@ import { modal, reportError, toast, confirmDialog, showMenu } from './dialogs.js
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
 
-const SLOT_PX = 22; // per 30 minutes
+const SLOT_PX = 24; // per 30 minutes
 const DAY_START_WORK = 8, DAY_END_WORK = 17;
 
 const cal = {
@@ -30,9 +30,8 @@ export function initCalendar({ navHost, contentHost, onCounts }) {
   onStatus = onCounts || onStatus;
   els.nav = navHost;
   els.view = h('div.calview.hidden#calview');
-  els.header = h('div.cal-header');
   els.body = h('div.cal-body');
-  els.view.append(els.header, els.body);
+  els.view.append(els.body);
   contentHost.appendChild(els.view);
   setInterval(() => { if (!els.view.classList.contains('hidden')) paintNowLine(); }, 60000);
 }
@@ -43,6 +42,7 @@ export function showCalendarView(show) {
 }
 
 export function getView() { return cal.view; }
+export function periodTitle() { return headerTitle(); }
 
 // ------------------------------------------------------------- data
 export async function loadCalendars() {
@@ -92,7 +92,7 @@ export async function onAccountsChanged() {
 }
 
 // ------------------------------------------------------------- navigation
-export function setView(v) { cal.view = v; store('calView', v); refresh().catch(reportError); }
+export function setView(v) { cal.view = v; store('calView', v); onStatus(); refresh().catch(reportError); }
 export function goToday() { cal.date = startOfDay(new Date()); cal.navMonth = startOfMonth(cal.date); refresh().catch(reportError); }
 export function step(dir) {
   const v = cal.view;
@@ -100,6 +100,7 @@ export function step(dir) {
   else if (v === 'month') cal.date = new Date(cal.date.getFullYear(), cal.date.getMonth() + dir, 1);
   else cal.date = addDays(cal.date, 7 * dir);
   cal.navMonth = startOfMonth(cal.date);
+  onStatus();
   refresh().catch(reportError);
 }
 export function goTo(date) { cal.date = startOfDay(date); cal.navMonth = startOfMonth(date); refresh().catch(reportError); }
@@ -111,16 +112,17 @@ export function renderNav() {
   els.nav.appendChild(miniCalendar());
   for (const a of state.accounts) {
     const sec = h('div.cal-list');
-    sec.appendChild(h('div.tree-root', h('span.twisty', { html: icon('triDown', 10) }), h('span', { html: icon('calendar', 14) }), h('span', { style: { marginLeft: '5px', overflow: 'hidden', textOverflow: 'ellipsis' } }, 'Meine Kalender – ' + a.email)));
+    sec.appendChild(h('div.tree-root.static', h('span.tr-label', 'Meine Kalender'), h('span.tr-sub', a.email)));
     for (const c of cal.calendars.get(a.id) || []) {
-      const color = c.color || '#7aa2d6';
-      const cb = h('input', { type: 'checkbox', checked: !cal.hidden.has(c.id), style: { accentColor: color } });
+      const color = c.color || '#2f6fe4';
+      const cb = h('input.cal-check', { type: 'checkbox', checked: !cal.hidden.has(c.id) });
+      cb.style.setProperty('--cc', color);
       cb.addEventListener('change', () => {
         if (cb.checked) cal.hidden.delete(c.id); else cal.hidden.add(c.id);
         store('hiddenCalendars', [...cal.hidden]);
         refresh().catch(reportError);
       });
-      sec.appendChild(h('label.cal-item', { title: c.name }, cb, h('span.cal-color', { style: { background: color } }), h('span.cal-name', c.name)));
+      sec.appendChild(h('label.cal-item', { title: c.name }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' })));
     }
     els.nav.appendChild(sec);
   }
@@ -200,12 +202,6 @@ function headerTitle() {
 
 // ------------------------------------------------------------- render
 function render() {
-  els.header.innerHTML = '';
-  els.header.append(
-    h('button.mc-nav.big', { title: 'Zurück', html: icon('prev', 16), onclick: () => step(-1) }),
-    h('button.mc-nav.big', { title: 'Vor', html: icon('next', 16), onclick: () => step(1) }),
-    h('span.cal-title', headerTitle()),
-  );
   closePeek();
   if (cal.view === 'month') renderMonth(); else renderTimeGrid();
   onStatus();
@@ -376,7 +372,7 @@ function eventBlock(ev, kind) {
   const s = new Date(ev.start), e = new Date(ev.end);
   const el = h(cls, {
     dataset: { id: ev.id, accountId: ev.accountId }, title: `${eventTitle(ev)}${ev.location ? '\n' + ev.location : ''}\n${ev.isAllDay ? 'Ganztägig' : fmtTime(s) + ' – ' + fmtTime(e)}`,
-    style: { background: ev.showAs === 'free' ? '#fff' : lighten(color, 0.35), borderColor: shade(color, 0.7), color: '#1b1b1b', '--bar': shade(color, 0.8) },
+    style: { background: ev.showAs === 'free' ? '#fff' : lighten(color, 0.55), color: '#1f2328', '--bar': shade(color, 0.78) },
   });
   const icons = (ev.recurrence || ev.type === 'occurrence' ? icon('recurrence', 11) : '') + (ev.isOnlineMeeting ? icon('teams', 11) : '') + (ev.sensitivity === 'private' ? icon('lock', 11) : '');
   if (kind === 'timed') {
@@ -534,6 +530,10 @@ function defaultCalendar() {
 }
 
 export function newEvent(opts = {}) {
+  if (!cal.calendars.size) {
+    loadCalendars().then(() => { if (cal.calendars.size) newEvent(opts); else toast('Kein bearbeitbarer Kalender vorhanden.', 'error'); }).catch(reportError);
+    return;
+  }
   const target = defaultCalendar();
   if (!target) { toast('Kein bearbeitbarer Kalender vorhanden.', 'error'); return; }
   let start = opts.start, end = opts.end;

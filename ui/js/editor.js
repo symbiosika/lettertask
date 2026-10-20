@@ -2,10 +2,10 @@
 // The iframe keeps styles of quoted/forwarded HTML mails away from the window's own UI.
 import { h } from './util.js';
 import { icon } from './icons.js';
-import { promptDialog } from './dialogs.js';
+import { promptDialog, showMenuAt } from './dialogs.js';
 
 const COLORS = ['#000000', '#7f7f7f', '#c00000', '#ff0000', '#ffc000', '#00b050', '#0070c0', '#002060', '#7030a0'];
-const BASE_CSS = 'body{font-family:Calibri,"Segoe UI",Arial,sans-serif;font-size:11pt;color:#1f1f1f;margin:8px 10px;word-wrap:break-word;min-height:calc(100% - 20px)}p{margin:0}img{max-width:100%}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex}';
+const BASE_CSS = 'body{font-family:"Segoe UI",Calibri,system-ui,Arial,sans-serif;font-size:11pt;line-height:1.45;color:#1f2328;margin:14px 20px;max-width:820px;word-wrap:break-word;min-height:calc(100% - 20px)}p{margin:0}img{max-width:100%}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex}';
 
 function splitHtml(html) {
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
@@ -20,7 +20,7 @@ function splitHtml(html) {
   return { styles, body: doc.body ? doc.body.innerHTML : '' };
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200 } = {}) {
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
   let pending = html;
@@ -57,15 +57,13 @@ export function createEditor({ html = '', onInput, minHeight = 200 } = {}) {
 
   const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
   const btn = (ic, title, fn, cmd) => {
-    const b = h('button.ed-btn', { type: 'button', title, html: icon(ic, 16), dataset: { cmd: cmd || '' } });
+    const b = h('button.ed-btn', { type: 'button', title, 'aria-label': title, html: icon(ic, 18), dataset: { cmd: cmd || '' } });
     b.addEventListener('mousedown', (e) => e.preventDefault());
     b.addEventListener('click', fn);
     return b;
   };
-  const font = h('select.ed-select', { title: 'Schriftart' },
-    ...['Calibri', 'Arial', 'Segoe UI', 'Times New Roman', 'Verdana', 'Consolas'].map((f) => h('option', { value: f }, f)));
-  font.addEventListener('change', () => exec('fontName', font.value));
-  const size = h('select.ed-select', { title: 'Schriftgrad' },
+  const FONTS = ['Segoe UI', 'Calibri', 'Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Consolas'];
+  const size = h('select.ed-select', { title: 'Schriftgrad', 'aria-label': 'Schriftgrad' },
     ...[['1', '8'], ['2', '10'], ['3', '11'], ['4', '14'], ['5', '18'], ['6', '24'], ['7', '36']].map(([v, l]) => h('option', { value: v, selected: v === '3' }, l)));
   size.addEventListener('change', () => exec('fontSize', size.value));
   const colorBtn = btn('textColor', 'Schriftfarbe', () => {
@@ -77,21 +75,30 @@ export function createEditor({ html = '', onInput, minHeight = 200 } = {}) {
       pal.appendChild(sw);
     }
     const r = colorBtn.getBoundingClientRect();
-    Object.assign(pal.style, { left: r.left + 'px', top: r.bottom + 2 + 'px' });
+    Object.assign(pal.style, { left: r.left + 'px', top: r.bottom + 4 + 'px' });
     document.body.appendChild(pal);
     setTimeout(() => document.addEventListener('mousedown', function off(e) { if (!pal.contains(e.target)) { pal.remove(); document.removeEventListener('mousedown', off); } }), 0);
   });
+  const moreBtn = btn('more', 'Weitere Formatierungen', () => {
+    showMenuAt(moreBtn, [
+      { label: 'Schriftart', submenu: () => FONTS.map((f) => ({ label: f, onClick: () => exec('fontName', f) })) },
+      { label: 'Zitat', icon: 'quote', onClick: () => exec('formatBlock', 'blockquote') },
+      { label: 'Normaler Text', onClick: () => exec('formatBlock', 'p') },
+      { label: 'Horizontale Linie', onClick: () => exec('insertHorizontalRule') },
+    ]);
+  });
+  const sep = () => h('span.ed-sep');
 
   const toolbar = h('div.ed-toolbar',
-    font, size, h('span.ed-sep'),
+    ...lead, lead.length ? sep() : null,
     btn('bold', 'Fett (Strg+B)', () => exec('bold'), 'bold'),
     btn('italic', 'Kursiv (Strg+I)', () => exec('italic'), 'italic'),
     btn('underline', 'Unterstrichen (Strg+U)', () => exec('underline'), 'underline'),
-    colorBtn, h('span.ed-sep'),
+    colorBtn, size, sep(),
     btn('bullets', 'Aufzählungszeichen', () => exec('insertUnorderedList')),
     btn('numbers', 'Nummerierung', () => exec('insertOrderedList')),
     btn('outdent', 'Einzug verkleinern', () => exec('outdent')),
-    btn('indent', 'Einzug vergrößern', () => exec('indent')), h('span.ed-sep'),
+    btn('indent', 'Einzug vergrößern', () => exec('indent')), sep(),
     btn('link', 'Link einfügen', async () => {
       const sel = doc && doc.getSelection();
       const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
@@ -103,6 +110,7 @@ export function createEditor({ html = '', onInput, minHeight = 200 } = {}) {
       else exec('createLink', url);
     }),
     btn('clearFormat', 'Formatierung löschen', () => exec('removeFormat')),
+    moreBtn,
   );
 
   function updateState() {

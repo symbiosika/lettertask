@@ -105,10 +105,11 @@ export function fmtListDate(iso) {
   if (sameDay(d, now)) return fmtTime(d);
   const diff = (startOfDay(now) - startOfDay(d)) / 86400000;
   if (diff > 0 && diff < 7) return `${WEEKDAYS_SHORT[d.getDay()]} ${fmtTime(d)}`;
-  return `${fmtDate(d)} ${fmtTime(d)}`;
+  if (d.getFullYear() === now.getFullYear()) return `${WEEKDAYS_SHORT[d.getDay()]}, ${fmtDateShort(d)}`;
+  return fmtDate(d);
 }
 
-/** Classic Outlook date groups. Returns {key, label}. */
+/** Date separators for the message list. Returns {key, label}. */
 export function dateGroup(iso, now = new Date()) {
   const d = new Date(iso);
   const today = startOfDay(now);
@@ -118,10 +119,8 @@ export function dateGroup(iso, now = new Date()) {
   if (diff === 0) return { key: 'today', label: 'Heute' };
   if (diff === 1) return { key: 'yesterday', label: 'Gestern' };
   const weekStart = startOfWeek(now);
-  if (day >= weekStart) return { key: 'wd' + d.getDay(), label: WEEKDAYS[d.getDay()] };
+  if (day >= weekStart) return { key: 'thisweek', label: 'Diese Woche' };
   if (day >= addDays(weekStart, -7)) return { key: 'lastweek', label: 'Letzte Woche' };
-  if (day >= addDays(weekStart, -14)) return { key: 'twoweeks', label: 'Vor zwei Wochen' };
-  if (day >= addDays(weekStart, -21)) return { key: 'threeweeks', label: 'Vor drei Wochen' };
   const monthStart = startOfMonth(now);
   if (day >= monthStart) return { key: 'earliermonth', label: 'Früher in diesem Monat' };
   if (day >= new Date(now.getFullYear(), now.getMonth() - 1, 1)) return { key: 'lastmonth', label: 'Letzter Monat' };
@@ -142,7 +141,7 @@ export function initials(name, address) {
   return (parts[0] || '?').slice(0, 2).toUpperCase();
 }
 
-const AVATAR_COLORS = ['#3c6eb4', '#2a8a6a', '#a14fa8', '#c2571a', '#5b7f22', '#b03a5b', '#1e7f9e', '#6b5ab8', '#8a6d1d'];
+const AVATAR_COLORS = ['#5b8def', '#2fa67a', '#9b6bd8', '#e07b39', '#5c9e3a', '#d0567a', '#2b9bb5', '#7a6ee0', '#c08a2b', '#4f7cac', '#c25b4d', '#3f9e9a'];
 export function avatarColor(s) {
   let hsh = 0;
   for (const ch of String(s || '')) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;

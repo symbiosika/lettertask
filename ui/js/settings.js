@@ -1,10 +1,11 @@
-// Dialogs: settings, category manager, auto reply, shared mailbox, welcome / account setup.
+// Dialogs: settings, category manager, auto reply, welcome / account setup.
 import { call } from './api.js';
 import { h, esc, toLocalIso } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, field } from './dialogs.js';
 import { PRESETS, presetHex, textOn, getCategories, setCategories } from './categories.js';
 import { state, loadCategories } from './state.js';
+import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
 
 export const hooks = { onConfigSaved: () => {}, onAccountsChanged: () => {} };
 
@@ -15,48 +16,120 @@ function select(options, value) {
 }
 
 // ---------------------------------------------------------------- settings
-export async function openSettings() {
+const TABS = [
+  ['general', 'Allgemein', 'settings'],
+  ['reading', 'Lesen', 'mailOpen'],
+  ['compose', 'Schreiben', 'drafts'],
+  ['snooze', 'Wiedervorlage', 'snooze'],
+  ['account', 'Konto', 'user'],
+];
+
+function snoozeEditor(initial) {
+  let rows = initial.map((o) => ({ label: o.label, ...(parseRule(o.rule) || parseRule('tomorrow@08:00')) }));
+  const host = h('div.snooze-editor', { dataset: { testid: 'snooze-editor' } });
+  const render = () => {
+    host.innerHTML = '';
+    rows.forEach((r, i) => {
+      const label = h('input.input.sn-label', { value: r.label, placeholder: 'Bezeichnung', name: `snoozeLabel${i}`, 'aria-label': 'Bezeichnung' });
+      label.addEventListener('input', () => { r.label = label.value; });
+      const base = select(BASE_LABELS, r.base);
+      base.classList.add('sn-base');
+      base.name = `snoozeBase${i}`;
+      const days = h('input.input.sn-days', { type: 'number', min: '1', max: '365', value: String(r.days || 1), name: `snoozeDays${i}`, 'aria-label': 'Tage' });
+      const daysWrap = h('span.sn-dayswrap' + (r.base === 'days' ? '' : '.hidden'), days, h('span.dim', 'Tage'));
+      base.addEventListener('change', () => { r.base = base.value; daysWrap.classList.toggle('hidden', r.base !== 'days'); preview(); });
+      days.addEventListener('input', () => { r.days = Math.max(1, parseInt(days.value, 10) || 1); preview(); });
+      const time = h('input.input.sn-time', { type: 'time', value: `${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`, name: `snoozeTime${i}`, 'aria-label': 'Uhrzeit' });
+      time.addEventListener('change', () => { const [hh, mm] = (time.value || '08:00').split(':').map(Number); r.hour = hh || 0; r.minute = mm || 0; preview(); });
+      const pv = h('span.sn-preview.dim');
+      const preview = () => { const d = computeSnooze(formatRule(r)); pv.textContent = d ? '→ ' + fmtSnoozeTarget(d) : ''; };
+      preview();
+      const mv = (d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; render(); };
+      host.appendChild(h('div.sn-row',
+        h('div.sn-top', label, pv, h('span.spacer'),
+          h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', html: icon('up', 14), disabled: i === 0, onclick: () => mv(-1) }),
+          h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', html: icon('down', 14), disabled: i === rows.length - 1, onclick: () => mv(1) }),
+          h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 14), onclick: () => { rows.splice(i, 1); render(); } })),
+        h('div.sn-rule', base, daysWrap, h('span.dim', 'um'), time)));
+    });
+    host.appendChild(h('div.sn-actions',
+      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); render(); } }),
+      h('button.btn.small', { type: 'button', onclick: () => { rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); render(); } }, 'Standard wiederherstellen')));
+  };
+  render();
+  return { el: host, get: () => rows.filter((r) => r.label.trim()).map((r) => ({ label: r.label.trim(), rule: formatRule(r) })) };
+}
+
+export async function openSettings(initialTab = 'general') {
   const c = { ...state.config };
   const clientId = h('input.input', { value: c.clientId || '', placeholder: '00000000-0000-0000-0000-000000000000', name: 'clientId' });
   const tenant = h('input.input', { value: c.tenant || 'organizations', name: 'tenant' });
-  const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '90px' } });
+  const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
+  const seps = h('input', { type: 'checkbox', checked: c.showDateSeparators !== false, name: 'showDateSeparators' });
   const pane = select([['right', 'Rechts'], ['bottom', 'Unten'], ['off', 'Aus']], c.readingPane || 'right');
   pane.name = 'readingPane';
   const mrOpts = [['0', 'Sofort beim Anzeigen'], ['2', 'Nach 2 Sekunden'], ['5', 'Nach 5 Sekunden'], ['10', 'Nach 10 Sekunden'], ['30', 'Nach 30 Sekunden'], ['-1', 'Nie automatisch']];
   if (!mrOpts.some(([v]) => v === String(c.markReadDelaySecs ?? 0))) mrOpts.push([String(c.markReadDelaySecs), `Nach ${c.markReadDelaySecs} Sekunden`]);
   const markRead = select(mrOpts, String(c.markReadDelaySecs ?? 0));
   markRead.name = 'markReadDelaySecs';
-  const listMode = select([['columns', 'Spaltenansicht (klassisch)'], ['compact', 'Kompakt, zweizeilig (eM Client)']], c.listMode || 'columns');
+  const listMode = select([['comfortable', 'Komfortabel – mit Vorschautext'], ['compact', 'Kompakt – zwei Zeilen']], c.listMode === 'compact' ? 'compact' : 'comfortable');
   listMode.name = 'listMode';
-  const sig = h('div.input.selectable', { contentEditable: 'true', style: { height: '110px', overflow: 'auto', fontFamily: 'Calibri, Segoe UI, sans-serif', fontSize: '11pt', padding: '4px 6px' }, dataset: { testid: 'signature' } });
+  const sig = h('div.input.selectable.sig-editor', { contentEditable: 'true', dataset: { testid: 'signature' } });
   sig.innerHTML = c.signatureHtml || '';
+  const snooze = snoozeEditor(snoozeOptions(c));
 
-  const body = h('div.settings',
-    h('fieldset', h('legend', 'Microsoft 365 / Azure-App-Registrierung'),
-      field('Anwendungs-ID (Client-ID):', clientId),
-      field('Mandant (Tenant):', tenant, '„organizations", „common" oder Ihre Mandanten-ID/Domäne'),
-      c.demo ? h('div.field-hint', { style: { marginTop: '4px' } }, 'Demo-Modus aktiv – es wird ein eingebauter Testserver verwendet.') : null),
-    h('fieldset', h('legend', 'Senden/Empfangen'),
-      field('Automatisch alle (Sekunden):', interval)),
-    h('fieldset', h('legend', 'Lesen'),
-      field('Lesebereich:', pane),
-      field('Als gelesen markieren:', markRead),
-      field('Nachrichtenliste:', listMode),
-      h('label.checkrow', remote, 'Externe Bilder in HTML-Nachrichten automatisch herunterladen')),
-    h('fieldset', h('legend', 'Signatur (wird neuen Nachrichten, Antworten und Weiterleitungen hinzugefügt)'), sig),
-  );
+  const panels = {
+    general: h('div.set-panel',
+      h('h3', 'Allgemein'),
+      field('Automatisch synchronisieren alle', h('span.inline', interval, h('span.dim', 'Sekunden'))),
+      c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null),
+    reading: h('div.set-panel',
+      h('h3', 'Lesen'),
+      field('Lesebereich', pane),
+      field('Als gelesen markieren', markRead),
+      field('Nachrichtenliste', listMode),
+      h('label.checkrow', seps, 'Datumstrenner (Heute, Gestern, …) in der Liste anzeigen'),
+      h('label.checkrow', remote, 'Externe Bilder in Nachrichten automatisch laden')),
+    compose: h('div.set-panel',
+      h('h3', 'Schreiben'),
+      h('label.lbl', 'Signatur (wird neuen Nachrichten, Antworten und Weiterleitungen hinzugefügt)'), sig),
+    snooze: h('div.set-panel',
+      h('h3', 'Auf Wiedervorlage'),
+      h('p.note', 'Diese Zeitpunkte erscheinen im Menü „Auf Wiedervorlage“. Die Nachricht verschwindet bis dahin im Ordner „Wiedervorlage“ und kommt dann ungelesen in den Posteingang zurück.'),
+      snooze.el),
+    account: h('div.set-panel',
+      h('h3', 'Konto & Anmeldung'),
+      c.builtinClientId ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
+      field('Anwendungs-ID (Client-ID)', clientId),
+      field('Mandant (Tenant)', tenant, '„organizations“, „common“ oder Ihre Mandanten-ID/Domäne')),
+  };
+  const nav = h('div.set-nav', { role: 'tablist' });
+  const content = h('div.set-content');
+  const show = (key) => {
+    nav.querySelectorAll('.set-tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === key));
+    content.innerHTML = '';
+    content.appendChild(panels[key]);
+  };
+  for (const [key, label, ic] of TABS) {
+    const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, 16) + `<span>${esc(label)}</span>` });
+    t.addEventListener('click', () => show(key));
+    nav.appendChild(t);
+  }
+  show(panels[initialTab] ? initialTab : 'general');
+
   const res = await modal({
-    title: 'Optionen', body, width: 600,
-    buttons: [{ label: 'OK', value: 'ok', primary: true, id: 'settings-ok' }, { label: 'Abbrechen', value: null, cancel: true }],
+    title: 'Einstellungen', body: h('div.settings', nav, content), width: 760, className: 'settings-modal',
+    buttons: [{ label: 'Speichern', value: 'ok', primary: true, id: 'settings-ok' }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: async () => {
       const iv = parseInt(interval.value, 10);
-      if (!(iv >= 30)) { interval.classList.add('invalid'); toast('Das Synchronisierungsintervall muss mindestens 30 Sekunden betragen.', 'error'); return false; }
+      if (!(iv >= 30)) { show('general'); interval.classList.add('invalid'); toast('Das Synchronisierungsintervall muss mindestens 30 Sekunden betragen.', 'error'); return false; }
       const config = {
         ...state.config,
         clientId: clientId.value.trim(), tenant: tenant.value.trim() || 'organizations', syncIntervalSecs: iv,
         loadRemoteImages: remote.checked, signatureHtml: sig.innerHTML.trim() === '<br>' ? '' : sig.innerHTML,
         readingPane: pane.value, markReadDelaySecs: parseInt(markRead.value, 10), listMode: listMode.value,
+        showDateSeparators: seps.checked, snoozeOptions: snooze.get(),
       };
       state.config = await call('save_config', { config });
       return 'ok';
@@ -207,28 +280,6 @@ function stripHtml(s) {
 function textToHtml(t) { return t ? '<p>' + esc(t).replace(/\n/g, '<br>') + '</p>' : ''; }
 
 // ---------------------------------------------------------------- accounts
-export async function addSharedMailbox() {
-  if (!state.accounts.length) { toast('Bitte fügen Sie zuerst ein Konto hinzu.'); return; }
-  const acc = select(state.accounts.map((a) => [a.id, a.email]), state.accounts[0].id);
-  const addr = h('input.input', { type: 'email', placeholder: 'postfach@firma.de', style: { width: '100%' }, name: 'sharedAddress' });
-  const res = await modal({
-    title: 'Freigegebenes Postfach hinzufügen',
-    body: h('div',
-      h('p', { style: { margin: '0 0 8px', lineHeight: '1.45' } }, 'Geben Sie die Adresse eines Postfachs ein, für das Sie Vollzugriff besitzen (z. B. ein Team- oder Funktionspostfach).'),
-      state.accounts.length > 1 ? field('Über Konto:', acc) : null,
-      field('E-Mail-Adresse:', addr)),
-    width: 460,
-    buttons: [{ label: 'Hinzufügen', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
-    onBeforeClose: async () => {
-      const a = addr.value.trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a)) { addr.classList.add('invalid'); addr.focus(); return false; }
-      await call('add_shared_mailbox', { accountId: acc.value, address: a });
-      return 'ok';
-    },
-  });
-  if (res === 'ok') { toast('Postfach hinzugefügt.'); hooks.onAccountsChanged(); }
-}
-
 export async function removeAccountDialog() {
   if (!state.accounts.length) return;
   const acc = select(state.accounts.map((a) => [a.id, `${a.displayName} <${a.email}>`]), state.accounts[0].id);
@@ -243,7 +294,7 @@ export async function removeAccountDialog() {
 
 export async function addAccountFlow() {
   const c = state.config || {};
-  if (!c.demo && !c.clientId) {
+  if (!c.demo && !c.clientId && !c.builtinClientId) {
     const ok = await welcomeDialog();
     if (!ok) return;
   } else {
@@ -269,24 +320,32 @@ export async function welcomeDialog() {
   const c = state.config || {};
   const clientId = h('input.input', { value: c.clientId || '', placeholder: 'Anwendungs-ID (GUID)', style: { width: '100%' }, name: 'clientId' });
   const tenant = h('input.input', { value: c.tenant || 'organizations', style: { width: '100%' }, name: 'tenant' });
-  const body = h('div.welcome',
-    h('p', h('b', 'Willkommen bei Outlook Classic.'), ' Diese Anwendung greift über die Microsoft Graph-API auf Ihr Microsoft 365-Postfach und Ihren Kalender zu.'),
-    h('p', 'Einmalig wird eine App-Registrierung in Microsoft Entra ID benötigt:'),
-    h('ol',
+  const builtin = !!c.builtinClientId;
+  const adv = h('details.welcome-adv' + (builtin ? '' : '.open'), { open: !builtin },
+    h('summary', builtin ? 'Erweitert: eigene App-Registrierung verwenden' : 'App-Registrierung'),
+    builtin ? null : h('ol',
       h('li', 'Entra Admin Center → App-Registrierungen → Neue Registrierung'),
       h('li', { html: 'Plattform <b>Mobile und Desktop</b>, Umleitungs-URI <code>http://localhost</code>' }),
-      h('li', { html: 'Delegierte Berechtigungen: <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>Calendars.ReadWrite</code>, <code>MailboxSettings.ReadWrite</code>, <code>People.Read</code>, <code>User.Read</code>, <code>offline_access</code> (für freigegebene Postfächer zusätzlich <code>*.Shared</code>)' }),
-      h('li', '„Öffentliche Clientflows zulassen" aktivieren und die Anwendungs-ID hier eintragen.')),
-    field('Anwendungs-ID:', clientId),
-    field('Mandant:', tenant),
-  );
+      h('li', { html: 'Delegierte Berechtigungen: <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>Calendars.ReadWrite</code>, <code>MailboxSettings.ReadWrite</code>, <code>People.Read</code>, <code>User.Read</code>, <code>offline_access</code>' }),
+      h('li', '„Öffentliche Clientflows zulassen“ aktivieren und die Anwendungs-ID hier eintragen.')),
+    field('Anwendungs-ID', clientId),
+    field('Mandant', tenant));
+  const body = h('div.welcome',
+    h('div.welcome-hero', h('span.welcome-ic', { html: icon('mail', 36) }),
+      h('div', h('h2', 'Willkommen'), h('p', 'Melden Sie sich mit Ihrem Microsoft 365-Konto an. E-Mails, Kalender und Kategorien werden über Microsoft Graph synchronisiert.'))),
+    adv);
   const res = await modal({
-    title: 'Konto einrichten', body, width: 600,
-    buttons: [{ label: 'Anmelden…', value: 'ok', primary: true }, { label: 'Später', value: null, cancel: true }],
+    title: 'Konto einrichten', body, width: 560,
+    buttons: [{ label: 'Mit Microsoft 365 anmelden', value: 'ok', primary: true, id: 'welcome-login' }, { label: 'Später', value: null, cancel: true }],
     onBeforeClose: async () => {
       const id = clientId.value.trim();
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { clientId.classList.add('invalid'); toast('Bitte eine gültige Anwendungs-ID (GUID) eingeben.', 'error'); return false; }
-      state.config = await call('save_config', { config: { ...state.config, clientId: id, tenant: tenant.value.trim() || 'organizations' } });
+      const custom = id && id !== (c.clientId || '');
+      if (!builtin || custom || adv.open) {
+        if (!builtin && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { adv.open = true; clientId.classList.add('invalid'); toast('Bitte eine gültige Anwendungs-ID (GUID) eingeben.', 'error'); return false; }
+        if (id || tenant.value.trim() !== (c.tenant || 'organizations')) {
+          state.config = await call('save_config', { config: { ...state.config, clientId: id, tenant: tenant.value.trim() || 'organizations' } });
+        }
+      }
       return 'ok';
     },
   });
@@ -296,12 +355,12 @@ export async function welcomeDialog() {
 
 export async function aboutDialog() {
   await modal({
-    title: 'Über Outlook Classic',
+    title: 'Über',
     body: h('div.confirm-body', h('span', { html: icon('mail', 40) }), h('div',
-      h('div', { style: { fontWeight: '600', fontSize: '14px' } }, 'Outlook Classic'),
-      h('div', 'E-Mail- und Kalender-Client für Microsoft 365 (Graph API).'),
+      h('div', { style: { fontWeight: '600', fontSize: '15px' } }, 'Mail & Kalender für Microsoft 365'),
+      h('div', 'Fokussierter E-Mail- und Kalender-Client (Microsoft Graph API).'),
       h('div', { style: { marginTop: '6px', color: '#666' } }, 'Rust · Tauri · Microsoft Graph v1.0'),
-      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · Entf löschen · F9 Senden/Empfangen · Strg+1 E-Mail · Strg+2 Kalender'))),
+      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · T Kategorien · Entf löschen · Strg+E Suchen · F9 Senden/Empfangen · Strg+1 Mail · Strg+2 Kalender'))),
     width: 480,
   });
 }

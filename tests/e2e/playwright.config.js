@@ -17,7 +17,7 @@ module.exports = defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'cargo run -p devserver -- --demo --port 8080',
+    command: 'cargo run -p devserver --bin devserver -- --demo --port 8080',
     cwd: '../..',
     url: 'http://127.0.0.1:8080/',
     timeout: 600_000,
