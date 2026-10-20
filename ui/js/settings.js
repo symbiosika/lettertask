@@ -139,12 +139,12 @@ function lanesPanel(initialAccountId) {
   }
 
   ensure().then(render).catch(reportError);
-  host.append(
+  host.append(...[
     accounts.length > 1 ? field('Konto', accSel) : null,
     listEl,
     h('div.lane-add', input, h('button.btn.small', { type: 'button', dataset: { testid: 'lane-add' }, html: icon('plus', 14) + ' Hinzufügen', onclick: add })),
     hint,
-  );
+  ].filter(Boolean));
   return {
     el: host,
     async save() {

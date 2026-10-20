@@ -242,10 +242,10 @@ export function createBoard(host, ctx) {
 }
 
 /** "Liste | Kanban" switch used in the list header and the board header. */
-export function viewToggle(current, onToggle) {
-  const seg = h('div.segmented.view-toggle', { role: 'radiogroup', 'aria-label': 'Ansicht', title: 'Ansicht wechseln (Strg+Umschalt+K)' });
+export function viewToggle(current, onToggle, { compact = false } = {}) {
+  const seg = h('div.segmented.view-toggle' + (compact ? '.compact' : ''), { role: 'radiogroup', 'aria-label': 'Ansicht', title: 'Ansicht wechseln (Strg+Umschalt+K)' });
   for (const [v, label, ic] of [['list', 'Liste', 'listView'], ['kanban', 'Kanban', 'kanban']]) {
-    const b = h('button.seg' + (current === v ? '.on' : ''), { type: 'button', role: 'radio', 'aria-checked': String(current === v), dataset: { testid: 'view-' + v }, html: icon(ic, 14) + `<span>${label}</span>` });
+    const b = h('button.seg' + (current === v ? '.on' : ''), { type: 'button', role: 'radio', 'aria-checked': String(current === v), 'aria-label': label, title: `${label} (Strg+Umschalt+K)`, dataset: { testid: 'view-' + v }, html: icon(ic, 14) + (compact ? '' : `<span>${label}</span>`) });
     b.addEventListener('click', () => { if (current !== v) onToggle(v); });
     seg.appendChild(b);
   }

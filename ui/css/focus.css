@@ -95,3 +95,4 @@ body.task .editor-wrap { flex: 1; min-height: 0; border-top: 1px solid var(--bor
 .lane-none { padding: 8px; }
 .lane-add { display: flex; gap: 8px; align-items: center; }
 .lane-new { flex: 1; }
+.view-toggle.compact .seg { padding: 0 7px; }

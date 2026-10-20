@@ -253,8 +253,9 @@ function reminderRow() {
     el.classList.toggle('active', on);
   };
   const el = h('div.cw-row.remind-row', { dataset: { testid: 'remind-row' } },
-    h('label.cw-lbl.remind-lbl', { title: 'Nach dem Senden landet eine Kopie zum Nachfassen auf Wiedervorlage' }, 'Erinnerung'),
-    h('div.cw-val.remind-val', h('span.remind-text', { html: icon('bell', 15) + '<span>an mich:</span>' }), seg, picker.el));
+    h('span.cw-lbl.remind-lbl'),
+    h('div.cw-val.remind-val', { title: 'Nach dem Senden liegt eine Kopie zum Nachfassen auf Wiedervorlage – „Antworten“ geht an die Empfänger.' },
+      h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich:</span>' }), seg, picker.el));
   paint();
   return {
     el,

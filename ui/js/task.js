@@ -25,8 +25,8 @@ function render() {
     const mb = mailboxById(st.mailboxId) || mbs[0];
     fromChip.innerHTML = '';
     if (!mb) return;
-    fromChip.append(h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address)),
-      h('span.from-text', mb.address), mbs.length > 1 ? h('span', { html: icon('chevronDown', 14) }) : null);
+    fromChip.append(...[h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address)),
+      h('span.from-text', mb.address), mbs.length > 1 ? h('span', { html: icon('chevronDown', 14) }) : null].filter(Boolean));
   };
   if (mbs.length > 1) {
     fromChip.classList.add('clickable');
@@ -108,6 +108,9 @@ async function init() {
   render();
   setupClose();
   subject.focus();
+  await editor.setHtml('');
+  document.body.dataset.ready = '1';
+  if (document.activeElement !== subject) subject.focus();
 }
 
 init().catch(reportError);

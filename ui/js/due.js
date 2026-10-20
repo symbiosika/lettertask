@@ -16,7 +16,7 @@ export function duePicker({ config, allowNow = false, variant = 'chips', testid 
   let key = opts[0].key;
 
   const def = addDays(startOfDay(new Date()), 1); def.setHours(8);
-  const custom = h('input.input.due-custom.hidden', { type: 'datetime-local', value: toLocalIso(def).slice(0, 16), name: testid + 'At', dataset: { testid: testid + '-custom' } });
+  const custom = h('input.input.due-custom.hidden', { type: 'datetime-local', value: toLocalIso(def).slice(0, 16), name: testid + 'At', dataset: { testid: testid + '-at' } });
   const preview = h('span.due-preview', { dataset: { testid: testid + '-preview' } });
   const target = () => {
     const o = opts.find((x) => x.key === key);

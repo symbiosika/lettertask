@@ -440,7 +440,7 @@ function renderListHead() {
   }
   const sortHost = els.head.querySelector('.lh-sort');
   sortHost.innerHTML = '';
-  if (!list.search) sortHost.appendChild(viewToggle('list', (v) => setView(v)));
+  if (!list.search) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
   const sortBtn = h('button.chip.sort', { type: 'button', title: 'Sortieren', dataset: { testid: 'sort-menu' }, html: `${icon('sort', 14)}<span>${esc(SORT_LABELS[list.sortBy] || 'Datum')}</span>` });
   sortBtn.addEventListener('click', () => showMenuAt(sortBtn, [
     { header: 'Sortieren nach' },
