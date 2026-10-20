@@ -5,6 +5,11 @@ on:
     branches: [main, "claude/**"]
   pull_request:
 
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
