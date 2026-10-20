@@ -5,6 +5,9 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -29,8 +32,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: src-tauri
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: "lettertask ${{ github.ref_name }}"
+          # Tag push: release for that tag. Manual run: release for the app version
+          # (tag v<version> is created when the draft is published).
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: "lettertask v__VERSION__"
           releaseDraft: true
       - uses: actions/upload-artifact@v4
         with:
