@@ -73,6 +73,8 @@ pub struct Conn {
     pub selected: Option<String>,
     pub can_move: bool,
     pub uidplus: bool,
+    /// Non-synchronizing literals (LITERAL+ / LITERAL-) are allowed.
+    pub nonsync_literals: bool,
 }
 
 impl Conn {
@@ -341,10 +343,12 @@ pub async fn connect_with(s: &ServerSettings, credential: &Credential) -> Result
         selected: None,
         can_move: false,
         uidplus: false,
+        nonsync_literals: false,
     };
     if let Ok(caps) = timed(conn.session.capabilities()).await {
         conn.can_move = caps.has_str("MOVE");
         conn.uidplus = caps.has_str("UIDPLUS");
+        conn.nonsync_literals = caps.has_str("LITERAL+") || caps.has_str("LITERAL-");
     }
     Ok(conn)
 }

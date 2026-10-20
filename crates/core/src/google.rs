@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::auth::{post_token, random_state, LoopbackListener, Pkce, TokenSet};
+use crate::auth::{post_token, post_token_scoped, random_state, LoopbackListener, Pkce, TokenSet};
 use crate::error::{Error, Result};
 
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -20,7 +20,8 @@ pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 
 /// Full mailbox access over IMAP/SMTP, plus who signed in.
-pub const SCOPES: &[&str] = &["https://mail.google.com/", "openid", "email", "profile"];
+pub const SCOPES: &[&str] = &[MAIL_SCOPE, "openid", "email", "profile"];
+const MAIL_SCOPE: &str = "https://mail.google.com/";
 
 pub const IMAP_HOST: &str = "imap.gmail.com";
 pub const SMTP_HOST: &str = "smtp.gmail.com";
@@ -100,7 +101,14 @@ pub async fn exchange_code(
         ("code_verifier", verifier),
     ];
     cfg.with_secret(&mut form);
-    post_token(http, &cfg.token_url, &form, None).await
+    let (tokens, scope) = post_token_scoped(http, &cfg.token_url, &form, None).await?;
+    // Google lets the user untick single permissions on the consent page.
+    if scope.is_some_and(|s| !s.split(' ').any(|x| x == MAIL_SCOPE)) {
+        return Err(Error::Auth(
+            "Google hat keinen Zugriff auf Gmail erteilt. Bitte erneut anmelden und auf der Zustimmungsseite den Zugriff auf Gmail (Häkchen) erlauben.".into(),
+        ));
+    }
+    Ok(tokens)
 }
 
 pub async fn refresh(http: &reqwest::Client, cfg: &GoogleConfig, refresh_token: &str) -> Result<TokenSet> {
@@ -242,7 +250,13 @@ mod tests {
             match f["grant_type"].as_str() {
                 "authorization_code" if f["code"] == "CODE" && !f["code_verifier"].is_empty() => (
                     StatusCode::OK,
-                    Json(serde_json::json!({"access_token": "at1", "refresh_token": "rt1", "expires_in": 3599})),
+                    Json(serde_json::json!({"access_token": "at1", "refresh_token": "rt1", "expires_in": 3599,
+                        "scope": "openid https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email"})),
+                ),
+                "authorization_code" if f["code"] == "NOMAIL" => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"access_token": "at9", "refresh_token": "rt9", "expires_in": 3599,
+                        "scope": "openid https://www.googleapis.com/auth/userinfo.email"})),
                 ),
                 "refresh_token" if f["refresh_token"] == "rt1" => {
                     (StatusCode::OK, Json(serde_json::json!({"access_token": "at2", "expires_in": 3599})))
@@ -295,6 +309,8 @@ mod tests {
         let r = refresh(&http, &cfg, "rt1").await.unwrap();
         assert_eq!(r.access_token, "at2");
         assert_eq!(r.refresh_token, "rt1", "refresh token is kept when not rotated");
+        let e = exchange_code(&http, &cfg, "NOMAIL", "v", "http://127.0.0.1:1").await.unwrap_err();
+        assert!(e.to_string().contains("Zugriff auf Gmail"), "{e}");
         let e = refresh(&http, &cfg, "revoked").await.unwrap_err();
         assert!(e.to_string().contains("erneut mit Google anmelden"), "{e}");
     }

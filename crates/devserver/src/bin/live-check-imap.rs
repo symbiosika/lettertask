@@ -561,7 +561,7 @@ impl Raw {
     async fn search(&self, folder: &str, needle: &str) -> anyhow::Result<Vec<u32>> {
         let mut c = self.conn().await?;
         c.session.select(folder).await?;
-        let mut uids: Vec<u32> = c.session.uid_search(format!("SUBJECT {}", mailcore::imap::quote(needle))).await?.into_iter().collect();
+        let mut uids: Vec<u32> = c.session.uid_search(format!("CHARSET UTF-8 SUBJECT {}", mailcore::imap::search_string(needle, c.nonsync_literals))).await?.into_iter().collect();
         uids.sort_unstable();
         let _ = c.session.logout().await;
         Ok(uids)
@@ -804,7 +804,16 @@ async fn edge_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str, raw: &Raw
     let task_subj = format!("{MARK} Fremdänderung {stamp}");
     let t: Option<MessageSummary> = c.call("Aufgabe anlegen", "create_task", json!({"mailboxId": mb, "subject": task_subj, "bodyHtml": "", "due": null})).await;
     if t.is_some() {
-        if let Some(uid) = raw.search(&inbox_raw, &format!("Fremdänderung {stamp}")).await.ok().and_then(|u| u.into_iter().last()) {
+        // Gmail's search index lags behind new mail by a few seconds.
+        let mut found = None;
+        let t = Instant::now();
+        while found.is_none() && t.elapsed() < Duration::from_secs(60) {
+            found = raw.search(&inbox_raw, &format!("Fremdänderung {stamp}")).await.ok().and_then(|u| u.into_iter().last());
+            if found.is_none() {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+        if let Some(uid) = found {
             let _ = raw.store(&inbox_raw, uid, "+FLAGS (\\Seen \\Flagged)").await;
             let m = find(c, mb, &inbox_raw, &task_subj).await;
             c.check("Fremd gesetzte Flags nach Sync sichtbar", m.as_ref().is_some_and(|m| m.is_read && m.flag == "flagged"), format!("{:?}", m.map(|m| (m.is_read, m.flag))));

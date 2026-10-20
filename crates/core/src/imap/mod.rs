@@ -183,6 +183,17 @@ pub fn quote(s: &str) -> String {
     out
 }
 
+/// A SEARCH argument. Non-ASCII text goes as non-synchronizing literal
+/// (`{n+}` CRLF bytes) where the server allows it: Gmail ignores 8-bit text
+/// in quoted strings and finds nothing.
+pub fn search_string(s: &str, nonsync_literals: bool) -> String {
+    // LITERAL- allows at most 4096 bytes.
+    if s.is_ascii() || !nonsync_literals || s.len() > 4096 || s.contains(['\r', '\n']) {
+        return quote(s);
+    }
+    format!("{{{}+}}\r\n{s}", s.len())
+}
+
 /// Compact UID set like `1:3,7,9:10`.
 pub fn uid_set(uids: &[u32]) -> String {
     let mut v = uids.to_vec();
@@ -237,6 +248,9 @@ mod tests {
         assert_eq!(parse_message_id(&id), Some((7, 42, "INBOX/a:b")));
         assert_eq!(uid_set(&[5, 1, 2, 3, 9, 10, 12]), "1:3,5,9:10,12");
         assert_eq!(quote("a\"b\\c"), "\"a\\\"b\\\\c\"");
+        assert_eq!(search_string("Prüfung", true), "{8+}\r\nPrüfung");
+        assert_eq!(search_string("Prüfung", false), "\"Prüfung\"");
+        assert_eq!(search_string("abc", true), "\"abc\"");
     }
 }
 

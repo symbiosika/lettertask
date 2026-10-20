@@ -128,6 +128,9 @@ struct TokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<i64>,
+    /// Granted scopes, space separated (when the server reports them).
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +158,16 @@ pub(crate) async fn post_token(
     form: &[(&str, &str)],
     previous_refresh: Option<&str>,
 ) -> Result<TokenSet> {
+    Ok(post_token_scoped(http, url, form, previous_refresh).await?.0)
+}
+
+/// [`post_token`] plus the granted scopes, if the server reports them.
+pub(crate) async fn post_token_scoped(
+    http: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+    previous_refresh: Option<&str>,
+) -> Result<(TokenSet, Option<String>)> {
     let resp = http.post(url).form(form).send().await?;
     let status = resp.status();
     let body = resp.text().await?;
@@ -172,11 +185,12 @@ pub(crate) async fn post_token(
         .refresh_token
         .or_else(|| previous_refresh.map(str::to_string))
         .ok_or_else(|| Error::Auth("Kein Refresh-Token erhalten (offline_access fehlt?)".into()))?;
-    Ok(TokenSet {
+    let tokens = TokenSet {
         access_token: tr.access_token,
         refresh_token,
         expires_at: Utc::now() + chrono::Duration::seconds(tr.expires_in.unwrap_or(3600)),
-    })
+    };
+    Ok((tokens, tr.scope))
 }
 
 pub async fn exchange_code(

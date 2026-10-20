@@ -754,11 +754,13 @@ impl Service {
             "body" => "BODY",
             _ => "TEXT",
         };
-        let mut criteria: Vec<String> = words.iter().map(|w| format!("{key} {}", im::quote(w))).collect();
-        if has_attachments {
-            criteria.push("HEADER Content-Type \"multipart/mixed\"".into());
-        }
-        let query = format!("CHARSET UTF-8 {}", criteria.join(" "));
+        let build_query = |literals: bool| {
+            let mut criteria: Vec<String> = words.iter().map(|w| format!("{key} {}", im::search_string(w, literals))).collect();
+            if has_attachments {
+                criteria.push("HEADER Content-Type \"multipart/mixed\"".into());
+            }
+            format!("CHARSET UTF-8 {}", criteria.join(" "))
+        };
         let folders: Vec<String> = match folder {
             Some(f) => vec![f.to_string()],
             None => self
@@ -774,6 +776,7 @@ impl Service {
                 let mut out = Vec::new();
                 let mut broken = false;
                 for f in &folders {
+                    let query = build_query(c.nonsync_literals);
                     let sel = match c.select(f).await {
                         Ok(s) => s,
                         // A folder deleted/renamed elsewhere must not break the

@@ -906,3 +906,17 @@ async fn inbox_namespace_without_special_use() {
         .await;
     ctx.by_subject("INBOX.Gesendete Objekte", "Gesendet?").await;
 }
+
+#[tokio::test]
+async fn search_finds_non_ascii_words() {
+    let Some(ctx) = setup().await else { return };
+    let _: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Prüfbericht Größe", "bodyHtml": "", "due": null}),
+    )
+    .await;
+    // Sent as non-synchronizing literal (Gmail ignores 8-bit quoted strings).
+    assert_eq!(ctx.search("Größe", None).await, ["Prüfbericht Größe"]);
+    assert_eq!(ctx.search("prüfbericht größe", None).await, ["Prüfbericht Größe"]);
+}
