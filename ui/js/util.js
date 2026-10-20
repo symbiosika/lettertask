@@ -141,7 +141,7 @@ export function initials(name, address) {
   return (parts[0] || '?').slice(0, 2).toUpperCase();
 }
 
-const AVATAR_COLORS = ['#5b8def', '#2fa67a', '#9b6bd8', '#e07b39', '#5c9e3a', '#d0567a', '#2b9bb5', '#7a6ee0', '#c08a2b', '#4f7cac', '#c25b4d', '#3f9e9a'];
+export const AVATAR_COLORS = ['#5b8def', '#2fa67a', '#9b6bd8', '#e07b39', '#5c9e3a', '#d0567a', '#2b9bb5', '#7a6ee0', '#c08a2b', '#4f7cac', '#c25b4d', '#3f9e9a'];
 export function avatarColor(s) {
   let hsh = 0;
   for (const ch of String(s || '')) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;

@@ -206,6 +206,8 @@ kbd { font-family: inherit; }
 .avatar.xs { width: 24px; height: 24px; font-size: 10.5px; }
 /* Own account picture: always round, cropped to fill. */
 .avatar.img { background: var(--hover); overflow: hidden; }
+.avatar.txt svg { width: 100%; height: 100%; display: block; }
+.avatar.txt text { fill: #fff; font-weight: 600; font-family: inherit; }
 .avatar.img img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
 
 /* ================================================================ mail view */
@@ -599,10 +601,16 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .acc-head { display: flex; align-items: center; gap: 14px; }
 .acc-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .acc-avatar-edit { display: flex; gap: 6px; margin-top: 6px; }
+.acc-look { margin-top: 16px; }
+.acc-swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.acc-swatch { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; color: #fff; font-size: 10px; font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+.acc-swatch.selected { border-color: var(--bg); box-shadow: 0 0 0 2px var(--accent); }
+.acc-color { width: 30px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: none; cursor: pointer; }
+.acc-badge-text { display: block; width: 12ch; min-width: 120px; height: auto; resize: none; font-family: inherit; line-height: 1.35; text-transform: none; margin-bottom: 6px; }
 .acc-order { display: flex; flex-direction: column; margin-left: 2px; }
 .acc-order .icon-btn.sm { width: 20px; height: 16px; }
 .acc-name { font-weight: 600; font-size: 14px; }
-.acc-detail .wiz-grid { max-width: 520px; }
+.acc-detail .wiz-grid { max-width: 560px; }
 .acc-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* settings: signatures */

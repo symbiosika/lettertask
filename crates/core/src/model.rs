@@ -24,6 +24,24 @@ pub struct Account {
     /// Own picture (data:image/png|jpeg|webp URL, shown round); None = initials.
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Name shown in the views instead of the address; None = address.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Own look of the round initials badge (used without a picture).
+    #[serde(default)]
+    pub badge: Option<AccountBadge>,
+}
+
+/// Round badge of an account without a picture: colour and up to two short lines.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountBadge {
+    /// "#rrggbb"; None = colour derived from the address.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Up to 2 lines of up to 8 characters ("\n" separated); None = initials.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

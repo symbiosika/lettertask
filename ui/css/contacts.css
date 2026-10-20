@@ -15,10 +15,11 @@
 .ct-detail .empty { margin: auto; }
 .ct-card { flex: 1; min-height: 0; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
 .ct-hero { display: flex; align-items: center; gap: 18px; padding: 24px 24px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.ct-hero-text { flex: 1; min-width: 200px; }
-.ct-name { margin: 0 0 4px; font-size: 22px; font-weight: 600; color: var(--text); user-select: text; }
+/* min-width 0 + wrapping: long names/addresses must not run into the buttons. */
+.ct-hero-text { flex: 1 1 200px; min-width: 0; }
+.ct-name { margin: 0 0 4px; font-size: 22px; font-weight: 600; color: var(--text); user-select: text; overflow-wrap: anywhere; }
 .ct-role { color: var(--text-2); margin-bottom: 4px; }
-.ct-origin { font-size: 12px; }
+.ct-origin { font-size: 12px; overflow-wrap: anywhere; }
 .ct-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ct-body { padding: 8px 24px 24px; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 28px; }
 .ct-sec { padding: 12px 0 4px; }
