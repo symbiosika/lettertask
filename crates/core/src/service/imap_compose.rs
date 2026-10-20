@@ -399,15 +399,19 @@ impl Service {
         let o = self.imap_outgoing(&d).await?;
         let message = mime::build(&o, false)?;
         let settings = self.imap_settings(&mb)?;
-        let password = self.smtp_password(&mb)?;
-        crate::imap::smtp::send(&settings.smtp, &password, message.envelope(), &message.formatted()).await?;
+        let credential = self.imap_credential(&mb, true).await?;
+        crate::imap::smtp::send(&settings.smtp, &credential, message.envelope(), &message.formatted()).await?;
 
         // Copy to Sent (with Bcc, like Outlook); failures here must not
-        // report the already delivered mail as unsent.
+        // report the already delivered mail as unsent. Gmail files mails
+        // sent over its SMTP server itself; a copy would show up twice.
+        let gmail = self.is_gmail(&mb);
         let copy = mime::build(&o, true).map(|m| m.formatted());
         if let (Ok(copy), Ok(sent)) = (copy, self.imap_ensure_folder(&mb, "sentitems", "Sent").await) {
-            if let Err(e) = self.imap_append(&mb, &sent.id, "(\\Seen)", &copy, &o.message_id).await {
-                tracing::warn!("Kopie in Gesendet fehlgeschlagen: {e}");
+            if !gmail {
+                if let Err(e) = self.imap_append(&mb, &sent.id, "(\\Seen)", &copy, &o.message_id).await {
+                    tracing::warn!("Kopie in Gesendet fehlgeschlagen: {e}");
+                }
             }
             let _ = self.imap_sync_folder(&mb, &sent.id, true).await;
             self.emit_mail_changed(&mb, Some(&sent.id));

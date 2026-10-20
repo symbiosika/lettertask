@@ -221,6 +221,7 @@ impl Store {
                     display_name: r.get(2)?,
                     mailboxes: vec![],
                     avatar: r.get(3)?,
+                    auth: String::new(),
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;

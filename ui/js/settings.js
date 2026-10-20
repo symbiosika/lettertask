@@ -8,7 +8,7 @@ import { state, loadCategories, loadLanes, lanesOf } from './state.js';
 import { LANE_NAME_RE } from './categories.js';
 import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
 import { signaturesPanel } from './signatures.js';
-import { chooseAccountKind, imapWizard, accountDetail, isImap, kindLabel, accountAvatar } from './accounts.js';
+import { chooseAccountKind, imapWizard, googleLogin, accountDetail, kindLabel, kindClass, accountAvatar } from './accounts.js';
 
 export const hooks = { onConfigSaved: () => {}, onAccountsChanged: () => {} };
 
@@ -164,6 +164,8 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const c = { ...state.config };
   const clientId = h('input.input', { value: c.clientId || '', placeholder: '00000000-0000-0000-0000-000000000000', name: 'clientId' });
   const tenant = h('input.input', { value: c.tenant || '', name: 'tenant' });
+  const googleId = h('input.input', { value: c.googleClientId || '', placeholder: '….apps.googleusercontent.com', name: 'googleClientId', spellcheck: false });
+  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', name: 'googleClientSecret', autocomplete: 'off' });
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
@@ -181,7 +183,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const lanes = state.accounts.length ? lanesPanel(accountId) : null;
   const kbPane = select([['bottom', 'Unten (unter dem Board)'], ['right', 'Rechts']], c.kanbanReadingPane || 'bottom');
   kbPane.name = 'kanbanReadingPane';
-  const accounts = accountsPanel({ clientId, tenant, builtin: !!c.builtinClientId, demo: !!c.demo, initialAccountId: accountId });
+  const accounts = accountsPanel({ clientId, tenant, googleId, googleSecret, builtin: !!c.builtinClientId, builtinGoogle: !!c.builtinGoogleClient, demo: !!c.demo, initialAccountId: accountId });
 
   const panels = {
     general: h('div.set-panel',
@@ -234,6 +236,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       const config = {
         ...state.config,
         clientId: clientId.value.trim(), tenant: tenant.value.trim(), syncIntervalSecs: iv,
+        googleClientId: googleId.value.trim(), googleClientSecret: googleSecret.value.trim(),
         loadRemoteImages: remote.checked,
         readingPane: pane.value, markReadDelaySecs: parseInt(markRead.value, 10), listMode: listMode.value,
         showDateSeparators: seps.checked, snoozeOptions: snooze.get(),
@@ -252,7 +255,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
 }
 
 // ---------------------------------------------------------------- accounts tab
-function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
+function accountsPanel({ clientId, tenant, googleId, googleSecret, builtin, builtinGoogle, demo, initialAccountId }) {
   let selected = initialAccountId || (state.accounts[0] && state.accounts[0].id);
   const listEl = h('div.acc-list', { role: 'listbox', dataset: { testid: 'acc-list' } });
   const detailHost = h('div.acc-detail-host');
@@ -265,7 +268,7 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
       const row = h('div.acc-item' + (a.id === selected ? '.selected' : ''), { role: 'option', dataset: { testid: 'acc-item', id: a.id } },
         accountAvatar(a, 'xs'),
         h('span.acc-text', h('span.acc-n', a.displayName || a.email), h('span.acc-e', a.email)),
-        h('span.kind-badge.' + (isImap(a) ? 'imap' : 'o365'), kindLabel(a)),
+        h('span.kind-badge.' + kindClass(a), kindLabel(a)),
         n > 1 ? h('span.acc-order',
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', 'aria-label': 'Nach oben', html: icon('up', 14), disabled: i === 0, dataset: { testid: 'acc-up' }, onclick: (e) => mv(e, -1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', 'aria-label': 'Nach unten', html: icon('down', 14), disabled: i === n - 1, dataset: { testid: 'acc-down' }, onclick: (e) => mv(e, 1) })) : null);
@@ -305,8 +308,13 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
     demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
     field('Anwendungs-ID (Client-ID)', clientId),
     field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'));
+  const googleAdv = h('details.welcome-adv.acc-adv', { dataset: { testid: 'google-adv' } },
+    h('summary', 'Google-Anmeldung (OAuth-Client)'),
+    builtinGoogle ? h('p.note', 'Diese Version enthält bereits einen Google-OAuth-Client. Eigene Werte sind nur für Sonderfälle nötig.') : googleClientHelp(),
+    field('Client-ID', googleId),
+    field('Clientschlüssel', googleSecret, 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'));
   render();
-  return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add, state.accounts.length > 1 ? h('p.note.acc-hint', 'Reihenfolge und Kontobild werden sofort übernommen.') : null), detailHost), adv) };
+  return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add, state.accounts.length > 1 ? h('p.note.acc-hint', 'Reihenfolge und Kontobild werden sofort übernommen.') : null), detailHost), adv, googleAdv) };
 }
 
 async function removeAccount(acc) {
@@ -475,11 +483,50 @@ export async function removeAccountDialog() {
   hooks.onAccountsChanged();
 }
 
-/** "Konto hinzufügen": choose Microsoft 365 or IMAP. Returns the new Account or null. */
+/** Steps to create the Google OAuth client (shown when none is configured). */
+function googleClientHelp() {
+  return h('ol',
+    h('li', { html: 'Google Cloud Console → Projekt anlegen → <b>Gmail API</b> aktivieren' }),
+    h('li', { html: 'OAuth-Zustimmungsbildschirm einrichten, Bereich <code>https://mail.google.com/</code> hinzufügen; im Testmodus die Konten als Testnutzer eintragen' }),
+    h('li', { html: 'Anmeldedaten → OAuth-Client-ID → Anwendungstyp <b>Desktop-App</b>' }),
+    h('li', 'Client-ID und Clientschlüssel hier eintragen.'));
+}
+
+/** Asks for the Google OAuth client when none is configured. Returns true when one is set. */
+async function ensureGoogleClient() {
+  const c = state.config || {};
+  if (c.googleClientId) return true;
+  const id = h('input.input', { placeholder: '….apps.googleusercontent.com', style: { width: '100%' }, name: 'googleClientId', spellcheck: false });
+  const secret = h('input.input', { type: 'password', style: { width: '100%' }, name: 'googleClientSecret', autocomplete: 'off' });
+  const res = await modal({
+    title: 'Google-Anmeldung einrichten', width: 560,
+    body: h('div', h('p', 'Für die Anmeldung mit Google braucht die App einen OAuth-Client aus der Google Cloud Console (einmalig):'), googleClientHelp(),
+      field('Client-ID', id), field('Clientschlüssel', secret)),
+    buttons: [{ label: 'Weiter', value: 'ok', primary: true, id: 'google-client-ok' }, { label: 'Abbrechen', value: null, cancel: true }],
+    onBeforeClose: async (v) => {
+      if (v !== 'ok') return v;
+      if (!/\.apps\.googleusercontent\.com$/.test(id.value.trim())) { id.classList.add('invalid'); toast('Bitte eine gültige Client-ID (….apps.googleusercontent.com) eingeben.', 'error'); return false; }
+      state.config = await call('save_config', { config: { ...state.config, googleClientId: id.value.trim(), googleClientSecret: secret.value.trim() } });
+      return 'ok';
+    },
+  });
+  return res === 'ok';
+}
+
+async function addGoogleAccount() {
+  if (!(await ensureGoogleClient())) return null;
+  const acc = await googleLogin();
+  if (acc) hooks.onAccountsChanged();
+  return acc;
+}
+
+/** "Konto hinzufügen": choose Microsoft 365, Google or IMAP. Returns the new Account or null. */
 export async function addAccountFlow() {
   const kind = await chooseAccountKind();
+  if (kind === 'google') return addGoogleAccount();
   if (kind === 'imap') {
     const acc = await imapWizard();
+    if (acc && acc.google) return addGoogleAccount();
     if (acc) hooks.onAccountsChanged();
     return acc;
   }
@@ -519,15 +566,15 @@ export async function welcomeDialog({ o365Only = false } = {}) {
     field('Mandant', tenant));
   const body = h('div.welcome',
     h('div.welcome-hero', h('span.welcome-ic', { html: icon('mail', 36) }),
-      h('div', h('h2', 'Willkommen'), h('p', 'Melden Sie sich mit Ihrem Microsoft 365-Konto an. E-Mails, Kalender, Kontakte und Kategorien werden über Microsoft Graph synchronisiert. Andere Anbieter lassen sich per IMAP/SMTP einbinden.'))),
+      h('div', h('h2', 'Willkommen'), h('p', 'Melden Sie sich mit Ihrem Microsoft 365-Konto an. E-Mails, Kalender, Kontakte und Kategorien werden über Microsoft Graph synchronisiert. Gmail-Konten melden Sie mit Google an, andere Anbieter lassen sich per IMAP/SMTP einbinden.'))),
     adv);
   const res = await modal({
     title: 'Konto einrichten', body, width: 560,
     buttons: [{ label: 'Mit Microsoft 365 anmelden', value: 'ok', primary: true, id: 'welcome-login' },
-      ...(o365Only ? [] : [{ label: 'IMAP-Konto…', value: 'imap', id: 'welcome-imap' }]),
+      ...(o365Only ? [] : [{ label: 'Google…', value: 'google', id: 'welcome-google' }, { label: 'IMAP-Konto…', value: 'imap', id: 'welcome-imap' }]),
       { label: 'Später', value: null, cancel: true }],
     onBeforeClose: async (v) => {
-      if (v === 'imap') return 'imap';
+      if (v === 'imap' || v === 'google') return v;
       const id = clientId.value.trim();
       const custom = id && id !== (c.clientId || '');
       if (!builtin || custom || adv.open) {
@@ -539,8 +586,10 @@ export async function welcomeDialog({ o365Only = false } = {}) {
       return 'ok';
     },
   });
+  if (res === 'google') return (await addGoogleAccount()) || false;
   if (res === 'imap') {
     const acc = await imapWizard();
+    if (acc && acc.google) return (await addGoogleAccount()) || false;
     if (acc) hooks.onAccountsChanged();
     return acc || false;
   }

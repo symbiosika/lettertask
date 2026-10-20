@@ -14,6 +14,7 @@ const P = {
   more: DOT(5, 10, 1.35) + DOT(10, 10, 1.35) + DOT(15, 10, 1.35),
   mail: MAIL,
   mailNew: MAIL,
+  google: `<path d="M16.5 10h-6M16.5 10a6.5 6.5 0 1 1-1.9-4.6"/>`,
   mailClosed: MAIL,
   mailOpen: `<path d="M2.5 8.5L10 3.5l7.5 5V16a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 16z"/><path d="M2.8 8.8l7.2 4.4 7.2-4.4"/>`,
   readUnread: `<path d="M2.5 8.5L10 3.5l7.5 5V16a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 16z"/><path d="M2.8 8.8l7.2 4.4 7.2-4.4"/>`,

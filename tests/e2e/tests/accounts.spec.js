@@ -43,6 +43,57 @@ test('Konto hinzufügen: Auswahl und IMAP-Assistent mit Erkennung und Verbindung
   await expect(page.locator('.modal-overlay')).toHaveCount(0);
 });
 
+test('Konto hinzufügen: Google fragt nach dem OAuth-Client, Gmail-Adresse im IMAP-Assistenten schlägt Google vor', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-add-account]').click();
+  await page.locator('[data-testid=kind-google]').click();
+
+  // demo build has no Google client: setup dialog, invalid ids are rejected
+  await expect(page.locator('.modal-title')).toContainText('Google-Anmeldung einrichten');
+  await page.locator('.modal input[name=googleClientId]').fill('keine-client-id');
+  await page.locator('#google-client-ok').click();
+  await expect(page.locator('.modal input[name=googleClientId]')).toHaveClass(/invalid/);
+  await page.locator('.modal .btn', { hasText: 'Abbrechen' }).click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+
+  // a gmail.com address in the IMAP wizard offers "Mit Google anmelden"
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-add-account]').click();
+  await page.locator('[data-testid=kind-imap]').click();
+  await page.locator('input[name=imapEmail]').fill('erika.e2e@gmail.com');
+  await page.locator('input[name=imapPassword]').fill('app-passwort');
+  await page.locator('#imap-next').click();
+  await expect(page.locator('.modal').last()).toContainText('liegt bei Google', { timeout: 30_000 });
+  await page.locator('.modal .btn', { hasText: 'Mit Passwort fortfahren' }).click();
+  await expect(page.locator('[data-testid=srv-imap]')).toBeVisible();
+  await page.locator('.modal .btn', { hasText: 'Abbrechen' }).click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+});
+
+test('Einstellungen › Konten: Google-OAuth-Client speichern', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-settings]').click();
+  await page.locator('[data-testid=settings-tab-accounts]').click();
+  await page.locator('[data-testid=google-adv] summary').click();
+  await page.locator('input[name=googleClientId]').fill('123-e2e.apps.googleusercontent.com');
+  await page.locator('input[name=googleClientSecret]').fill('e2e-secret');
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+  const cfg = await page.evaluate(async () => (await fetch('/api/call/get_config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json());
+  expect(cfg.googleClientId).toBe('123-e2e.apps.googleusercontent.com');
+  // reset for the other tests
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-settings]').click();
+  await page.locator('[data-testid=settings-tab-accounts]').click();
+  await page.locator('[data-testid=google-adv] summary').click();
+  await page.locator('input[name=googleClientId]').fill('');
+  await page.locator('input[name=googleClientSecret]').fill('');
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+});
+
 test('Einstellungen › Konten zeigt das Microsoft-365-Konto', async ({ page }) => {
   await openApp(page);
   await page.locator('[data-testid=app-menu]').click();

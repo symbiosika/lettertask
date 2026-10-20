@@ -158,6 +158,9 @@ impl Service {
             special: Option<&'static str>,
             selectable: bool,
         }
+        // Gmail archives by removing the Inbox label, i.e. by moving to
+        // "All Mail" (\All). Elsewhere \All is a virtual folder.
+        let gmail = self.is_gmail(mb);
         let raws: Vec<(Raw, Option<(u32, u32)>)> = with_imap!(self, mb, |c| {
                 let names: Vec<async_imap::types::Name> = {
                     let stream = timed(c.s().list(Some(""), Some("*"))).await?;
@@ -172,6 +175,7 @@ impl Service {
                         NameAttribute::Trash => Some("deleteditems"),
                         NameAttribute::Junk => Some("junkemail"),
                         NameAttribute::Archive => Some("archive"),
+                        NameAttribute::All if gmail => Some("archive"),
                         _ => None,
                     });
                     let selectable = !attrs

@@ -4,7 +4,7 @@ import { h, esc, initials, avatarColor, debounce, load, store, EMAIL_RE } from '
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, showMenu, busyClick } from './dialogs.js';
 import { state, mailboxes } from './state.js';
-import { isImap, kindLabel } from './accounts.js';
+import { isImap, kindLabel, kindClass } from './accounts.js';
 import { makeSplitter } from './mail.js';
 
 const PHONE_KINDS = [['business', 'Geschäftlich'], ['mobile', 'Mobil'], ['home', 'Privat']];
@@ -70,7 +70,7 @@ export function renderNav() {
   const sec = h('div.tree-section', { role: 'tree' });
   sec.appendChild(node('all', 'Alle Kontakte', 'contacts'));
   for (const a of state.accounts) {
-    sec.appendChild(node(a.id, a.email, isImap(a) ? 'server' : 'people', h('span.kind-badge.sm.' + (isImap(a) ? 'imap' : 'o365'), kindLabel(a))));
+    sec.appendChild(node(a.id, a.email, isImap(a) ? 'server' : 'people', h('span.kind-badge.sm.' + kindClass(a), kindLabel(a))));
   }
   sec.appendChild(node('collected', 'Gesammelte Adressen', 'clock'));
   els.nav.appendChild(sec);

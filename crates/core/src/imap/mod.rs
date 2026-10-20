@@ -33,6 +33,35 @@ pub struct ImapAccountInput {
     /// `None` = same password as IMAP.
     #[serde(default)]
     pub smtp_password: Option<String>,
+    /// "password" (default) or "google": sign-in with Google, IMAP/SMTP via
+    /// XOAUTH2; the passwords are unused then.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
+}
+
+impl ImapAccountInput {
+    pub fn is_google(&self) -> bool {
+        self.auth == AUTH_GOOGLE
+    }
+}
+
+pub const AUTH_GOOGLE: &str = "google";
+
+/// How to log in to IMAP/SMTP.
+#[derive(Clone)]
+pub enum Credential {
+    Password(String),
+    /// OAuth2 access token, sent with SASL XOAUTH2.
+    OAuth2(String),
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Credential::Password(_) => "Credential::Password(***)",
+            Credential::OAuth2(_) => "Credential::OAuth2(***)",
+        })
+    }
 }
 
 // Hand-written so passwords never end up in logs or error texts.
@@ -45,6 +74,7 @@ impl std::fmt::Debug for ImapAccountInput {
             .field("smtp", &self.smtp)
             .field("password", &"***")
             .field("smtp_password", &self.smtp_password.as_ref().map(|_| "***"))
+            .field("auth", &self.auth)
             .finish()
     }
 }
@@ -222,8 +252,11 @@ mod debug_tests {
             smtp: s,
             password: "geheim-1".into(),
             smtp_password: Some("geheim-2".into()),
+            auth: String::new(),
         };
         let out = format!("{i:?}");
         assert!(!out.contains("geheim"), "{out}");
+        let c = format!("{:?} {:?}", super::Credential::Password("geheim-3".into()), super::Credential::OAuth2("geheim-4".into()));
+        assert!(!c.contains("geheim"), "{c}");
     }
 }

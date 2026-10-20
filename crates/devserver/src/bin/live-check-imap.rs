@@ -12,6 +12,21 @@
 //! mail to the account itself; everything it creates is deleted again
 //! (only the special folders the app uses, e.g. Wiedervorlage, may remain).
 //! Prints counts only, no mail content.
+//!
+//! Gmail with "Mit Google anmelden" (OAuth client from the Google Cloud
+//! console in `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`):
+//!
+//! ```text
+//! live-check-imap --google-login            # prints the sign-in URL
+//! live-check-imap --google-code '<URL>'     # URL from the browser's address bar after sign-in
+//! live-check-imap --google [--write]        # the checks, against the signed-in Gmail account
+//! ```
+//!
+//! The redirect goes to `http://127.0.0.1:<port>` on the machine running the
+//! check. When the browser runs elsewhere, the page fails to load – copying
+//! its address is enough. The refresh token is kept in a file readable only
+//! by the user (`GOOGLE_TOKEN_FILE`, default in the temp directory); delete
+//! it after testing.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +34,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use base64::Engine;
+use mailcore::auth::{random_state, Pkce, TokenSet};
+use mailcore::google::{self, GoogleConfig};
+use mailcore::imap::{Credential, ServerSettings};
 use mailcore::model::*;
 use mailcore::tokens::MemoryTokenStore;
 use mailcore::{Host, Service, ServiceOptions};
@@ -109,21 +127,89 @@ fn security(port: u16) -> &'static str {
     }
 }
 
+fn google_config() -> anyhow::Result<GoogleConfig> {
+    Ok(GoogleConfig::new(&env(&["GOOGLE_CLIENT_ID"])?, &std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default()))
+}
+
+fn google_token_file() -> PathBuf {
+    std::env::var("GOOGLE_TOKEN_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("lettertask-live-check-google.json"))
+}
+
+/// Writes `v` to the token file, readable by the user only.
+fn write_private(path: &Path, v: &Value) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(path);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    use std::io::Write;
+    o.open(path)?.write_all(v.to_string().as_bytes())?;
+    Ok(())
+}
+
+/// Step 1: sign-in URL; PKCE verifier and state wait in the token file.
+fn google_login() -> anyhow::Result<()> {
+    let cfg = google_config()?;
+    let pkce = Pkce::generate();
+    let state = random_state();
+    let redirect = "http://127.0.0.1:53682";
+    let url = google::authorize_url(&cfg, redirect, &state, &pkce.challenge, None);
+    write_private(&google_token_file(), &json!({"verifier": pkce.verifier, "state": state, "redirect": redirect}))?;
+    println!("Im Browser öffnen und anmelden:\n\n{url}\n");
+    println!("Danach die Adresse aus der Adresszeile (http://127.0.0.1:53682/?…) an --google-code übergeben.");
+    Ok(())
+}
+
+/// Step 2: exchanges the code from the redirect URL for tokens.
+async fn google_code(redirect_url: &str) -> anyhow::Result<()> {
+    let cfg = google_config()?;
+    let path = google_token_file();
+    let pending: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let q: std::collections::HashMap<String, String> = reqwest::Url::parse(redirect_url.trim())?.query_pairs().into_owned().collect();
+    if let Some(e) = q.get("error") {
+        anyhow::bail!("Google meldet: {e}");
+    }
+    anyhow::ensure!(q.get("state").map(String::as_str) == pending["state"].as_str(), "state passt nicht – bitte --google-login neu starten");
+    let code = q.get("code").ok_or_else(|| anyhow::anyhow!("Kein code in der Adresse"))?;
+    let http = reqwest::Client::new();
+    let t = google::exchange_code(&http, &cfg, code, pending["verifier"].as_str().unwrap_or(""), pending["redirect"].as_str().unwrap_or("")).await?;
+    let me = google::user_info(&http, &cfg, &t.access_token).await?;
+    write_private(&path, &json!({"refreshToken": t.refresh_token}))?;
+    println!("Angemeldet als {}. Token gespeichert in {}.", me.email, path.display());
+    Ok(())
+}
+
+/// Access token of the stored Google sign-in.
+async fn google_tokens() -> anyhow::Result<TokenSet> {
+    let path = google_token_file();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).map_err(|_| anyhow::anyhow!("Erst --google-login / --google-code ausführen"))?)?;
+    let rt = v["refreshToken"].as_str().ok_or_else(|| anyhow::anyhow!("Erst --google-code ausführen"))?;
+    let t = google::refresh(&reqwest::Client::new(), &google_config()?, rt).await?;
+    if t.refresh_token != rt {
+        write_private(&path, &json!({"refreshToken": t.refresh_token}))?;
+    }
+    Ok(t)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut write = false;
-    for a in std::env::args().skip(1) {
+    let mut use_google = false;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
         match a.as_str() {
             "--write" => write = true,
+            "--google" => use_google = true,
+            "--google-login" => return google_login(),
+            "--google-code" => return google_code(&args.next().ok_or_else(|| anyhow::anyhow!("--google-code braucht die Adresse"))?).await,
             other => anyhow::bail!("Unbekanntes Argument: {other}"),
         }
     }
-    let host = env(&["IMAP_TEST_HOST"])?;
-    let port: u16 = env(&["IMAP_TEST_IMAP_PORT"])?.trim().parse()?;
-    let smtp = env(&["IMAP_TEST_SMTP"])?;
-    let smtp_port: u16 = env(&["IMAP_TEST_SMTP_PORT"])?.trim().parse()?;
-    let user = env(&["IMAP_TEST_USERNAME"])?;
-    let password = env(&["IMAP_TEST_PASSWORD"])?;
 
     let dir = std::env::temp_dir().join(format!("live-check-imap-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -139,29 +225,65 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let mut c = Checker { svc: svc.clone(), ok: 0, failed: vec![] };
 
-    let input = json!({
-        "email": user, "displayName": "IMAP-Test",
-        "imap": {"host": host, "port": port, "security": security(port), "username": user},
-        "smtp": {"host": smtp, "port": smtp_port, "security": security(smtp_port), "username": user},
-        "password": password, "smtpPassword": null
-    });
-
     // ---- account ----
     println!("\n== Konto");
-    let disc: Option<Value> = c.call("Servereinstellungen ermitteln (Autoconfig)", "discover_imap", json!({"email": user})).await;
-    if let Some(d) = disc {
-        c.note(format!("Vorschlag IMAP: {}", d["imap"]["host"].as_str().unwrap_or("–")));
-    }
-    let r: Option<Value> = c.call("Verbindungstest IMAP + SMTP", "test_imap_account", json!({"input": input})).await;
-    if let Some(r) = &r {
-        c.check("IMAP-Anmeldung", r["imapOk"] == true, r["imapError"].to_string());
-        c.check("SMTP-Anmeldung", r["smtpOk"] == true, r["smtpError"].to_string());
-    }
-    let t = Instant::now();
-    let Some(account) = c.call::<Account>("Konto hinzufügen (Ordner + Posteingang)", "add_imap_account", json!({"input": input})).await else {
-        anyhow::bail!("Konto konnte nicht angelegt werden");
+    let (account, input, raw_login) = if use_google {
+        let cfg = google_config()?;
+        let mut config: Value = svc.dispatch("get_config", json!({})).await?;
+        config["googleClientId"] = json!(cfg.client_id);
+        config["googleClientSecret"] = json!(cfg.client_secret);
+        svc.dispatch("save_config", json!({"config": config})).await?;
+        let tokens = google_tokens().await?;
+        let access = tokens.access_token.clone();
+        let t = Instant::now();
+        let account = match svc.finish_google_login(tokens).await {
+            Ok(a) => {
+                c.check("Mit Google anmelden (Ordner + Posteingang)", true, "");
+                a
+            }
+            Err(e) => anyhow::bail!("Google-Konto konnte nicht angelegt werden: {e}"),
+        };
+        c.note(format!("{} ms bis zum ersten Sync", t.elapsed().as_millis()));
+        c.check("Konto als Google-Konto gelistet", c.svc.dispatch("list_accounts", json!({})).await?.to_string().contains("\"auth\":\"google\""), "auth fehlt");
+        let input: Value = c.call("Kontoeinstellungen lesen", "get_imap_account", json!({"accountId": account.id})).await.unwrap_or_default();
+        c.check("IMAP/SMTP bei Google, Anmeldung per OAuth", input["imap"]["host"] == "imap.gmail.com" && input["auth"] == "google", input.to_string());
+        let r: Option<Value> = c.call("Verbindungstest IMAP + SMTP (XOAUTH2)", "test_imap_account", json!({"input": input})).await;
+        if let Some(r) = &r {
+            c.check("IMAP-Anmeldung", r["imapOk"] == true, r["imapError"].to_string());
+            c.check("SMTP-Anmeldung", r["smtpOk"] == true, r["smtpError"].to_string());
+        }
+        let settings: ServerSettings = serde_json::from_value(input["imap"].clone())?;
+        (account, input, (settings, Credential::OAuth2(access)))
+    } else {
+        let host = env(&["IMAP_TEST_HOST"])?;
+        let port: u16 = env(&["IMAP_TEST_IMAP_PORT"])?.trim().parse()?;
+        let smtp = env(&["IMAP_TEST_SMTP"])?;
+        let smtp_port: u16 = env(&["IMAP_TEST_SMTP_PORT"])?.trim().parse()?;
+        let user = env(&["IMAP_TEST_USERNAME"])?;
+        let password = env(&["IMAP_TEST_PASSWORD"])?;
+        let input = json!({
+            "email": user, "displayName": "IMAP-Test",
+            "imap": {"host": host, "port": port, "security": security(port), "username": user},
+            "smtp": {"host": smtp, "port": smtp_port, "security": security(smtp_port), "username": user},
+            "password": password, "smtpPassword": null
+        });
+        let disc: Option<Value> = c.call("Servereinstellungen ermitteln (Autoconfig)", "discover_imap", json!({"email": user})).await;
+        if let Some(d) = disc {
+            c.note(format!("Vorschlag IMAP: {}", d["imap"]["host"].as_str().unwrap_or("–")));
+        }
+        let r: Option<Value> = c.call("Verbindungstest IMAP + SMTP", "test_imap_account", json!({"input": input})).await;
+        if let Some(r) = &r {
+            c.check("IMAP-Anmeldung", r["imapOk"] == true, r["imapError"].to_string());
+            c.check("SMTP-Anmeldung", r["smtpOk"] == true, r["smtpError"].to_string());
+        }
+        let t = Instant::now();
+        let Some(account) = c.call::<Account>("Konto hinzufügen (Ordner + Posteingang)", "add_imap_account", json!({"input": input})).await else {
+            anyhow::bail!("Konto konnte nicht angelegt werden");
+        };
+        c.note(format!("{} ms bis zum ersten Sync", t.elapsed().as_millis()));
+        let settings = ServerSettings { host, port, security: security(port).into(), username: user };
+        (account, input, (settings, Credential::Password(password)))
     };
-    c.note(format!("{} ms bis zum ersten Sync", t.elapsed().as_millis()));
     let mb = account.id.clone();
 
     // ---- read ----
@@ -204,10 +326,7 @@ async fn main() -> anyhow::Result<()> {
     // ---- write ----
     if write {
         let stamp = chrono::Utc::now().format("%H%M%S").to_string();
-        let raw = Raw {
-            settings: mailcore::imap::ServerSettings { host: host.clone(), port, security: security(port).into(), username: user.clone() },
-            password: password.clone(),
-        };
+        let raw = Raw { settings: raw_login.0, credential: raw_login.1 };
         write_checks(&mut c, &mb, &account.email, &stamp).await;
         edge_checks(&mut c, &mb, &account.email, &stamp, &raw, &input).await;
         println!("\n== Sicherheitsnetz: Reste mit Kennung {stamp} direkt per IMAP entfernen");
@@ -429,13 +548,13 @@ async fn write_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str) {
 /// A second, independent IMAP connection – plays "another mail client" and
 /// cleans up whatever the service layer left behind.
 struct Raw {
-    settings: mailcore::imap::ServerSettings,
-    password: String,
+    settings: ServerSettings,
+    credential: Credential,
 }
 
 impl Raw {
     async fn conn(&self) -> mailcore::Result<mailcore::imap::conn::Conn> {
-        mailcore::imap::conn::connect(&self.settings, &self.password).await
+        mailcore::imap::conn::connect_with(&self.settings, &self.credential).await
     }
 
     /// UIDs in `folder` whose subject contains `needle`.
@@ -548,7 +667,12 @@ async fn edge_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str, raw: &Raw
     let mut bad = input.clone();
     bad["password"] = json!("falsches-passwort-123");
     bad["smtpPassword"] = json!("falsches-passwort-123");
-    let r: Option<Value> = c.call("Verbindungstest mit falschem Passwort", "test_imap_account", json!({"input": bad})).await;
+    // Google accounts have no password to get wrong.
+    let r: Option<Value> = if input["auth"] == "google" {
+        None
+    } else {
+        c.call("Verbindungstest mit falschem Passwort", "test_imap_account", json!({"input": bad})).await
+    };
     if let Some(r) = r {
         c.check("IMAP lehnt ab, mit Fehlertext", r["imapOk"] == false && r["imapError"].as_str().is_some_and(|e| !e.is_empty()), r.to_string());
         c.check("SMTP lehnt ab, mit Fehlertext", r["smtpOk"] == false && r["smtpError"].as_str().is_some_and(|e| !e.is_empty()), r.to_string());

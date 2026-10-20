@@ -20,6 +20,9 @@ pub struct Account {
     /// "o365" | "imap" (derived from the id prefix).
     #[serde(default)]
     pub kind: String,
+    /// IMAP accounts: "google" when signed in with Google, else empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
     pub mailboxes: Vec<Mailbox>,
     /// Own picture (data:image/png|jpeg|webp URL, shown round); None = initials.
     #[serde(default)]
@@ -387,6 +390,11 @@ pub struct Config {
     pub demo: bool,
     /// Read-only for the UI: a client ID was compiled into this build.
     pub builtin_client_id: bool,
+    /// OAuth client ("Desktop app") of the Google Cloud project for Gmail.
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    /// Read-only for the UI: a Google client was compiled into this build.
+    pub builtin_google_client: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -416,6 +424,16 @@ pub fn builtin_client_id() -> &'static str {
 
 pub fn builtin_tenant() -> &'static str {
     option_env!("LETTERTASK_TENANT").map(str::trim).unwrap_or(DEFAULT_TENANT)
+}
+
+/// Google OAuth client compiled in via `LETTERTASK_GOOGLE_CLIENT_ID` /
+/// `LETTERTASK_GOOGLE_CLIENT_SECRET` (empty when not set). For desktop
+/// apps Google's client secret is not confidential.
+pub fn builtin_google_client() -> (&'static str, &'static str) {
+    (
+        option_env!("LETTERTASK_GOOGLE_CLIENT_ID").map(str::trim).unwrap_or(""),
+        option_env!("LETTERTASK_GOOGLE_CLIENT_SECRET").map(str::trim).unwrap_or(""),
+    )
 }
 
 pub fn default_snooze_options() -> Vec<SnoozeOption> {
@@ -450,6 +468,9 @@ impl Default for Config {
             kanban_reading_pane: "bottom".into(),
             demo: false,
             builtin_client_id: false,
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
+            builtin_google_client: false,
         }
     }
 }

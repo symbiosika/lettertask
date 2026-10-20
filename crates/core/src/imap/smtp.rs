@@ -8,7 +8,7 @@ use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{AsyncSmtpConnection, TlsParameters};
 use lettre::transport::smtp::extension::ClientId;
 
-use super::ServerSettings;
+use super::{Credential, ServerSettings};
 use crate::error::{Error, Result};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -17,7 +17,7 @@ fn err(e: impl std::fmt::Display) -> Error {
     Error::Network(format!("SMTP: {e}"))
 }
 
-async fn open(s: &ServerSettings, password: &str) -> Result<AsyncSmtpConnection> {
+async fn open(s: &ServerSettings, credential: &Credential) -> Result<AsyncSmtpConnection> {
     let host = s.host.trim();
     if host.is_empty() {
         return Err(Error::invalid("SMTP-Server fehlt."));
@@ -39,29 +39,43 @@ async fn open(s: &ServerSettings, password: &str) -> Result<AsyncSmtpConnection>
         conn.starttls(tls()?, &hello).await.map_err(err)?;
     }
     if !s.username.is_empty() {
-        let creds = Credentials::new(s.username.clone(), password.to_string());
-        conn.auth(&[Mechanism::Plain, Mechanism::Login], &creds)
-            .await
-            .map_err(|e| {
-                if e.is_permanent() || e.is_transient() {
-                    Error::Auth("SMTP-Anmeldung fehlgeschlagen: Benutzername oder Passwort falsch.".into())
-                } else {
-                    err(e)
-                }
-            })?;
+        let (secret, mechanisms, rejected): (&str, &[Mechanism], &str) = match credential {
+            Credential::Password(p) => (
+                p,
+                &[Mechanism::Plain, Mechanism::Login],
+                "SMTP-Anmeldung fehlgeschlagen: Benutzername oder Passwort falsch.",
+            ),
+            Credential::OAuth2(t) => (
+                t,
+                &[Mechanism::Xoauth2],
+                "SMTP-Anmeldung mit Google fehlgeschlagen. Bitte das Konto erneut mit Google anmelden.",
+            ),
+        };
+        let creds = Credentials::new(s.username.clone(), secret.to_string());
+        conn.auth(mechanisms, &creds).await.map_err(|e| {
+            if e.is_permanent() || e.is_transient() {
+                Error::Auth(rejected.into())
+            } else {
+                err(e)
+            }
+        })?;
     }
     Ok(conn)
 }
 
 /// Connects and logs in (used by "Verbindung testen").
 pub async fn check(s: &ServerSettings, password: &str) -> Result<()> {
-    let mut c = open(s, password).await?;
+    check_with(s, &Credential::Password(password.to_string())).await
+}
+
+pub async fn check_with(s: &ServerSettings, credential: &Credential) -> Result<()> {
+    let mut c = open(s, credential).await?;
     let _ = c.quit().await;
     Ok(())
 }
 
-pub async fn send(s: &ServerSettings, password: &str, envelope: &Envelope, raw: &[u8]) -> Result<()> {
-    let mut c = open(s, password).await?;
+pub async fn send(s: &ServerSettings, credential: &Credential, envelope: &Envelope, raw: &[u8]) -> Result<()> {
+    let mut c = open(s, credential).await?;
     c.send(envelope, raw)
         .await
         .map_err(|e| Error::Other(format!("Versand abgelehnt: {e}")))?;

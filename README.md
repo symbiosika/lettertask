@@ -1,17 +1,19 @@
-# lettertask – fokussiertes Mailprogramm für Microsoft 365 und IMAP
+# lettertask – fokussiertes Mailprogramm für Microsoft 365, Gmail und IMAP
 
 Ein Desktop-Mailprogramm in **Rust** (Tauri 2) für konzentriertes Arbeiten nach dem
 **Inbox-Zero-Prinzip**: Das Postfach ist die Aufgabenliste. Die Oberfläche orientiert sich an
 eM Client – ruhig, schlicht, eine Mail = ein Eintrag (keine Konversations-Gruppierung).
 
 Microsoft-365-Postfächer werden ausschließlich über die **Microsoft Graph API** angebunden
-(EWS wird von Microsoft abgeschaltet), andere Anbieter über **IMAP/SMTP**.
+(EWS wird von Microsoft abgeschaltet), **Gmail / Google Workspace** per Google-Anmeldung über
+IMAP/SMTP (OAuth2), andere Anbieter über **IMAP/SMTP**.
 
 ## Funktionen
 
 **E-Mail**
-- Konten: **Microsoft 365** (Login im Browser inkl. MFA) und **IMAP/SMTP** mit automatischer
-  Servererkennung (Thunderbird-Datenbank, autoconfig) und Verbindungstest
+- Konten: **Microsoft 365** (Login im Browser inkl. MFA), **Google / Gmail** (Login im Browser,
+  kein App-Passwort nötig) und **IMAP/SMTP** mit automatischer Servererkennung
+  (Thunderbird-Datenbank, autoconfig) und Verbindungstest
 - Aktionsleiste: **Neu ▾** (E-Mail / Termin / Aufgabe), Antworten, Allen antworten, Weiterleiten,
   Archivieren, **Auf Wiedervorlage ▾**, Löschen
 - Suche oben mit Bereich (aktueller Ordner / alle Ordner), Feld (Von, An, Betreff, Text),
@@ -83,6 +85,28 @@ Login: Authorization Code Flow mit PKCE und Loopback-Redirect. Das Refresh-Token
 Schlüsselbund des Betriebssystems (Windows Anmeldeinformationsverwaltung, macOS Schlüsselbund,
 Linux Secret Service), sonst in einer nur für den Benutzer lesbaren Datei. IMAP-Passwörter ebenso.
 
+## Mit Gmail / Google Workspace verwenden
+
+„Konto hinzufügen › Google / Gmail“ öffnet die Google-Anmeldung im Browser (Authorization Code
+Flow mit PKCE, Loopback-Redirect `http://127.0.0.1:<port>`). E-Mails laufen danach über IMAP/SMTP
+(`imap.gmail.com`, `smtp.gmail.com`) mit SASL **XOAUTH2** – ein Passwort wird nicht gespeichert, nur
+das Refresh-Token im Schlüsselbund. Gmail-Eigenheiten: „Archivieren“ entfernt das Label Posteingang
+(Verschieben nach „Alle Nachrichten“), gesendete Mails legt Gmail selbst unter „Gesendet“ ab.
+
+Dafür braucht die App einen **OAuth-Client aus der Google Cloud Console** (einmalig):
+1. Projekt anlegen, **Gmail API** aktivieren
+2. OAuth-Zustimmungsbildschirm (Zielgruppe „Extern“), Bereich `https://mail.google.com/` eintragen.
+   Im Status „Testen“ dürfen nur eingetragene Testnutzer (max. 100) sich anmelden, und Google lässt
+   deren Anmeldung nach **7 Tagen** ablaufen. Für den allgemeinen Betrieb muss die App von Google
+   verifiziert werden (`mail.google.com` ist ein „eingeschränkter“ Bereich: Prüfung inkl.
+   Sicherheitsbewertung).
+3. Anmeldedaten › OAuth-Client-ID › Anwendungstyp **Desktop-App**
+4. Client-ID und Clientschlüssel unter Einstellungen › Konten › „Google-Anmeldung“ eintragen – oder
+   fest einbauen: `LETTERTASK_GOOGLE_CLIENT_ID=… LETTERTASK_GOOGLE_CLIENT_SECRET=… cargo build`.
+   Der Clientschlüssel einer Desktop-App gilt laut Google nicht als geheim.
+
+Alternativ funktioniert Gmail auch als normales IMAP-Konto mit **App-Passwort**.
+
 ### Verbindung prüfen (ohne Oberfläche)
 
 ```bash
@@ -94,6 +118,12 @@ export IMAP_TEST_HOST=… IMAP_TEST_IMAP_PORT=993 IMAP_TEST_SMTP=… IMAP_TEST_S
 export IMAP_TEST_USERNAME=… IMAP_TEST_PASSWORD=…
 cargo run -p devserver --bin live-check-imap              # nur lesend
 cargo run -p devserver --bin live-check-imap -- --write   # Ordner, Aufgaben, Entwürfe, Versand an sich selbst (räumt auf)
+
+# Gmail mit Google-Anmeldung (auch remote: nach der Anmeldung die Adresse aus der Adresszeile kopieren)
+export GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=…
+cargo run -p devserver --bin live-check-imap -- --google-login          # gibt die Anmelde-URL aus
+cargo run -p devserver --bin live-check-imap -- --google-code '<URL>'   # http://127.0.0.1:53682/?code=…
+cargo run -p devserver --bin live-check-imap -- --google --write
 ```
 
 Nutzt dieselbe Service-Schicht wie die App und gibt nur Zähler aus, keine Mailinhalte. Die Schreibtests
@@ -119,7 +149,7 @@ Installer für Windows, macOS und Linux baut auch der GitHub-Workflow `release.y
 ```
 ui/                    Oberfläche (HTML/CSS/ES-Module, kein Build-Schritt), läuft im WebView
 src-tauri/             Tauri-Shell: Fenster, Dialoge, Benachrichtigungen, ein Befehl `call`
-crates/core/           mailcore: OAuth, Graph- und IMAP/SMTP-Anbindung, Sync, SQLite-Cache, Service-API
+crates/core/           mailcore: OAuth (Microsoft, Google), Graph- und IMAP/SMTP-Anbindung, Sync, SQLite-Cache, Service-API
 crates/graph-fake/     zustandsbehafteter Fake von Microsoft Graph + SMTP-Sink (Tests, Demo-Modus)
 crates/devserver/      dieselbe Service-API über HTTP/SSE (Browser-Entwicklung, E2E-Tests, live-check)
 docs/API.md            Vertrag zwischen Oberfläche und Backend
