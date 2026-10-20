@@ -59,7 +59,7 @@ Alternativ im Browser (Entwicklung): `cargo run -p devserver -- --demo --port 80
 4. Nach dem Anlegen unter **Authentifizierung** „Öffentliche Clientflows zulassen“ → **Ja**
 5. Unter **API-Berechtigungen › Microsoft Graph › Delegierte Berechtigungen** hinzufügen:
    `User.Read`, `Mail.ReadWrite`, `Mail.ReadWrite.Shared`, `Mail.Send`, `Mail.Send.Shared`,
-   `Calendars.ReadWrite`, `Calendars.ReadWrite.Shared`, `MailboxSettings.ReadWrite`, `People.Read`,
+   `Calendars.ReadWrite`, `Calendars.ReadWrite.Shared`, `MailboxSettings.ReadWrite`, `People.Read`, `Contacts.ReadWrite`,
    `offline_access`, `openid`, `profile` – danach **„Administratorzustimmung erteilen“**
 6. Die **Anwendungs-ID (Client-ID)** kopieren (und ggf. die Verzeichnis-ID/Tenant-ID)
 
