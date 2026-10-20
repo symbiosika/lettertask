@@ -494,7 +494,7 @@ function msgRow(m, accountId, toMode, snoozedView) {
   const sel = list.selection.has(m.id);
   const cls = 'div.msg' + (m.isRead ? '' : '.unread') + (sel ? '.selected' : '') + (list.cursor === m.id ? '.cursor' : '') + (m.flag === 'flagged' ? '.flagged' : '');
   const el = h(cls, { draggable: 'true', dataset: { id: m.id }, role: 'option', 'aria-selected': sel ? 'true' : 'false' });
-  const flagIc = m.flag === 'flagged' ? icon('flag', 15, 'flagged') : m.flag === 'complete' ? icon('check', 15, 'done') : icon('flag', 15, 'ghost');
+  const flagIc = snoozedView ? '' : m.flag === 'flagged' ? icon('flag', 15, 'flagged') : m.flag === 'complete' ? icon('check', 15, 'done') : icon('flag', 15, 'ghost');
   const time = snoozedView && m.dueAt
     ? `<span class="m-due" title="Auf Wiedervorlage bis ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 13)} bis ${esc(fmtDueShort(m.dueAt))}</span>`
     : esc(fmtListDate(m.receivedAt));

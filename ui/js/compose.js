@@ -177,9 +177,15 @@ function applyDraft(d) {
   st.importance = d.importance || 'normal';
   st.receipt = !!d.requestReadReceipt;
   st.attachments = d.attachments || [];
-  to.set(d.to); cc.set(d.cc); bcc.set(d.bcc);
+  // Keep anything the user typed while the draft was loading.
+  const merge = (field, list) => {
+    const typed = field.get();
+    const have = new Set((list || []).map((a) => a.address.toLowerCase()));
+    field.set([...(list || []), ...typed.filter((a) => !have.has(a.address.toLowerCase()))]);
+  };
+  merge(to, d.to); merge(cc, d.cc); merge(bcc, d.bcc);
   if ((d.bcc || []).length || (d.cc || []).length) showCcBcc(false);
-  subject.value = d.subject || '';
+  if (!subject.value) subject.value = d.subject || '';
   syncToggles();
   renderAttachments();
   updateTitle();

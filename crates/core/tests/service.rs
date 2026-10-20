@@ -780,3 +780,40 @@ async fn search_by_field_and_attachments() {
     .await;
     assert!(!wrong_field.iter().any(|x| x.id == m.id));
 }
+
+#[tokio::test]
+async fn reply_keeps_inline_images_editable_and_embedded() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let mut source = None;
+    for m in &page.items {
+        let d: MessageDetail = call(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": m.id})).await;
+        if d.body_html.contains("data:image/png;base64,") {
+            source = Some(m.clone());
+            break;
+        }
+    }
+    let source = source.expect("message with inline image");
+    let reply: Draft = call(
+        &ctx.svc,
+        "create_draft",
+        json!({"mailboxId": ctx.account, "mode": "reply", "sourceMessageId": source.id}),
+    )
+    .await;
+    // Editor sees a renderable image, no broken cid: and no attachment chip for it.
+    assert!(!reply.body_html.contains("cid:"));
+    assert!(reply.body_html.contains("#cid="));
+    assert!(reply.attachments.iter().all(|a| !a.is_inline));
+    // Saving converts back: the server draft references the inline attachment again.
+    let input = json!({"id": reply.id, "mailboxId": ctx.account, "mode": "reply", "to": reply.to,
+        "cc": [], "bcc": [], "subject": reply.subject, "bodyHtml": format!("<p>Danke!</p>{}", reply.body_html),
+        "importance": "normal", "requestReadReceipt": false, "newAttachments": [], "removedAttachmentIds": []});
+    let _: Draft = call(&ctx.svc, "save_draft", json!({"draft": input})).await;
+    let fake = ctx.fake.as_ref().unwrap();
+    let raw = fake.state.message("me", reply.id.as_deref().unwrap()).expect("draft on server");
+    let body = raw["body"]["content"].as_str().unwrap();
+    assert!(body.contains("cid:"), "server body must use cid: references");
+    assert!(!body.contains("#cid="));
+    assert!(!body.contains("data:image/png"));
+}

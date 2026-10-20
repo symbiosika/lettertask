@@ -93,7 +93,7 @@ function renderTopbar() {
   });
 
   const right = h('div.tb-right', busy, h('div.sync-ind#sync-ind'), accountChip());
-  els.topbar.append(h('div.tb-left', menuBtn, h('span.brand', { html: icon('mail', 18) + '<span>Mail</span>' })), wrap, right);
+  els.topbar.append(h('div.tb-left', menuBtn, h('span.brand#brand', { html: icon('mail', 18) + '<span>Mail</span>' })), wrap, right);
 }
 
 function accountChip() {
@@ -269,6 +269,8 @@ function setMode(mode) {
   store('mode', mode);
   document.body.dataset.mode = mode;
   els.navTitle.textContent = mode === 'mail' ? 'Mail' : 'Kalender';
+  const brand = document.getElementById('brand');
+  if (brand) brand.innerHTML = mode === 'mail' ? icon('mail', 18) + '<span>Mail</span>' : icon('calendar', 18) + '<span>Kalender</span>';
   els.tree.classList.toggle('hidden', mode !== 'mail');
   els.calNav.classList.toggle('hidden', mode !== 'calendar');
   mail.showMailView(mode === 'mail');

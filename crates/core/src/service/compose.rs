@@ -84,25 +84,43 @@ impl Service {
                 seg(id)
             ))
             .await?;
-        let attachments = if v["hasAttachments"].as_bool().unwrap_or(false)
-            || convert::body_html(&v).contains("cid:")
-        {
-            c.get_all(
-                &format!(
-                    "{}/messages/{}/attachments?$select=id,name,contentType,size,isInline",
-                    mb.graph_prefix(),
-                    seg(id)
-                ),
-                &[],
-                500,
-            )
-            .await?
-            .iter()
-            .map(convert::attachment)
-            .collect()
-        } else {
-            vec![]
-        };
+        let mut body_html = convert::body_html(&v);
+        let mut attachments = Vec::new();
+        if v["hasAttachments"].as_bool().unwrap_or(false) || body_html.contains("cid:") {
+            let list = c
+                .get_all(
+                    &format!(
+                        "{}/messages/{}/attachments?$select=id,name,contentType,size,isInline",
+                        mb.graph_prefix(),
+                        seg(id)
+                    ),
+                    &[],
+                    500,
+                )
+                .await?;
+            for a in list.iter().map(convert::attachment) {
+                if a.is_inline && body_html.contains("cid:") {
+                    // Show embedded images in the editor; `cid_to_data` is reversed on save.
+                    if let Ok(full) = c
+                        .get(&format!(
+                            "{}/messages/{}/attachments/{}",
+                            mb.graph_prefix(),
+                            seg(id),
+                            seg(&a.id)
+                        ))
+                        .await
+                    {
+                        let cid = full["contentId"].as_str().unwrap_or("").trim_matches(['<', '>']).to_string();
+                        let bytes = full["contentBytes"].as_str().unwrap_or("");
+                        if !cid.is_empty() && body_html.contains(&format!("cid:{cid}")) {
+                            body_html = cid_to_data(&body_html, &cid, &a.content_type, bytes);
+                            continue;
+                        }
+                    }
+                }
+                attachments.push(a);
+            }
+        }
         Ok(Draft {
             id: Some(id.to_string()),
             mailbox_id: mb.id.clone(),
@@ -111,7 +129,7 @@ impl Service {
             cc: convert::addresses(&v, "ccRecipients"),
             bcc: convert::addresses(&v, "bccRecipients"),
             subject: v["subject"].as_str().unwrap_or("").to_string(),
-            body_html: convert::body_html(&v),
+            body_html,
             importance: v["importance"].as_str().unwrap_or("normal").to_string(),
             request_read_receipt: v["isReadReceiptRequested"].as_bool().unwrap_or(false),
             attachments,
@@ -154,6 +172,9 @@ impl Service {
             }
         }
         let prefix = mb.graph_prefix();
+        let mut d = d.clone();
+        d.body_html = data_to_cid(&d.body_html);
+        let d = &d;
         let body = Self::draft_json(d);
         let id = match &d.id {
             Some(id) => {
@@ -300,9 +321,45 @@ impl Service {
     }
 }
 
+/// Marker appended to data URIs that stand in for `cid:` references while
+/// editing; a fragment does not affect how the image is decoded.
+const CID_MARK: &str = "#cid=";
+
+pub(crate) fn cid_to_data(html: &str, cid: &str, content_type: &str, b64: &str) -> String {
+    html.replace(
+        &format!("cid:{cid}"),
+        &format!("data:{content_type};base64,{b64}{CID_MARK}{}", urlencoding::encode(cid)),
+    )
+}
+
+/// Turns editor data URIs back into `cid:` references (the inline attachment
+/// stays on the draft).
+pub(crate) fn data_to_cid(html: &str) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r#"data:[^"'\s>#]*#cid=([^"'\s>]+)"#).expect("regex"));
+    re.replace_all(html, |caps: &regex::Captures| {
+        let cid = urlencoding::decode(&caps[1]).map(|c| c.into_owned()).unwrap_or_default();
+        format!("cid:{cid}")
+    })
+    .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::prepend_to_body;
+    use super::{cid_to_data, data_to_cid, prepend_to_body};
+
+    #[test]
+    fn cid_roundtrip() {
+        let html = r#"<p><img src="cid:image001.png@01D"> und <img src='cid:image001.png@01D'></p>"#;
+        let edit = cid_to_data(html, "image001.png@01D", "image/png", "iVBORw0K");
+        assert!(!edit.contains("cid:"));
+        assert!(edit.contains("data:image/png;base64,iVBORw0K#cid=image001.png%4001D"));
+        assert_eq!(data_to_cid(&edit), html);
+        // Ordinary data URIs (pasted images) are left alone.
+        let pasted = r#"<img src="data:image/png;base64,AAAA">"#;
+        assert_eq!(data_to_cid(pasted), pasted);
+    }
 
     #[test]
     fn prepends_after_body_tag() {

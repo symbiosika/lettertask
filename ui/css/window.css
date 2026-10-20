@@ -1,6 +1,9 @@
 /* Secondary windows: compose, message, event. */
 body.win { display: flex; flex-direction: column; background: var(--bg); }
-.win-bar { flex: none; padding: 0 10px; gap: 2px; }
+.win-bar { flex: none; padding: 6px 10px; gap: 2px; height: auto; min-height: 48px; flex-wrap: wrap; row-gap: 4px; }
+.win-bar .tb-stack { flex-direction: row; align-items: center; gap: 10px !important; padding: 0 4px !important; }
+.win-bar .tb-stack label { color: var(--text-dim); }
+.win-bar .tb-stack select.input { height: 30px; }
 
 /* ---------------- compose ---------------- */
 .cw-head { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; border-bottom: 1px solid var(--border); }
