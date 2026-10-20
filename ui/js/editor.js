@@ -39,7 +39,8 @@ async function embedBlobImages(doc) {
   const imgs = [...doc.querySelectorAll('img')].filter((i) => /^blob:/i.test(i.getAttribute('src') || ''));
   await Promise.all(imgs.map(async (img) => {
     try {
-      if (!img.complete) await new Promise((r) => { img.addEventListener('load', r, { once: true }); img.addEventListener('error', r, { once: true }); });
+      // Polled: WebKit delivers no load events from the sandboxed frame.
+      for (let i = 0; !img.complete && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
       if (!img.naturalWidth) return;
       const c = doc.createElement('canvas');
       c.width = img.naturalWidth;
@@ -60,7 +61,16 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
       doc = frame.contentDocument;
       doc.designMode = 'on';
       try { doc.execCommand('styleWithCSS', false, true); doc.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* ignore */ }
-      doc.addEventListener('input', () => onInput && onInput());
+      // Changes are watched with a MutationObserver, not input events: WebKit
+      // (WebKitGTK on Linux) dispatches no events at all from a frame sandboxed
+      // without allow-scripts, so typing and pasting would go unnoticed.
+      const d = doc;
+      new MutationObserver(() => {
+        if (d !== doc) return;
+        onInput && onInput();
+        // A native paste (e.g. an image in WebKit) may bring blob: images.
+        if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
+      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
@@ -76,9 +86,6 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
           if (!html) html = (await Promise.all(files.map(fileToDataUrl))).map((u) => `<img src="${u}">`).join('');
           if (target !== doc) return;
           doc.execCommand('insertHTML', false, html);
-          await embedBlobImages(doc);
-          // Not every engine reports insertHTML as an input event.
-          onInput && onInput();
         })().catch(console.warn);
       });
       doc.addEventListener('keydown', (e) => {
