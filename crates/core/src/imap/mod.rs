@@ -20,7 +20,7 @@ pub struct ServerSettings {
     pub username: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImapAccountInput {
     pub email: String,
@@ -33,6 +33,20 @@ pub struct ImapAccountInput {
     /// `None` = same password as IMAP.
     #[serde(default)]
     pub smtp_password: Option<String>,
+}
+
+// Hand-written so passwords never end up in logs or error texts.
+impl std::fmt::Debug for ImapAccountInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImapAccountInput")
+            .field("email", &self.email)
+            .field("display_name", &self.display_name)
+            .field("imap", &self.imap)
+            .field("smtp", &self.smtp)
+            .field("password", &"***")
+            .field("smtp_password", &self.smtp_password.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 /// Account ids of IMAP accounts carry this prefix; the primary mailbox shares the id.
@@ -193,5 +207,23 @@ mod tests {
         assert_eq!(parse_message_id(&id), Some((7, 42, "INBOX/a:b")));
         assert_eq!(uid_set(&[5, 1, 2, 3, 9, 10, 12]), "1:3,5,9:10,12");
         assert_eq!(quote("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    #[test]
+    fn debug_output_hides_passwords() {
+        let s = super::ServerSettings { host: "h".into(), port: 993, security: "ssl".into(), username: "u".into() };
+        let i = super::ImapAccountInput {
+            email: "a@b.c".into(),
+            display_name: String::new(),
+            imap: s.clone(),
+            smtp: s,
+            password: "geheim-1".into(),
+            smtp_password: Some("geheim-2".into()),
+        };
+        let out = format!("{i:?}");
+        assert!(!out.contains("geheim"), "{out}");
     }
 }

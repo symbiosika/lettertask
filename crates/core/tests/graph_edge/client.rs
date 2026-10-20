@@ -432,7 +432,6 @@ async fn mail_delta_removed_items_and_expired_sync_state() {
 }
 
 #[tokio::test]
-#[ignore = "offener Befund in service/mail.rs: Vollabgleich nach 410 entfernt keine inzwischen gelöschten Mails"]
 async fn mail_resync_after_expired_delta_drops_deleted_mails() {
     let ctx = setup_at(now()).await;
     let inbox = ctx.folder("inbox").await;

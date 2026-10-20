@@ -320,7 +320,24 @@ async fn error_from_response(resp: reqwest::Response) -> Error {
     }
 }
 
-/// Percent-encodes a Graph id for use in a URL path segment.
+/// Percent-encodes a Graph id for use in a URL path segment. `.` and `..`
+/// are encoded too: left as they are, URL normalisation would turn
+/// `mailFolders/../messages` into a request on a different resource.
 pub fn seg(id: &str) -> String {
-    urlencoding::encode(id).into_owned()
+    match id {
+        "." => "%2E".into(),
+        ".." => "%2E%2E".into(),
+        _ => urlencoding::encode(id).into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod seg_tests {
+    #[test]
+    fn dot_segments_are_encoded() {
+        assert_eq!(super::seg("."), "%2E");
+        assert_eq!(super::seg(".."), "%2E%2E");
+        assert_eq!(super::seg("a/b"), "a%2Fb");
+        assert_eq!(super::seg("AAMk=="), "AAMk%3D%3D");
+    }
 }
