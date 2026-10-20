@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 "#;
 
+/// `%…%` LIKE pattern matching `s` literally; use with `ESCAPE '\\'`.
+fn like_contains(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
 /// Outlook folder order for well-known folders.
 fn well_known_rank(w: Option<&str>) -> i32 {
     match w {
@@ -462,6 +468,14 @@ impl Store {
         Ok(())
     }
 
+    /// Ids of a folder's cached messages received at or after `since` (RFC3339 UTC).
+    pub fn message_ids_since(&self, mailbox_id: &str, folder_id: &str, since: &str) -> Result<Vec<String>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT id FROM messages WHERE mailbox_id=?1 AND folder_id=?2 AND received >= ?3")?;
+        let rows = st.query_map(params![mailbox_id, folder_id, since], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn delete_folder_messages(&self, mailbox_id: &str, folder_id: &str) -> Result<()> {
         self.c().execute(
             "DELETE FROM messages WHERE mailbox_id=?1 AND folder_id=?2",
@@ -522,9 +536,9 @@ impl Store {
             .category
             .as_ref()
             .filter(|c| !c.is_empty())
-            .map(|c| format!("%{}%", serde_json::to_string(c).unwrap_or_default()));
+            .map(|c| like_contains(&serde_json::to_string(c).unwrap_or_default()));
         if cat_pattern.is_some() {
-            where_sql.push_str(" AND categories_json LIKE ?3");
+            where_sql.push_str(" AND categories_json LIKE ?3 ESCAPE '\\'");
         } else {
             where_sql.push_str(" AND ?3 IS NULL");
         }
@@ -533,7 +547,7 @@ impl Store {
             .as_ref()
             .map(|t| t.trim())
             .filter(|t| !t.is_empty())
-            .map(|t| format!("%{}%", t.replace('%', "\\%").replace('_', "\\_")));
+            .map(like_contains);
         if text_pattern.is_some() {
             where_sql.push_str(
                 " AND (subject LIKE ?4 ESCAPE '\\' OR from_name LIKE ?4 ESCAPE '\\' OR from_addr LIKE ?4 ESCAPE '\\' OR preview LIKE ?4 ESCAPE '\\' OR to_json LIKE ?4 ESCAPE '\\')",
@@ -568,7 +582,7 @@ impl Store {
 
     /// Known correspondents (senders in the cache) matching `q`.
     pub fn search_addresses(&self, q: &str, limit: i64) -> Result<Vec<Address>> {
-        let pattern = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+        let pattern = like_contains(q);
         let c = self.c();
         let mut st = c.prepare(
             "SELECT from_name, from_addr, COUNT(*) AS n FROM messages
@@ -586,10 +600,10 @@ impl Store {
 
     /// Messages of a mailbox (any folder) carrying a category.
     pub fn messages_with_category(&self, mailbox_id: &str, category: &str) -> Result<Vec<MessageSummary>> {
-        let pattern = format!("%{}%", serde_json::to_string(category)?);
+        let pattern = like_contains(&serde_json::to_string(category)?);
         let c = self.c();
         let mut st = c.prepare(&format!(
-            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND categories_json LIKE ?2 ORDER BY received DESC"
+            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND categories_json LIKE ?2 ESCAPE '\\' ORDER BY received DESC"
         ))?;
         let rows = st.query_map(params![mailbox_id, pattern], message_row)?;
         Ok(rows
@@ -769,7 +783,7 @@ impl Store {
         let words: Vec<String> = query
             .unwrap_or("")
             .split_whitespace()
-            .map(|w| format!("%{}%", w.to_lowercase().replace('%', "\\%").replace('_', "\\_")))
+            .map(|w| like_contains(&w.to_lowercase()))
             .collect();
         let mut sql = String::from("FROM contacts WHERE (?1 IS NULL OR account_id=?1) AND (?2 IS NULL OR source=?2)");
         for i in 0..words.len() {
@@ -803,18 +817,16 @@ impl Store {
 
     /// True if any contact already has this e-mail address.
     pub fn contact_with_email(&self, email: &str) -> Result<bool> {
-        let pattern = format!("%{}%", email.to_lowercase());
-        let found: Option<String> = self
-            .c()
-            .query_row(
-                "SELECT json FROM contacts WHERE search LIKE ?1",
-                params![pattern],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(found
-            .and_then(|j| serde_json::from_str::<Contact>(&j).ok())
-            .is_some_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(email))))
+        // LIKE only pre-filters (substring): check every candidate, not just the first.
+        let c = self.c();
+        let mut st = c.prepare("SELECT json FROM contacts WHERE search LIKE ?1 ESCAPE '\\'")?;
+        let rows = st.query_map(params![like_contains(&email.to_lowercase())], |r| r.get::<_, String>(0))?;
+        for j in rows {
+            if serde_json::from_str::<Contact>(&j?).is_ok_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(email))) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     // ---- kv ----
@@ -1005,5 +1017,64 @@ mod tests {
 
         s.delete_account("acc").unwrap();
         assert!(s.list_folders("mb").unwrap().is_empty());
+    }
+
+    #[test]
+    fn like_wildcards_in_user_input_are_literal() {
+        let s = setup();
+        s.upsert_messages(&[
+            msg("1", "f", "2026-10-01T00:00:00Z", true, "Pfad C:\\temp", &["[K_To_Do]"]),
+            msg("2", "f", "2026-10-02T00:00:00Z", true, "Pfad C:temp", &["[K_ToxDo]"]),
+            msg("3", "f", "2026-10-03T00:00:00Z", true, "100% sicher", &["a%b"]),
+            msg("4", "f", "2026-10-04T00:00:00Z", true, "100 sicher", &["axyzb"]),
+        ])
+        .unwrap();
+        let ids = |q: &ListQuery| s.list_messages(q).unwrap().items.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let mut q = ListQuery {
+            mailbox_id: "mb".into(),
+            folder_id: "f".into(),
+            ..Default::default()
+        };
+        // "_" and "%" in a category name must not act as wildcards
+        q.category = Some("[K_To_Do]".into());
+        assert_eq!(ids(&q), ["1"]);
+        q.category = Some("a%b".into());
+        assert_eq!(ids(&q), ["3"]);
+        q.category = None;
+        // a backslash in the search text is a plain character
+        q.text = Some("C:\\temp".into());
+        assert_eq!(ids(&q), ["1"]);
+        q.text = Some("100%".into());
+        assert_eq!(ids(&q), ["3"]);
+        assert_eq!(s.messages_with_category("mb", "[K_To_Do]").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn contact_lookup_by_email_is_exact() {
+        let s = setup();
+        let c = |id: &str, mail: &str| Contact {
+            id: id.into(),
+            account_id: "acc".into(),
+            source: "collected".into(),
+            display_name: id.into(),
+            given_name: String::new(),
+            surname: String::new(),
+            emails: vec![mail.into()],
+            company: String::new(),
+            job_title: String::new(),
+            phones: vec![],
+            notes: String::new(),
+            read_only: false,
+        };
+        // "joanna@x.de" contains "anna@x.de" and is found first
+        s.upsert_contact(&c("1", "joanna@x.de")).unwrap();
+        s.upsert_contact(&c("2", "anna@x.de")).unwrap();
+        assert!(s.contact_with_email("anna@x.de").unwrap());
+        assert!(s.contact_with_email("ANNA@x.de").unwrap());
+        assert!(!s.contact_with_email("nna@x.de").unwrap());
+        // "_" is no wildcard
+        assert!(!s.contact_with_email("anna@x_de").unwrap());
+        let p = s.list_contacts(Some("x_de"), None, None, 0, 50).unwrap();
+        assert_eq!(p.total, 0);
     }
 }
