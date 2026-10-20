@@ -83,6 +83,68 @@ impl Conn {
         &mut self.session
     }
 
+    /// (messages, unseen) of `folder` via STATUS. async-imap matches the
+    /// STATUS response against the unescaped name, so for names with `"` or
+    /// `\` the response lands in the unsolicited queue; pick it up there.
+    pub async fn status_counts(&mut self, folder: &str) -> Result<(u32, u32)> {
+        let st = timed(self.s().status(folder, "(MESSAGES UNSEEN)")).await?;
+        if !folder.contains(['"', '\\']) {
+            return Ok((st.exists, st.unseen.unwrap_or(0)));
+        }
+        let wanted = escape_name(folder);
+        let (mut exists, mut unseen) = (st.exists, st.unseen.unwrap_or(0));
+        while let Ok(r) = self.session.unsolicited_responses.try_recv() {
+            if let async_imap::types::UnsolicitedResponse::Status { mailbox, attributes } = r {
+                if mailbox == wanted || mailbox == folder {
+                    for a in attributes {
+                        match a {
+                            async_imap::imap_proto::StatusAttribute::Messages(n) => exists = n,
+                            async_imap::imap_proto::StatusAttribute::Unseen(n) => unseen = n,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Ok((exists, unseen))
+    }
+
+    /// NOOP round trip; false when the session is unusable (error, timeout,
+    /// or the server announced BYE, e.g. because another client deleted the
+    /// selected folder).
+    pub async fn alive(&mut self) -> bool {
+        let ok = tokio::time::timeout(Duration::from_secs(10), self.s().noop())
+            .await
+            .is_ok_and(|r| r.is_ok());
+        let mut bye = false;
+        while let Ok(r) = self.session.unsolicited_responses.try_recv() {
+            if let async_imap::types::UnsolicitedResponse::Other(d) = r {
+                if matches!(
+                    d.parsed(),
+                    async_imap::imap_proto::Response::Data {
+                        status: async_imap::imap_proto::Status::Bye,
+                        ..
+                    }
+                ) {
+                    bye = true;
+                }
+            }
+        }
+        ok && !bye
+    }
+
+    /// SELECTs `folder` and makes sure its UIDVALIDITY still is `uv`: after
+    /// a change the cached UIDs may point at different messages.
+    pub async fn select_checked(&mut self, folder: &str, uv: u32) -> Result<async_imap::types::Mailbox> {
+        let mb = self.select(folder).await?;
+        if mb.uid_validity.unwrap_or(0) != uv {
+            return Err(Error::NotFound(
+                "Nachricht (der Ordner wurde auf dem Server neu aufgebaut, bitte aktualisieren)".into(),
+            ));
+        }
+        Ok(mb)
+    }
+
     /// SELECTs `folder`; returns its status.
     pub async fn select(&mut self, folder: &str) -> Result<async_imap::types::Mailbox> {
         let mb = timed(self.s().select(folder)).await.inspect_err(|_| {
@@ -91,6 +153,29 @@ impl Conn {
         self.selected = Some(folder.to_string());
         Ok(mb)
     }
+}
+
+/// Mailbox names (and delimiters) from LIST keep the quoted-string escapes
+/// (imap-proto returns the raw slice): `Kunde \"M\"` → `Kunde "M"`.
+/// Commands quote names again themselves.
+pub fn unescape_name(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            if let Some(n) = it.next() {
+                out.push(n);
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Inverse of [`unescape_name`] (the form servers send in responses).
+pub fn escape_name(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn tls_connector() -> TlsConnector {
@@ -117,9 +202,52 @@ pub fn io_err(e: impl fmt::Display) -> Error {
     Error::Network(format!("IMAP: {e}"))
 }
 
+const UNREADABLE: &str = "Unlesbare Antwort des IMAP-Servers";
+
+/// The server sent a line imap-proto cannot parse (e.g. a NO whose text
+/// contains a UTF-8 folder name, as Dovecot sends). The line stays in the
+/// read buffer, so the session is unusable and must be replaced; the
+/// command itself was usually just rejected.
+pub fn is_unreadable(e: &Error) -> bool {
+    matches!(e, Error::Network(m) if m.starts_with(UNREADABLE))
+}
+
+/// After the session was dropped: an unreadable tagged NO/BAD is reported as
+/// the rejection it is, not as a connection problem.
+pub fn unreadable_to_rejection(e: Error) -> Error {
+    let Error::Network(m) = &e else { return e };
+    let Some(line) = m.strip_prefix(UNREADABLE).map(|l| l.trim_start_matches(':').trim()) else {
+        return e;
+    };
+    let mut words = line.splitn(3, ' ');
+    let (_tag, status, text) = (words.next(), words.next(), words.next().unwrap_or(""));
+    match status {
+        Some(s) if s.eq_ignore_ascii_case("NO") => Error::Other(format!("IMAP-Server lehnt ab: {text}")),
+        Some(s) if s.eq_ignore_ascii_case("BAD") => Error::Other(format!("IMAP-Befehl ungültig: {text}")),
+        _ => e,
+    }
+}
+
+/// The rejected command referred to a folder that does not exist.
+pub fn is_nonexistent(e: &Error) -> bool {
+    let m = e.to_string().to_ascii_lowercase();
+    m.contains("nonexistent") || m.contains("doesn't exist") || m.contains("does not exist") || m.contains("unknown folder")
+}
+
 pub fn imap_err(e: async_imap::error::Error) -> Error {
     use async_imap::error::Error as E;
     match e {
+        E::Io(e) if e.to_string().contains("during parsing of") => {
+            let s = e.to_string();
+            let line = s
+                .split_once("during parsing of \"")
+                .map(|(_, l)| l.split("\\r\\n").next().unwrap_or(l))
+                .unwrap_or("")
+                .chars()
+                .take(300)
+                .collect::<String>();
+            Error::Network(format!("{UNREADABLE}: {line}"))
+        }
         E::Io(e) => Error::Network(format!("IMAP-Verbindung: {e}")),
         E::ConnectionLost => Error::Network("IMAP-Verbindung unterbrochen".into()),
         E::No(m) => Error::Other(format!("IMAP-Server lehnt ab: {m}")),
@@ -142,6 +270,10 @@ pub async fn connect(s: &ServerSettings, password: &str) -> Result<Conn> {
     if host.is_empty() {
         return Err(Error::invalid("IMAP-Server fehlt."));
     }
+    // Never fall back to plain text for an unknown setting.
+    if !matches!(s.security.as_str(), "ssl" | "starttls" | "none") {
+        return Err(Error::invalid(format!("Unbekannte Verschlüsselung: {}", s.security)));
+    }
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host, s.port)))
         .await
         .map_err(|_| Error::Network(format!("Zeitüberschreitung beim Verbinden mit {host}:{}", s.port)))?
@@ -151,7 +283,10 @@ pub async fn connect(s: &ServerSettings, password: &str) -> Result<Conn> {
         "starttls" => {
             let mut client = async_imap::Client::new(ImapStream::Plain(tcp));
             read_greeting(&mut client).await?;
-            timed(client.run_command_and_check_ok("STARTTLS", None)).await?;
+            timed(client.run_command_and_check_ok("STARTTLS", None)).await.map_err(|e| match e {
+                Error::Network(_) => e,
+                _ => Error::Network(format!("{host} unterstützt kein STARTTLS ({e})")),
+            })?;
             let ImapStream::Plain(tcp) = client.into_inner() else {
                 unreachable!("plain stream before STARTTLS")
             };

@@ -108,7 +108,7 @@ pub fn due_keyword(due: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 pub fn is_due_keyword(flag: &str) -> bool {
-    flag.len() > 5 && flag[..5].eq_ignore_ascii_case("$due_")
+    flag.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("$due_")) && flag.len() > 5
 }
 
 /// `$due_20261021T0600Z` → `2026-10-21T06:00:00Z`.
@@ -116,7 +116,7 @@ pub fn keyword_due(flag: &str) -> Option<String> {
     if !is_due_keyword(flag) {
         return None;
     }
-    let dt = chrono::NaiveDateTime::parse_from_str(&flag[5..].to_ascii_uppercase(), "%Y%m%dT%H%MZ").ok()?;
+    let dt = chrono::NaiveDateTime::parse_from_str(&flag.get(5..)?.to_ascii_uppercase(), "%Y%m%dT%H%MZ").ok()?;
     Some(dt.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 

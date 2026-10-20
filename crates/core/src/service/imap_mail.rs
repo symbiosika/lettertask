@@ -11,7 +11,7 @@ use serde_json::json;
 use super::imap_account::with_imap;
 use super::Service;
 use crate::error::{Error, Result};
-use crate::imap::conn::{timed, Conn, OP_TIMEOUT};
+use crate::imap::conn::{is_nonexistent, is_unreadable, timed, unescape_name, Conn, OP_TIMEOUT};
 use crate::imap::{self as im, mime};
 use crate::model::*;
 
@@ -133,10 +133,12 @@ pub(crate) fn snooze_key(mb: &str, message_id: &str) -> String {
 fn well_known_by_name(display: &str) -> Option<&'static str> {
     let n = display.to_lowercase();
     Some(match n.as_str() {
-        "sent" | "gesendet" | "gesendete elemente" | "sent items" | "sent messages" | "gesendete objekte" => "sentitems",
-        "drafts" | "entwürfe" | "draft" => "drafts",
-        "trash" | "papierkorb" | "deleted items" | "deleted messages" | "gelöschte elemente" | "gelöschte objekte" => "deleteditems",
-        "junk" | "spam" | "junk-e-mail" | "junk e-mail" | "bulk mail" => "junkemail",
+        "sent" | "gesendet" | "gesendete elemente" | "sent items" | "sent messages" | "sent mail" | "gesendete objekte"
+        | "gesendete nachrichten" => "sentitems",
+        "drafts" | "entwürfe" | "draft" | "entwurf" => "drafts",
+        "trash" | "papierkorb" | "deleted items" | "deleted messages" | "gelöschte elemente" | "gelöschte objekte"
+        | "gelöscht" | "bin" => "deleteditems",
+        "junk" | "spam" | "junk-e-mail" | "junk e-mail" | "bulk mail" | "unerwünscht" => "junkemail",
         "archive" | "archiv" => "archive",
         _ => return None,
     })
@@ -176,8 +178,8 @@ impl Service {
                         .iter()
                         .any(|a| matches!(a, NameAttribute::NoSelect) || matches!(a, NameAttribute::Extension(x) if x.eq_ignore_ascii_case("\\NonExistent")));
                     out.push(Raw {
-                        name: n.name().to_string(),
-                        delim: n.delimiter().map(str::to_string),
+                        name: unescape_name(n.name()),
+                        delim: n.delimiter().map(unescape_name),
                         special,
                         selectable,
                     });
@@ -185,10 +187,15 @@ impl Service {
                 let mut with_status = Vec::new();
                 for r in out {
                     let status = if r.selectable {
-                        timed(c.s().status(&r.name, "(MESSAGES UNSEEN)"))
-                            .await
-                            .ok()
-                            .map(|s| (s.exists, s.unseen.unwrap_or(0)))
+                        match c.status_counts(&r.name).await {
+                            Ok(s) => Some(s),
+                            Err(e) if is_unreadable(&e) => {
+                                self.imap_reconnect(mb, c).await?;
+                                None
+                            }
+                            Err(e) if e.is_network() => return Err(e),
+                            Err(_) => None,
+                        }
                     } else {
                         None
                     };
@@ -232,7 +239,10 @@ impl Service {
             } else {
                 r.special.map(str::to_string)
             };
-            if well_known.is_none() {
+            // Name-based roles only for top-level folders (or INBOX.Sent style):
+            // "Projekte/Trash" is not the trash.
+            let top = parent.as_deref().is_none_or(|p| p.eq_ignore_ascii_case("INBOX"));
+            if well_known.is_none() && top {
                 if let Some(w) = well_known_by_name(&display) {
                     if !used.contains(w) {
                         used.insert(w);
@@ -252,6 +262,12 @@ impl Service {
                 child_folder_count: 0,
             };
             if f.well_known.is_none() && self.is_snooze_folder(mb, &f)? {
+                used.insert("snoozed");
+                f.well_known = Some("snoozed".into());
+            }
+            // Servers with an "INBOX." namespace keep it below INBOX.
+            if f.well_known.is_none() && top && f.display_name == SNOOZE_FOLDER && !used.contains("snoozed") {
+                used.insert("snoozed");
                 f.well_known = Some("snoozed".into());
             }
             folders.push(f);
@@ -272,6 +288,12 @@ impl Service {
         if name.is_empty() {
             return Err(Error::invalid("Ordnername darf nicht leer sein."));
         }
+        if name.chars().any(char::is_control) {
+            return Err(Error::invalid("Der Ordnername darf keine Zeilenumbrüche oder Steuerzeichen enthalten."));
+        }
+        if name.contains(['*', '%']) {
+            return Err(Error::invalid("Der Ordnername darf kein \"*\" oder \"%\" enthalten."));
+        }
         let delim = self.imap_delim(mb);
         if name.contains(&delim) {
             return Err(Error::invalid(format!("Der Ordnername darf kein \"{delim}\" enthalten.")));
@@ -283,13 +305,40 @@ impl Service {
         })
     }
 
-    pub(crate) async fn imap_create_folder(&self, mb: &str, parent: Option<&str>, name: &str) -> Result<Folder> {
+    /// CREATEs a folder; returns its full name. Servers whose personal
+    /// namespace lives below INBOX (Courier, Cyrus: "INBOX.") refuse
+    /// top-level folders, so those are retried below INBOX.
+    async fn imap_create_mailbox(&self, mb: &str, parent: Option<&str>, name: &str) -> Result<String> {
         let full = self.imap_child_name(mb, parent, name)?;
-        with_imap!(self, mb, |c| {
+        let r = with_imap!(self, mb, |c| {
             timed(c.s().create(&full)).await?;
             let _ = timed(c.s().subscribe(&full)).await;
             Ok(())
-        })?;
+        });
+        // Only when every known folder lives below INBOX (otherwise the error
+        // is a real one, e.g. the folder exists already).
+        let delim = self.imap_delim(mb);
+        let below_inbox = self.store.list_folders(mb)?.iter().all(|f| {
+            f.id.eq_ignore_ascii_case("INBOX")
+                || f.id.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("INBOX")) && f.id.get(5..).is_some_and(|r| r.starts_with(&delim))
+        });
+        match r {
+            Err(e) if parent.is_none() && below_inbox && !e.is_network() => {
+                let below = self.imap_child_name(mb, Some("INBOX"), name)?;
+                with_imap!(self, mb, |c| {
+                    timed(c.s().create(&below)).await?;
+                    let _ = timed(c.s().subscribe(&below)).await;
+                    Ok(())
+                })
+                .map_err(|_| e)?;
+                Ok(below)
+            }
+            r => r.map(|_| full),
+        }
+    }
+
+    pub(crate) async fn imap_create_folder(&self, mb: &str, parent: Option<&str>, name: &str) -> Result<Folder> {
+        let full = self.imap_create_mailbox(mb, parent, name).await?;
         self.imap_sync_folders(mb).await?;
         self.emit_mail_changed(mb, None);
         self.store
@@ -299,10 +348,17 @@ impl Service {
 
     pub(crate) async fn imap_rename_folder(&self, mb: &str, folder: &str, name: &str) -> Result<Folder> {
         let f = self.store.get_folder(mb, folder)?.ok_or_else(|| Error::NotFound("Ordner".into()))?;
+        if f.well_known.is_some() {
+            return Err(Error::invalid("Standardordner können nicht umbenannt werden."));
+        }
         let full = self.imap_child_name(mb, f.parent_id.as_deref(), name)?;
+        if full == folder {
+            return Ok(f);
+        }
         with_imap!(self, mb, |c| {
             c.selected = None;
             timed(c.s().rename(folder, &full)).await?;
+            let _ = timed(c.s().unsubscribe(folder)).await;
             let _ = timed(c.s().subscribe(&full)).await;
             Ok(())
         })?;
@@ -313,20 +369,70 @@ impl Service {
             .ok_or_else(|| Error::NotFound("Ordner".into()))
     }
 
+    /// Deletes a folder with all its subfolders (deepest first; a plain IMAP
+    /// DELETE may leave the children behind).
     pub(crate) async fn imap_delete_folder(&self, mb: &str, folder: &str) -> Result<()> {
         if let Some(f) = self.store.get_folder(mb, folder)? {
             if f.well_known.is_some() {
                 return Err(Error::invalid("Standardordner können nicht gelöscht werden."));
             }
         }
-        with_imap!(self, mb, |c| {
-            c.selected = None;
-            let _ = timed(c.s().unsubscribe(folder)).await;
-            timed(c.s().delete(folder)).await
+        let delim = self.imap_delim(mb);
+        let prefix = format!("{folder}{delim}");
+        let mut children: Vec<String> = with_imap!(self, mb, |c| {
+            // async-imap sends the pattern as is: quote it here.
+            let pattern = format!("\"{}*\"", crate::imap::conn::escape_name(&prefix));
+            let names: Vec<async_imap::types::Name> = {
+                let stream = timed(c.s().list(Some(""), Some(&pattern))).await?;
+                stream.try_collect().await.map_err(crate::imap::conn::imap_err)?
+            };
+            Ok(names.iter().map(|n| unescape_name(n.name())).collect())
         })?;
-        self.store.delete_folder(mb, folder)?;
+        children.retain(|n| n.starts_with(&prefix));
+        for child in &children {
+            if self.store.get_folder(mb, child)?.is_some_and(|f| f.well_known.is_some()) {
+                return Err(Error::invalid("Der Ordner enthält einen Standardordner und kann nicht gelöscht werden."));
+            }
+        }
+        children.sort_by_key(|n| std::cmp::Reverse(n.matches(delim.as_str()).count()));
+        children.push(folder.to_string());
+        let failed: Vec<String> = with_imap!(self, mb, |c| {
+            c.selected = None;
+            let mut failed = Vec::new();
+            for name in &children {
+                let r = timed(c.s().delete(name)).await;
+                if r.as_ref().is_err_and(is_unreadable) {
+                    self.imap_reconnect(mb, c).await?;
+                }
+                match r {
+                    Ok(()) => {
+                        if timed(c.s().unsubscribe(name)).await.is_err_and(|e| is_unreadable(&e)) {
+                            self.imap_reconnect(mb, c).await?;
+                        }
+                    }
+                    // Already gone (e.g. removed together with its parent).
+                    Err(e) if is_nonexistent(&e) => {}
+                    Err(e) if e.is_network() && !is_unreadable(&e) => return Err(e),
+                    Err(e) => failed.push(format!(
+                        "{}: {}",
+                        utf7_imap::decode_utf7_imap(name.clone()),
+                        crate::imap::conn::unreadable_to_rejection(e)
+                    )),
+                }
+            }
+            Ok(failed)
+        })?;
+        for name in &children {
+            self.store.delete_folder(mb, name)?;
+        }
         self.imap_sync_folders(mb).await?;
         self.emit_mail_changed(mb, None);
+        if !failed.is_empty() {
+            return Err(Error::Other(format!(
+                "Ordner konnte nicht vollständig gelöscht werden: {}",
+                failed.join("; ")
+            )));
+        }
         Ok(())
     }
 
@@ -436,7 +542,7 @@ impl Service {
             reset: bool,
             keywords_ok: bool,
         }
-        let out = with_imap!(self, mb, |c| {
+        let out = match with_imap!(self, mb, |c| {
                 let sel = c.select(folder).await?;
                 let uv = sel.uid_validity.unwrap_or(0);
                 let reset = stored_uv.is_some_and(|s| s != uv);
@@ -451,7 +557,7 @@ impl Service {
                             new_uids = all.into_iter().rev().take(INITIAL_FETCH).collect();
                         }
                         Some(max) => {
-                            new_uids = uid_search(c, &format!("UID {}:*", max + 1))
+                            new_uids = uid_search(c, &format!("UID {}:*", max.saturating_add(1)))
                                 .await?
                                 .into_iter()
                                 .filter(|u| u > max)
@@ -481,7 +587,21 @@ impl Service {
                     all_new,
                     reset,
                 })
-            })?;
+            }) {
+            Ok(o) => o,
+            Err(e) if !e.is_network() => {
+                drop(guard);
+                // Deleted or renamed by another client: refresh the folder list
+                // instead of failing on every sync.
+                let _ = self.imap_sync_folders(mb).await;
+                if self.store.get_folder(mb, folder)?.is_none() {
+                    self.emit_mail_changed(mb, None);
+                    return Ok(SyncResult::default());
+                }
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut result = SyncResult::default();
         let mut migrate: Vec<(u32, String, String)> = Vec::new();
@@ -645,22 +765,50 @@ impl Service {
                 .map(|f| f.id)
                 .collect(),
         };
-        let found: Vec<(String, u32, Vec<Fetched>)> = with_imap!(self, mb, |c| {
+        let single = folder.is_some();
+        let (found, broken): (Vec<(String, u32, Vec<Fetched>)>, bool) = with_imap!(self, mb, |c| {
                 let mut out = Vec::new();
+                let mut broken = false;
                 for f in &folders {
-                    let sel = c.select(f).await?;
+                    let sel = match c.select(f).await {
+                        Ok(s) => s,
+                        // A folder deleted/renamed elsewhere must not break the
+                        // search in all the others.
+                        Err(e) if !single && (!e.is_network() || is_unreadable(&e)) => {
+                            tracing::debug!("Suche: Ordner {f} übersprungen: {e}");
+                            if is_unreadable(&e) {
+                                self.imap_reconnect(mb, c).await?;
+                            }
+                            broken = true;
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                     let uids = match uid_search(c, &query).await {
                         Ok(u) => u,
+                        Err(e) if is_unreadable(&e) => {
+                            self.imap_reconnect(mb, c).await?;
+                            continue;
+                        }
+                        Err(e) if e.is_network() => return Err(e),
                         // Some servers reject CHARSET; retry without.
-                        Err(_) => uid_search(c, &query.replacen("CHARSET UTF-8 ", "", 1)).await?,
+                        Err(_) => match uid_search(c, &query.replacen("CHARSET UTF-8 ", "", 1)).await {
+                            Ok(u) => u,
+                            Err(e) if !single && !e.is_network() => continue,
+                            Err(e) => return Err(e),
+                        },
                     };
                     let take: Vec<u32> = uids.into_iter().rev().take(100).collect();
                     if !take.is_empty() {
                         out.push((f.clone(), sel.uid_validity.unwrap_or(0), uid_fetch(c, &im::uid_set(&take), &summary_query()).await?));
                     }
                 }
-                Ok(out)
+                Ok((out, broken))
             })?;
+        if broken {
+            let _ = self.imap_sync_folders(mb).await;
+            self.emit_mail_changed(mb, None);
+        }
         let mut out = Vec::new();
         for (f, uv, items) in found {
             out.extend(self.summaries_from(mb, &f, uv, items, false).0);
@@ -698,6 +846,16 @@ impl Service {
                     d.summary = s;
                 }
                 return Ok(d);
+            }
+            Err(e) if e.is_not_found() => {
+                // Removed (or folder rebuilt) by another client: drop the stale entry.
+                if self.store.message_exists(mb, id)? {
+                    self.store.delete_message(mb, id)?;
+                    if let Some((_, _, folder)) = im::parse_message_id(id) {
+                        self.emit_mail_changed(mb, Some(folder));
+                    }
+                }
+                return Err(e);
             }
             Err(e) => return Err(e),
         };
@@ -746,8 +904,8 @@ impl Service {
     async fn imap_store(&self, mb: &str, ids: &[String], ops: &[String]) -> Result<()> {
         let groups = by_folder(ids)?;
         with_imap!(self, mb, |c| {
-            for (folder, (_, uids)) in &groups {
-                c.select(folder).await?;
+            for (folder, (uv, uids)) in &groups {
+                c.select_checked(folder, *uv).await?;
                 for op in ops {
                     store_flags(c, &im::uid_set(uids), op).await?;
                 }
@@ -790,8 +948,8 @@ impl Service {
         let groups = by_folder(ids)?;
         let wanted: HashSet<String> = categories.iter().map(|c| im::category_keyword(c)).collect();
         with_imap!(self, mb, |c| {
-            for (folder, (_, uids)) in &groups {
-                let sel = c.select(folder).await?;
+            for (folder, (uv, uids)) in &groups {
+                let sel = c.select_checked(folder, *uv).await?;
                 if !may_create_keywords(&sel) {
                     continue;
                 }
@@ -823,11 +981,11 @@ impl Service {
     pub(crate) async fn imap_move(&self, mb: &str, ids: &[String], dest: &str, copy: bool) -> Result<Vec<(String, String)>> {
         let groups = by_folder(ids)?;
         with_imap!(self, mb, |c| {
-            for (folder, (_, uids)) in &groups {
+            for (folder, (uv, uids)) in &groups {
                 if folder == dest && !copy {
                     continue;
                 }
-                c.select(folder).await?;
+                c.select_checked(folder, *uv).await?;
                 transfer(c, uids, dest, copy).await?;
             }
             Ok(())
@@ -856,10 +1014,10 @@ impl Service {
         let trash = self.store.folder_by_well_known(mb, "deleteditems")?.map(|f| f.id);
         let groups = by_folder(ids)?;
         let mut to_trash = Vec::new();
-        let mut purge: HashMap<String, Vec<u32>> = HashMap::new();
+        let mut purge: HashMap<String, (u32, Vec<u32>)> = HashMap::new();
         for (folder, (v, uids)) in &groups {
             if permanent || trash.is_none() || trash.as_deref() == Some(folder.as_str()) {
-                purge.insert(folder.clone(), uids.clone());
+                purge.insert(folder.clone(), (*v, uids.clone()));
             } else {
                 to_trash.extend(uids.iter().map(|u| im::message_id(*v, *u, folder)));
             }
@@ -869,8 +1027,8 @@ impl Service {
         }
         if !purge.is_empty() {
             with_imap!(self, mb, |c| {
-                for (folder, uids) in &purge {
-                    c.select(folder).await?;
+                for (folder, (uv, uids)) in &purge {
+                    c.select_checked(folder, *uv).await?;
                     expunge_uids(c, uids).await?;
                 }
                 Ok(())
@@ -897,21 +1055,31 @@ impl Service {
             return Ok(f);
         }
         let full = self.imap_child_name(mb, None, name)?;
-        let r = with_imap!(self, mb, |c| {
-                timed(c.s().create(&full)).await?;
-                let _ = timed(c.s().subscribe(&full)).await;
-                Ok(())
-            });
-        if let Err(e) = r {
-            // It may already exist (e.g. created by another client).
-            tracing::debug!("CREATE {full}: {e}");
-        }
+        let below = self.imap_child_name(mb, Some("INBOX"), name)?;
+        let created = match self.imap_create_mailbox(mb, None, name).await {
+            Ok(n) => Some(n),
+            Err(e) if e.is_network() => return Err(e),
+            Err(e) => {
+                // It may already exist (e.g. created by another client).
+                tracing::debug!("CREATE {full}: {e}");
+                None
+            }
+        };
         self.imap_sync_folders(mb).await?;
-        let mut f = self
-            .store
-            .folder_by_well_known(mb, well_known)?
-            .or(self.store.get_folder(mb, &full)?)
-            .ok_or_else(|| Error::NotFound(format!("Ordner {name}")))?;
+        let mut f = match self.store.folder_by_well_known(mb, well_known)? {
+            Some(f) => Some(f),
+            None => {
+                let mut found = None;
+                for n in created.iter().chain([&full, &below]) {
+                    if let Some(f) = self.store.get_folder(mb, n)? {
+                        found = Some(f);
+                        break;
+                    }
+                }
+                found
+            }
+        }
+        .ok_or_else(|| Error::NotFound(format!("Ordner {name}")))?;
         if f.well_known.is_none() {
             f.well_known = Some(well_known.to_string());
             self.store.upsert_folder(&f)?;
@@ -941,8 +1109,8 @@ impl Service {
         let groups = by_folder(ids)?;
         let fetched = with_imap!(self, mb, |c| {
             let mut v = Vec::new();
-            for (folder, (_, uids)) in &groups {
-                c.select(folder).await?;
+            for (folder, (uv, uids)) in &groups {
+                c.select_checked(folder, *uv).await?;
                 v.extend(uid_fetch(c, &im::uid_set(uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?);
             }
             Ok(v)
@@ -959,8 +1127,8 @@ impl Service {
         let groups = by_folder(ids)?;
         with_imap!(self, mb, |c| {
             let mut ok = true;
-            for (folder, (_, uids)) in &groups {
-                let sel = c.select(folder).await?;
+            for (folder, (uv, uids)) in &groups {
+                let sel = c.select_checked(folder, *uv).await?;
                 if !may_create_keywords(&sel) {
                     ok = false;
                     continue;
