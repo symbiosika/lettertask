@@ -432,6 +432,19 @@ async fn mail_delta_removed_items_and_expired_sync_state() {
 }
 
 #[tokio::test]
+#[ignore = "offener Befund in service/mail.rs: Vollabgleich nach 410 entfernt keine inzwischen gelöschten Mails"]
+async fn mail_resync_after_expired_delta_drops_deleted_mails() {
+    let ctx = setup_at(now()).await;
+    let inbox = ctx.folder("inbox").await;
+    let victim = ctx.list(&inbox.id).await.items[0].id.clone();
+    // Deleted elsewhere while the delta token expires.
+    assert!(ctx.fake.state.delete_message(ME, &victim));
+    ctx.fake.state.expire_delta_tokens();
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.id == victim), "stale mail stays in the cache");
+}
+
+#[tokio::test]
 async fn large_folder_is_paged_completely() {
     let ctx = setup_at(now()).await;
     let inbox = ctx.folder("inbox").await;
