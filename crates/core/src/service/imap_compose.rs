@@ -92,12 +92,12 @@ impl Service {
     }
 
     async fn imap_remove(&self, mb: &str, id: &str) -> Result<()> {
-        let Some((_, uid, folder)) = im::parse_message_id(id) else {
+        let Some((uv, uid, folder)) = im::parse_message_id(id) else {
             return Ok(());
         };
         let folder = folder.to_string();
         with_imap!(self, mb, |c| {
-            c.select(&folder).await?;
+            c.select_checked(&folder, uv).await?;
             expunge_uids(c, &[uid]).await
         })?;
         self.store.delete_message(mb, id)?;
@@ -129,9 +129,13 @@ impl Service {
         let msg = mime::parse(&raw).ok_or_else(|| Error::Other("Entwurf nicht lesbar".into()))?;
         let mut html = mime::html_body(&msg);
         let mut attachments = Vec::new();
-        for (idx, name, ct, bytes, cid) in &stored.parts {
+        let refs = mime::cid_refs(&html);
+        // Longest cid first: "cid:img1" must not replace inside "cid:img10".
+        let mut parts: Vec<&mime::Part> = stored.parts.iter().collect();
+        parts.sort_by_key(|p| std::cmp::Reverse(p.4.as_ref().map_or(0, String::len)));
+        for (idx, name, ct, bytes, cid) in parts {
             if let Some(cid) = cid {
-                if html.contains(&format!("cid:{cid}")) {
+                if refs.contains(cid) {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
                     html = cid_to_data(&html, cid, ct, &b64);
                     continue;
@@ -146,6 +150,7 @@ impl Service {
                 content_id: cid.clone(),
             });
         }
+        attachments.sort_by_key(|a| a.id.parse::<usize>().unwrap_or(0));
         Ok(Draft {
             id: Some(id.to_string()),
             mailbox_id: mb.to_string(),
@@ -196,14 +201,26 @@ impl Service {
         let reply_to = mime::addresses(msg.reply_to());
         let subject = msg.subject().unwrap_or("").to_string();
 
+        // Replying to an own (sent) mail goes to its recipients, like Outlook.
+        let own = !from.is_empty() && from.iter().all(|a| same(&a.address, &me.address));
+        let sender = if own && !to.is_empty() {
+            to.clone()
+        } else if reply_to.is_empty() {
+            from.clone()
+        } else {
+            reply_to.clone()
+        };
+        let mut sender_dedup: Vec<Address> = Vec::new();
+        for a in sender {
+            if !sender_dedup.iter().any(|x| same(&x.address, &a.address)) {
+                sender_dedup.push(a);
+            }
+        }
+        let sender = sender_dedup;
         let (out_to, out_cc, out_subject) = match mode {
-            "reply" => (
-                if reply_to.is_empty() { from.clone() } else { reply_to.clone() },
-                vec![],
-                prefixed(&subject, "AW:", REPLY_PREFIXES),
-            ),
+            "reply" => (sender.clone(), vec![], prefixed(&subject, "AW:", REPLY_PREFIXES)),
             "replyAll" => {
-                let mut t: Vec<Address> = if reply_to.is_empty() { from.clone() } else { reply_to.clone() };
+                let mut t: Vec<Address> = sender.clone();
                 for a in &to {
                     if !same(&a.address, &me.address) && !t.iter().any(|x| same(&x.address, &a.address)) {
                         t.push(a.clone());
@@ -243,17 +260,18 @@ impl Service {
         let body = prepend_to_body(&quoted, &block);
 
         let parts = mime::all_attachments(&raw);
+        let body_refs = mime::cid_refs(&body);
         let inline = parts
             .iter()
             .filter_map(|(_, _, ct, bytes, cid)| {
                 let cid = cid.clone()?;
-                body.contains(&format!("cid:{cid}")).then(|| (cid, ct.clone(), bytes.clone()))
+                body_refs.contains(&cid).then(|| (cid, ct.clone(), bytes.clone()))
             })
             .collect();
         let attachments = if mode == "forward" {
             parts
                 .iter()
-                .filter(|(_, _, _, _, cid)| cid.as_ref().is_none_or(|c| !body.contains(&format!("cid:{c}"))))
+                .filter(|(_, _, _, _, cid)| cid.as_ref().is_none_or(|c| !body_refs.contains(c)))
                 .map(|(_, n, ct, b, _)| (n.clone(), ct.clone(), b.clone()))
                 .collect()
         } else {
@@ -261,11 +279,19 @@ impl Service {
         };
         let orig_id = msg.message_id().map(|m| format!("<{m}>"));
         let references = {
+            // RFC 5322 3.6.4: parent's References, else its In-Reply-To.
             let mut r: Vec<String> = msg
                 .header_raw("References")
-                .map(|v| v.split_whitespace().map(str::to_string).collect())
+                .or_else(|| msg.header_raw("In-Reply-To"))
+                .map(|v| {
+                    v.split_whitespace()
+                        .filter(|t| t.starts_with('<') && t.ends_with('>'))
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default();
-            if let Some(o) = &orig_id {
+            r.dedup();
+            if let Some(o) = orig_id.as_ref().filter(|o| !r.contains(o)) {
                 r.push(o.clone());
             }
             (!r.is_empty()).then(|| r.join(" "))
@@ -318,6 +344,7 @@ impl Service {
             message_id: mime::new_message_id(&me.address),
             ..Default::default()
         };
+        let html_refs = mime::cid_refs(&html);
         if let Some(id) = &d.id {
             let (_, stored) = self.imap_stored_draft(&d.mailbox_id, id).await?;
             o.message_id = stored.message_id;
@@ -325,7 +352,7 @@ impl Service {
             o.references = stored.references;
             for (idx, name, ct, bytes, cid) in stored.parts {
                 match cid {
-                    Some(cid) if html.contains(&format!("cid:{cid}")) => o.inline.push((cid, ct, bytes)),
+                    Some(cid) if html_refs.contains(&cid) => o.inline.push((cid, ct, bytes)),
                     _ if d.removed_attachment_ids.contains(&idx.to_string()) => {}
                     _ => o.attachments.push((name, ct, bytes)),
                 }
@@ -343,12 +370,24 @@ impl Service {
 
     pub(crate) async fn imap_save_draft(&self, d: DraftInput) -> Result<Draft> {
         let mb = d.mailbox_id.clone();
+        // One save at a time per account: two overlapping saves of the same
+        // draft would otherwise both append a new version.
+        let lock = self.folder_lock(&mb, "\u{0}draft-save");
+        let _g = lock.lock().await;
         let o = self.imap_outgoing(&d).await?;
-        // Remove the old version first: the new one carries the same Message-ID.
-        if let Some(old) = &d.id {
-            self.imap_remove(&mb, old).await?;
-        }
+        // Store the new version before removing the old one, so a failed
+        // APPEND never loses the draft. Both carry the same Message-ID; the
+        // append looks up the newest UID.
         let id = self.imap_store_draft(&mb, &o).await?;
+        if let Some(old) = d.id.as_deref().filter(|old| *old != id) {
+            if let Err(e) = self.imap_remove(&mb, old).await {
+                tracing::warn!("Alter Entwurf nicht entfernt: {e}");
+            }
+            let drafts = self.store.folder_by_well_known(&mb, "drafts")?;
+            if let Some(f) = drafts {
+                let _ = self.imap_sync_folder(&mb, &f.id, true).await;
+            }
+        }
         self.imap_load_draft(&mb, &id, &d.mode).await
     }
 
@@ -379,7 +418,16 @@ impl Service {
         if let Some(f) = self.store.folder_by_well_known(&mb, "drafts")? {
             self.emit_mail_changed(&mb, Some(&f.id));
         }
-        let all: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
+        let all: Vec<Address> = d
+            .to
+            .iter()
+            .chain(&d.cc)
+            .chain(&d.bcc)
+            .map(|a| Address {
+                name: mime::header_text(&a.name),
+                address: a.address.trim().to_string(),
+            })
+            .collect();
         self.collect_addresses(&mb, &all)?;
         if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
             self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await?;

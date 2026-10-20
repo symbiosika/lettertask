@@ -193,9 +193,27 @@ fn attachments<'a>(msg: &'a mail_parser::Message<'a>) -> impl Iterator<Item = (u
     msg.attachments().enumerate()
 }
 
+/// Header text without line breaks or other control characters (they would
+/// either break the header or create new ones).
+pub fn header_text(s: &str) -> String {
+    let cleaned: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Only the `<id>` tokens of a Message-ID list header.
+fn msg_id_list(v: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"<[^<>\s]+>").expect("regex"));
+    let ids: Vec<&str> = re.find_iter(v).map(|m| m.as_str()).filter(|m| m.is_ascii()).collect();
+    (!ids.is_empty()).then(|| ids.join(" "))
+}
+
 fn part_name(p: &mail_parser::MessagePart<'_>, idx: usize) -> String {
     p.attachment_name()
-        .map(str::to_string)
+        // No path components or control characters from the sender.
+        .map(|n| header_text(n.rsplit(['/', '\\']).next().unwrap_or("")))
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
         .unwrap_or_else(|| {
             if p.is_message() {
                 format!("nachricht-{}.eml", idx + 1)
@@ -205,11 +223,20 @@ fn part_name(p: &mail_parser::MessagePart<'_>, idx: usize) -> String {
         })
 }
 
+/// Content type as `type/subtype`, restricted to token characters (it ends up
+/// in data: URIs inside HTML attributes).
 fn part_type(p: &mail_parser::MessagePart<'_>) -> String {
+    let token = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'))
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
     p.content_type()
-        .map(|c| match c.subtype() {
-            Some(s) => format!("{}/{}", c.ctype(), s),
-            None => c.ctype().to_string(),
+        .and_then(|c| {
+            let t = token(c.ctype());
+            let s = token(c.subtype().unwrap_or(""));
+            (!t.is_empty() && !s.is_empty()).then(|| format!("{t}/{s}"))
         })
         .unwrap_or_else(|| "application/octet-stream".into())
 }
@@ -225,24 +252,69 @@ pub fn content_id(p: &mail_parser::MessagePart<'_>) -> Option<String> {
 }
 
 /// HTML body (text converted) of a parsed message.
+/// Several inline body parts (e.g. text + list footer) are shown one after
+/// another.
 pub fn html_body(msg: &mail_parser::Message<'_>) -> String {
-    if msg.html_body_count() > 0 {
-        if let Some(h) = msg.body_html(0) {
-            return h.into_owned();
-        }
+    let parts: Vec<String> = msg.html_bodies().filter_map(part_html).collect();
+    if !parts.is_empty() {
+        return parts.join("\n");
     }
-    msg.body_text(0)
-        .map(|t| convert::text_to_html(&t))
+    // Broken structure (e.g. missing closing boundary): mail-parser files
+    // the text as an attachment; show the first unnamed text part.
+    msg.attachments()
+        .filter(|p| p.attachment_name().is_none())
+        .find_map(part_html)
         .unwrap_or_default()
+}
+
+fn part_html(p: &mail_parser::MessagePart<'_>) -> Option<String> {
+    use mail_parser::PartType;
+    match &p.body {
+        PartType::Html(h) => Some(h.to_string()),
+        // Own conversion: escapes everything and keeps the layout
+        // (mail-parser's only escapes '<').
+        PartType::Text(t) => Some(convert::text_to_html(t)),
+        _ => None,
+    }
+}
+
+fn cid_re() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"(?i)cid:([^"'\s<>()]+)"#).expect("regex"))
+}
+
+/// `cid:` references in HTML, as written and URL-decoded (RFC 2392).
+pub fn cid_refs(html: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for c in cid_re().captures_iter(html) {
+        let raw = c[1].to_string();
+        if let Ok(dec) = urlencoding::decode(&raw) {
+            out.insert(dec.into_owned());
+        }
+        out.insert(raw);
+    }
+    out
+}
+
+/// Replaces whole `cid:` references (never the prefix of a longer cid).
+pub fn replace_cids(html: &str, map: &std::collections::HashMap<String, String>) -> String {
+    cid_re()
+        .replace_all(html, |c: &regex::Captures| {
+            let raw = &c[1];
+            let dec = urlencoding::decode(raw).map(|d| d.into_owned()).unwrap_or_default();
+            map.get(raw).or_else(|| map.get(&dec)).cloned().unwrap_or_else(|| c[0].to_string())
+        })
+        .into_owned()
 }
 
 /// Inline images referenced by the HTML as (cid, content type, bytes).
 pub fn inline_images(msg: &mail_parser::Message<'_>, html: &str) -> Vec<(String, String, Vec<u8>)> {
+    let refs = cid_refs(html);
     attachments(msg)
         .filter_map(|(_, p)| {
             let cid = content_id(p)?;
-            html.contains(&format!("cid:{cid}"))
-                .then(|| (cid, part_type(p), part_bytes(p)))
+            refs.contains(&cid).then(|| (cid, part_type(p), part_bytes(p)))
         })
         .collect()
 }
@@ -251,18 +323,19 @@ pub fn inline_images(msg: &mail_parser::Message<'_>, html: &str) -> Vec<(String,
 /// listed as attachments.
 pub fn detail(raw: &[u8], mut summary: MessageSummary) -> Result<MessageDetail> {
     let msg = parse(raw).ok_or_else(|| Error::Other("Nachricht konnte nicht gelesen werden".into()))?;
-    let mut body = html_body(&msg);
+    let body = html_body(&msg);
+    let refs = cid_refs(&body);
+    let mut inline = std::collections::HashMap::new();
     let mut list = Vec::new();
     for (idx, p) in attachments(&msg) {
         if let Some(cid) = content_id(p) {
-            let needle = format!("cid:{cid}");
-            if body.contains(&needle) {
+            if refs.contains(&cid) {
                 let data = format!(
                     "data:{};base64,{}",
                     part_type(p),
                     base64::engine::general_purpose::STANDARD.encode(p.contents())
                 );
-                body = body.replace(&needle, &data);
+                inline.insert(cid, data);
                 continue;
             }
         }
@@ -275,6 +348,7 @@ pub fn detail(raw: &[u8], mut summary: MessageSummary) -> Result<MessageDetail> 
             content_id: content_id(p),
         });
     }
+    let body = if inline.is_empty() { body } else { replace_cids(&body, &inline) };
     summary.has_attachments = !list.is_empty();
     if summary.subject.is_empty() {
         summary.subject = msg.subject().unwrap_or("").to_string();
@@ -341,12 +415,12 @@ fn mailbox(a: &Address) -> Result<LMailbox> {
         .trim()
         .parse()
         .map_err(|_| Error::invalid(format!("Ungültige Adresse: {}", a.address)))?;
-    let name = a.name.trim();
-    Ok(LMailbox::new((!name.is_empty()).then(|| name.to_string()), addr))
+    let name = header_text(&a.name);
+    Ok(LMailbox::new((!name.is_empty()).then_some(name), addr))
 }
 
 fn content_type(ct: &str) -> ContentType {
-    ContentType::parse(ct).unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("ct"))
+    ContentType::parse(&header_text(ct)).unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("ct"))
 }
 
 /// Builds the message. `draft` keeps Bcc in the headers and allows empty
@@ -355,7 +429,7 @@ pub fn build(o: &Outgoing, draft: bool) -> Result<lettre::Message> {
     let from = mailbox(&o.from)?;
     let mut b = lettre::Message::builder()
         .from(from.clone())
-        .subject(o.subject.clone())
+        .subject(header_text(&o.subject))
         .date_now()
         .message_id(Some(o.message_id.clone()))
         .user_agent(concat!("OutlookClassic/", env!("CARGO_PKG_VERSION")).to_string());
@@ -371,11 +445,11 @@ pub fn build(o: &Outgoing, draft: bool) -> Result<lettre::Message> {
     for a in &o.reply_to {
         b = b.reply_to(mailbox(a)?);
     }
-    if let Some(r) = &o.in_reply_to {
-        b = b.in_reply_to(r.clone());
+    if let Some(r) = o.in_reply_to.as_deref().and_then(msg_id_list) {
+        b = b.in_reply_to(r);
     }
-    if let Some(r) = &o.references {
-        b = b.references(r.clone());
+    if let Some(r) = o.references.as_deref().and_then(msg_id_list) {
+        b = b.references(r);
     }
     match o.importance.as_str() {
         "high" => {
@@ -410,7 +484,7 @@ pub fn build(o: &Outgoing, draft: bool) -> Result<lettre::Message> {
     } else {
         let mut rel = MultiPart::related().singlepart(html_part.clone());
         for (cid, ct, bytes) in &o.inline {
-            rel = rel.singlepart(LAttachment::new_inline(cid.clone()).body(bytes.clone(), content_type(ct)));
+            rel = rel.singlepart(LAttachment::new_inline(header_text(cid)).body(bytes.clone(), content_type(ct)));
         }
         Some(rel)
     };
@@ -425,7 +499,12 @@ pub fn build(o: &Outgoing, draft: bool) -> Result<lettre::Message> {
             None => MultiPart::mixed().singlepart(html_part),
         };
         for (name, ct, bytes) in &o.attachments {
-            mixed = mixed.singlepart(LAttachment::new(name.clone()).body(bytes.clone(), content_type(ct)));
+            // lettre quotes the filename parameter without escaping.
+            let name = match header_text(&name.replace('"', "'").replace('\\', "_")) {
+                n if n.is_empty() => "anhang".to_string(),
+                n => n,
+            };
+            mixed = mixed.singlepart(LAttachment::new(name).body(bytes.clone(), content_type(ct)));
         }
         b.multipart(mixed)
     };
