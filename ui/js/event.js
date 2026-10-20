@@ -13,7 +13,8 @@ import { state, bootstrapSecondary } from './state.js';
 
 const P = params();
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-const REMINDERS = [[-1, 'Keine'], [0, '0 Minuten'], [5, '5 Minuten'], [10, '10 Minuten'], [15, '15 Minuten'], [30, '30 Minuten'], [60, '1 Stunde'], [120, '2 Stunden'], [240, '4 Stunden'], [720, '12 Stunden'], [1440, '1 Tag'], [2880, '2 Tage'], [10080, '1 Woche']];
+// Reminder before the start – labelled "… vorher" so it is not read as the duration.
+const REMINDERS = [[-1, 'Keine Erinnerung'], [0, 'Erinnerung bei Beginn'], [5, '5 Minuten vorher'], [10, '10 Minuten vorher'], [15, '15 Minuten vorher'], [30, '30 Minuten vorher'], [60, '1 Stunde vorher'], [120, '2 Stunden vorher'], [240, '4 Stunden vorher'], [720, '12 Stunden vorher'], [1440, '1 Tag vorher'], [2880, '2 Tage vorher'], [10080, '1 Woche vorher']];
 const SHOWAS = [['free', 'Frei'], ['workingElsewhere', 'An anderem Ort tätig'], ['tentative', 'Mit Vorbehalt'], ['busy', 'Gebucht'], ['oof', 'Abwesend']];
 const RESPONSE_TEXT = { accepted: 'Zugesagt', tentativelyAccepted: 'Mit Vorbehalt', declined: 'Abgelehnt', organizer: 'Organisator', notResponded: 'Keine Antwort', none: 'Keine Antwort' };
 
@@ -69,7 +70,7 @@ function renderToolbar() {
   const saveLabel = hasAtt && !(st.event && st.event.id) ? 'Senden' : 'Speichern & schließen';
   const showAs = h('select.input', { title: 'Anzeigen als', 'aria-label': 'Anzeigen als', dataset: { testid: 'ev-showas' } }, ...SHOWAS.map(([v, l]) => h('option', { value: v, selected: st.showAs === v }, l)));
   showAs.addEventListener('change', () => { st.showAs = showAs.value; dirty(); });
-  const rem = h('select.input', { title: 'Erinnerung', 'aria-label': 'Erinnerung' }, ...REMINDERS.map(([v, l]) => h('option', { value: String(v), selected: st.reminder === v }, l)));
+  const rem = h('select.input', { title: 'Erinnerung vor Beginn', 'aria-label': 'Erinnerung', dataset: { testid: 'ev-reminder' } }, ...REMINDERS.map(([v, l]) => h('option', { value: String(v), selected: st.reminder === v }, l)));
   rem.addEventListener('change', () => { st.reminder = Number(rem.value); dirty(); });
   const teams = tbBtn('Teams-Besprechung', 'teams', () => { st.online = !st.online; setPressed(teams, st.online); dirty(); }, { toggle: true, testid: 'ev-teams' });
   setPressed(teams, st.online);
@@ -83,8 +84,8 @@ function renderToolbar() {
     group(tbBtn(saveLabel, hasAtt && !(st.event && st.event.id) ? 'send' : 'save', () => save(), { testid: 'ev-save' }), tbBtn('Löschen', 'delete', () => del(), { disabled: !(st.event && st.event.id), testid: 'ev-delete' })),
     group(tbBtn(hasAtt ? 'Einladung absagen' : 'Teilnehmer einladen', 'people', () => toggleAttendees(), { testid: 'ev-invite' }), teams),
     group(h('div.tb-stack', { style: { gap: '4px', padding: '2px 4px' } },
-      h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, h('span', { html: icon('clock', 14) }), showAs),
-      h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, h('span', { html: icon('info', 14) }), rem))),
+      h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' }, title: 'Anzeigen als' }, h('span', { html: icon('clock', 14) }), showAs),
+      h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' }, title: 'Erinnerung vor Beginn' }, h('span', { html: icon('bell', 14) }), rem))),
     group(series),
     group(tbBtn('Kategorisieren', 'tag', (b) => showMenuAt(b, categoryItems()), { caret: true, testid: 'ev-categorize' }), priv, hi),
   );

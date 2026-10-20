@@ -74,10 +74,11 @@
 .mc-title { font-weight: 600; color: var(--text); }
 .minical-grid { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 11.5px; gap: 1px; }
 .mc-wd { color: var(--text-dim); padding: 4px 0; font-size: 10.5px; }
-.mc-day { height: 26px; line-height: 26px; cursor: pointer; border-radius: 50%; color: var(--text-2); }
+/* Square cell (centered in its column) so the round marks stay circles at any pane width. */
+.mc-day { width: 26px; height: 26px; line-height: 26px; margin: 0 auto; cursor: pointer; border-radius: 50%; color: var(--text-2); }
 .mc-day:hover { background: var(--hover); }
 .mc-day.other { color: #b0b5bd; }
-.mc-day.inrange { background: var(--sel); border-radius: 4px; }
+.mc-day.inrange { background: var(--sel); }
 .mc-day.today { background: var(--accent); color: #fff; font-weight: 600; border-radius: 50%; }
 .cal-list { padding: 6px 0; border-top: 1px solid var(--border); }
 .cal-item { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px; cursor: pointer; border-radius: var(--radius-sm); color: var(--text-2); }
