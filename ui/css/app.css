@@ -202,6 +202,9 @@ kbd { font-family: inherit; }
 .avatar.lg { width: 40px; height: 40px; font-size: 14px; }
 .avatar.sm { width: 34px; height: 34px; font-size: 12.5px; }
 .avatar.xs { width: 24px; height: 24px; font-size: 10.5px; }
+/* Own account picture: always round, cropped to fill. */
+.avatar.img { background: var(--hover); overflow: hidden; }
+.avatar.img img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
 
 /* ================================================================ mail view */
 .mailview { flex: 1; display: flex; min-width: 0; }
@@ -577,7 +580,11 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .acc-none { padding: 10px; }
 .acc-detail-host { flex: 1; min-width: 0; }
 .acc-detail { display: flex; flex-direction: column; gap: 12px; }
-.acc-head { display: flex; align-items: center; gap: 10px; }
+.acc-head { display: flex; align-items: center; gap: 14px; }
+.acc-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.acc-avatar-edit { display: flex; gap: 6px; margin-top: 6px; }
+.acc-order { display: flex; flex-direction: column; margin-left: 2px; }
+.acc-order .icon-btn.sm { width: 20px; height: 16px; }
 .acc-name { font-weight: 600; font-size: 14px; }
 .acc-detail .srv-pair { grid-template-columns: 1fr; }
 .acc-actions { display: flex; align-items: center; gap: 8px; }

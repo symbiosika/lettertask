@@ -1,8 +1,8 @@
 // Account setup: chooser (Microsoft 365 / IMAP), IMAP wizard, server settings editor.
 import { call } from './api.js';
-import { h, esc, EMAIL_RE } from './util.js';
+import { h, esc, EMAIL_RE, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
-import { modal, toast, reportError } from './dialogs.js';
+import { modal, toast, reportError, busyClick } from './dialogs.js';
 
 const SECURITY = [['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unverschlüsselt)']];
 const DEFAULT_PORT = {
@@ -207,12 +207,76 @@ export async function imapWizard() {
   }
 }
 
+/**
+ * Round account picture, or the initials when none is set. `size`: avatar size
+ * class (xs, sm, lg, xl). With `mb`, a shared mailbox keeps its own initials.
+ */
+export function accountAvatar(acc, size = 'xs', mb = null) {
+  const name = mb ? mb.displayName : acc && acc.displayName;
+  const addr = mb ? mb.address : acc && acc.email;
+  if (acc && acc.avatar && (!mb || mb.kind === 'primary')) {
+    return h('span.avatar.img.' + size, { dataset: { testid: 'acc-avatar-img' } }, h('img', { src: acc.avatar, alt: '', draggable: 'false' }));
+  }
+  return h('span.avatar.' + size, { style: { background: avatarColor(addr) } }, initials(name, addr));
+}
+
+const AVATAR_PX = 128;
+
+/** Reads an image file and returns a square, center-cropped 128 px data URL. */
+export function avatarFromFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { reject(new Error('Bitte ein PNG- oder JPG-Bild wählen.')); return; }
+    // data: URL – the window's CSP allows data: images, not blob:.
+    const reader = new FileReader();
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      if (!side) { reject(new Error('Das Bild konnte nicht gelesen werden.')); return; }
+      const c = document.createElement('canvas');
+      c.width = c.height = AVATAR_PX;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, AVATAR_PX, AVATAR_PX);
+      // PNG keeps transparency; photos are much smaller as JPEG.
+      resolve(file.type === 'image/png' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9));
+    };
+    img.onerror = () => reject(new Error('Das Bild konnte nicht gelesen werden.'));
+    reader.onload = () => { img.src = String(reader.result); };
+    reader.onerror = () => reject(new Error('Das Bild konnte nicht gelesen werden.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Picture of the account: choose (PNG/JPG, shown round) or remove. */
+function avatarEditor(acc, onChanged) {
+  const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' }, dataset: { testid: 'acc-avatar-file' } });
+  const pick = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-pick' } }, acc.avatar ? 'Bild ändern…' : 'Bild wählen…');
+  const remove = acc.avatar ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-remove' } }, 'Bild entfernen') : null;
+  const set = async (avatar) => {
+    await call('set_account_avatar', { accountId: acc.id, avatar });
+    acc.avatar = avatar;
+    onChanged();
+  };
+  pick.addEventListener('click', () => file.click());
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    try { await set(await avatarFromFile(f)); } catch (e) { reportError(e); }
+  });
+  if (remove) remove.addEventListener('click', busyClick(() => set(null)));
+  return h('div.acc-avatar-edit', file, pick, remove);
+}
+
 /** Account detail panel for the settings dialog ("Konten" tab). */
-export function accountDetail(acc, { onRemoved, onSaved }) {
+export function accountDetail(acc, { onRemoved, onSaved, onAvatar }) {
   const box = h('div.acc-detail', { dataset: { testid: 'acc-detail' } });
   const header = h('div.acc-head',
-    h('span.kind-badge.' + (isImap(acc) ? 'imap' : 'o365'), kindLabel(acc)),
-    h('div', h('div.acc-name', acc.displayName || acc.email), h('div.dim', acc.email)));
+    accountAvatar(acc, 'xl'),
+    h('div.acc-head-text',
+      h('div', h('span.kind-badge.' + (isImap(acc) ? 'imap' : 'o365'), kindLabel(acc))),
+      h('div.acc-name', acc.displayName || acc.email), h('div.dim', acc.email),
+      avatarEditor(acc, () => onAvatar && onAvatar(acc))));
   box.appendChild(header);
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));

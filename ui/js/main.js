@@ -1,6 +1,6 @@
 // Main window shell: top bar with search, action bar, sidebar, events, shortcuts.
 import { call, on, onBusy } from './api.js';
-import { h, $, load, store, fmtTime, esc, initials, avatarColor, toLocalIso, addDays, startOfDay } from './util.js';
+import { h, $, load, store, fmtTime, esc, toLocalIso, addDays, startOfDay } from './util.js';
 import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
@@ -10,7 +10,7 @@ import { tbBtn, splitBtn, sep } from './toolbar.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
-import { isImap } from './accounts.js';
+import { isImap, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
@@ -162,7 +162,8 @@ function accountChip() {
   const paint = () => {
     const a = state.accounts[0];
     el.title = a ? `${a.displayName} <${a.email}>` : 'Kein Konto';
-    el.innerHTML = a ? `<span class="avatar xs" style="background:${avatarColor(a.email)}">${esc(initials(a.displayName, a.email))}</span>` : icon('user', 18);
+    el.innerHTML = a ? '' : icon('user', 18);
+    if (a) el.appendChild(accountAvatar(a, 'xs'));
   };
   paint();
   el.addEventListener('click', () => showMenuAt(el, appMenu()));

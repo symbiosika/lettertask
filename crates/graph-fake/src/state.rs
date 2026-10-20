@@ -468,6 +468,9 @@ pub struct State {
     pub request_count: u64,
     /// Requests to the OAuth token endpoint.
     pub token_requests: u64,
+    /// Incremental delta rounds answer changed messages with only their
+    /// changed properties (id, isRead, flag, categories) – as Graph does at times.
+    pub sparse_delta: bool,
     /// Refresh tokens are rejected (revoked sign-in, password change).
     pub refresh_revoked: bool,
 }
@@ -557,6 +560,11 @@ impl SharedState {
         for _ in 0..count {
             st.faults.push_back(f.clone());
         }
+    }
+
+    /// Incremental delta rounds return only the changed properties of a message.
+    pub fn set_sparse_delta(&self, on: bool) {
+        self.lock().sparse_delta = on;
     }
 
     /// Queues an arbitrary failure for the next matching Graph request.

@@ -252,3 +252,62 @@ async fn lane_edge_cases() {
     let e = call_err(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "Überprüfung"})).await;
     assert!(e.contains("existiert nicht"), "{e}");
 }
+
+/// Graph sometimes answers a delta round with only the changed properties of a
+/// message. The cached row must keep sender, subject and date (otherwise the
+/// list shows "(Unbekannt)" and the mail jumps to the end).
+#[tokio::test]
+async fn sparse_delta_items_keep_sender_subject_and_date() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    ctx.sync(&inbox.id).await;
+    ctx.fake.state.set_sparse_delta(true);
+
+    let before = ctx.list(&inbox.id).await.items;
+    let target = before.iter().find(|m| !m.is_read).expect("unread demo mail").clone();
+    let _: Value = call(&ctx.svc, "set_read", json!({"mailboxId": ctx.account, "ids": [target.id], "isRead": true})).await;
+    ctx.sync(&inbox.id).await;
+    let after = ctx.list(&inbox.id).await.items;
+    let m = after.iter().find(|m| m.id == target.id).unwrap();
+    assert!(m.is_read);
+    assert_eq!(m.subject, target.subject);
+    assert_eq!(m.from, target.from);
+    assert_eq!(m.received_at, target.received_at);
+    assert_eq!(after.iter().map(|m| &m.id).collect::<Vec<_>>(), before.iter().map(|m| &m.id).collect::<Vec<_>>(), "order unchanged");
+
+    // A new mail announced only partially is fetched in full.
+    let id = ctx.fake.state.inject_incoming(ME, "inbox", json!({"subject": "Teilweise gemeldet"}));
+    ctx.sync(&inbox.id).await;
+    let page = ctx.list(&inbox.id).await;
+    let m = page.items.iter().find(|m| m.id == id).expect("new mail cached");
+    assert_eq!(m.subject, "Teilweise gemeldet");
+    assert!(!m.received_at.is_empty());
+    assert!(m.from.is_some());
+    assert_eq!(page.items[0].id, id, "newest first");
+}
+
+#[tokio::test]
+async fn account_picture_is_validated_and_listed() {
+    let ctx = setup().await;
+    let png = "data:image/png;base64,iVBORw0KGgo=";
+    let _: Value = call(&ctx.svc, "set_account_avatar", json!({"accountId": ctx.account, "avatar": png})).await;
+    let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
+    assert_eq!(accounts[0].avatar.as_deref(), Some(png));
+
+    for bad in [
+        "javascript:alert(1)",
+        "data:image/svg+xml;base64,PHN2Zz4=",
+        "data:text/html;base64,PGI+",
+        "data:image/png;base64,***",
+    ] {
+        call_err(&ctx.svc, "set_account_avatar", json!({"accountId": ctx.account, "avatar": bad})).await;
+    }
+    let big = format!("data:image/png;base64,{}", "A".repeat(400_000));
+    assert!(call_err(&ctx.svc, "set_account_avatar", json!({"accountId": ctx.account, "avatar": big})).await.contains("zu groß"));
+    call_err(&ctx.svc, "set_account_avatar", json!({"accountId": "unbekannt", "avatar": null})).await;
+
+    let _: Value = call(&ctx.svc, "set_account_avatar", json!({"accountId": ctx.account, "avatar": null})).await;
+    let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
+    assert_eq!(accounts[0].avatar, None);
+    let _: Value = call(&ctx.svc, "set_account_order", json!({"accountIds": [ctx.account]})).await;
+}

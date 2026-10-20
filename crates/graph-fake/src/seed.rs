@@ -47,6 +47,7 @@ pub fn build(base_url: &str, opts: &FakeOptions) -> State {
         faults: Default::default(),
         request_count: 0,
         token_requests: 0,
+        sparse_delta: false,
         refresh_revoked: false,
     }
 }

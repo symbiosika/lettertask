@@ -1,11 +1,12 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
 import { call, params, closeWindow, isTauri } from './api.js';
-import { h, $, esc, fmtSize, fileToBase64, initials, avatarColor } from './util.js';
+import { h, $, esc, fmtSize, fileToBase64 } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
 import { recipientField } from './recipients.js';
 import { createEditor } from './editor.js';
 import { splitBtn } from './toolbar.js';
+import { accountAvatar } from './accounts.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById, accountOfMailbox } from './state.js';
 import { duePicker } from './due.js';
 import { loadSignatures, defaultSignatureFor, applySignature, currentSignatureId, signatureMenuItems, signaturesPanel } from './signatures.js';
@@ -84,7 +85,7 @@ function renderForm() {
     const mb = mailboxById(st.mailboxId) || mbs[0];
     fromChip.innerHTML = '';
     if (!mb) return;
-    fromChip.append(...[h('span.avatar.xs', { style: { background: avatarColor(mb.address) } }, initials(mb.displayName, mb.address)),
+    fromChip.append(...[accountAvatar(state.accounts.find((a) => a.id === mb.accountId), 'xs', mb),
       h('span.from-text', `${mb.displayName} <${mb.address}>`), mbs.length > 1 && !(st.draft && st.draft.id) ? h('span', { html: icon('chevronDown', 14) }) : null].filter(Boolean));
   };
   if (mbs.length > 1) {
