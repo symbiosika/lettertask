@@ -3,7 +3,9 @@ import { call, on, onBusy } from './api.js';
 import { h, $, load, store, fmtTime, esc, initials, avatarColor, toLocalIso, addDays, startOfDay } from './util.js';
 import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
-import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, wellKnown, folderById } from './state.js';
+import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
+import { openWindow } from './api.js';
+import { onBroadcast } from './bus.js';
 import { tbBtn, splitBtn, sep } from './toolbar.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
@@ -125,6 +127,7 @@ function appMenu() {
   };
   return [
     { label: 'Neue E-Mail', icon: 'mail', shortcut: 'Strg+N', onClick: () => mail.newMail() },
+    { label: 'Neue Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', disabled: !acc, onClick: () => newTask() },
     { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', disabled: !o365, onClick: () => calendar.newEvent() },
     { label: 'Neuer Kontakt', icon: 'contacts', disabled: !acc, onClick: () => { setMode('contacts'); contacts.newContact().catch(reportError); } },
     { separator: true },
@@ -172,6 +175,20 @@ function snoozeItems() {
   return items;
 }
 
+function newTask() {
+  const mb = state.current.mailboxId || (mailboxes()[0] && mailboxes()[0].id);
+  if (!mb) { toast('Bitte fügen Sie zuerst ein Konto hinzu.'); return; }
+  openWindow('task', { mailboxId: mb }).catch(reportError);
+}
+
+/** Shift+S: first configured Wiedervorlage option directly. */
+async function quickSnooze() {
+  if (!mail.getSelection().ids.length) return;
+  const o = snoozeOptions(state.config)[0];
+  const d = o && computeSnooze(o.rule, new Date());
+  if (d) await mail.snoozeSelected(d);
+}
+
 async function customSnooze() {
   if (!mail.getSelection().ids.length) { toast('Bitte wählen Sie zuerst ein Element aus.'); return; }
   const def = addDays(startOfDay(new Date()), 1); def.setHours(8);
@@ -199,6 +216,7 @@ function renderToolbar() {
   if (state.mode === 'mail') {
     lead.appendChild(splitBtn('Neu', 'plus', () => mail.newMail(), (b) => showMenuAt(b, [
       { label: 'E-Mail', icon: 'mail', shortcut: 'Strg+N', onClick: () => mail.newMail(), testid: 'new-mail' },
+      { label: 'Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', onClick: () => newTask(), testid: 'new-task' },
       { label: 'Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', onClick: () => calendar.newEvent(), testid: 'new-event' },
     ]), { testid: 'tb-new', menuTestid: 'tb-new-menu', primary: true, title: 'Neue E-Mail (Strg+N)' }));
     tb.append(lead,
@@ -208,8 +226,8 @@ function renderToolbar() {
         dep(tbBtn('Weiterleiten', 'forward', () => mail.respond('forward'), { testid: 'tb-forward', title: 'Weiterleiten (Strg+F)' }))),
       sep(),
       h('div.ab-group',
-        dep(tbBtn('Archivieren', 'archive', () => mail.archiveSelected(), { testid: 'tb-archive' })),
-        dep(tbBtn('Auf Wiedervorlage', 'snooze', (b) => showMenuAt(b, snoozeItems()), { caret: true, testid: 'tb-snooze' })),
+        dep(tbBtn('Archivieren', 'archive', () => mail.archiveSelected(), { testid: 'tb-archive', title: 'Archivieren (E)' })),
+        dep(tbBtn('Auf Wiedervorlage', 'snooze', (b) => showMenuAt(b, snoozeItems()), { caret: true, testid: 'tb-snooze', title: 'Auf Wiedervorlage (S · Umschalt+S: erste Option)' })),
         dep(tbBtn('Löschen', 'delete', () => mail.deleteSelected(false), { testid: 'tb-delete', title: 'Löschen (Entf)' }))),
       h('span.spacer'),
       h('div.ab-group',
@@ -348,6 +366,7 @@ async function loadAll() {
   await Promise.all([
     ...mailboxes().map((m) => loadFolders(m.id).catch((e) => { console.warn(e); return []; })),
     ...state.accounts.map((a) => loadCategories(a.id).catch(() => [])),
+    ...state.accounts.map((a) => loadLanes(a.id)),
   ]);
   await Promise.all(mailboxes().filter((m) => !(state.folders.get(m.id) || []).length).map(async (m) => {
     try { state.folders.set(m.id, await call('sync_folders', { mailboxId: m.id }, { silent: true })); } catch (e) { console.warn(e); }
@@ -395,6 +414,8 @@ function setupShortcuts() {
     if (ctrl && k === '2') { e.preventDefault(); setMode('calendar'); return; }
     if (ctrl && k === '3') { e.preventDefault(); setMode('contacts'); return; }
     if (ctrl && e.shiftKey && k === 'a') { e.preventDefault(); calendar.newEvent(); return; }
+    if (ctrl && e.shiftKey && k === 'n') { e.preventDefault(); newTask(); return; }
+    if (ctrl && e.shiftKey && k === 'k' && state.mode === 'mail') { e.preventDefault(); mail.toggleView(); renderToolbar(); return; }
     if (ctrl && k === 'n') { e.preventDefault(); if (state.mode === 'calendar') calendar.newEvent(); else if (state.mode === 'contacts') contacts.newContact().catch(reportError); else mail.newMail(); return; }
     if (ctrl && k === 'e') { e.preventDefault(); $('#search-input').focus(); return; }
     if (typing || state.mode !== 'mail') {
@@ -408,6 +429,14 @@ function setupShortcuts() {
     else if (ctrl && k === 'q') { e.preventDefault(); mail.markSelected(true).catch(reportError); }
     else if (ctrl && k === 'u') { e.preventDefault(); mail.markSelected(false).catch(reportError); }
     else if (!ctrl && !e.altKey && k === 't') { e.preventDefault(); mail.openTagsForSelection(els.toolbar.querySelector('[data-testid=tb-tag]')); }
+    else if (!ctrl && !e.altKey && k === 'e') { e.preventDefault(); mail.archiveSelected().catch(reportError); }
+    else if (!ctrl && !e.altKey && k === 's' && e.shiftKey) { e.preventDefault(); quickSnooze().catch(reportError); }
+    else if (!ctrl && !e.altKey && k === 's') {
+      e.preventDefault();
+      if (!mail.getSelection().ids.length) { toast('Bitte wählen Sie zuerst ein Element aus.'); return; }
+      showMenuAt(els.toolbar.querySelector('[data-testid=tb-snooze]'), snoozeItems());
+    }
+    else if (!ctrl && !e.altKey && /^[1-9]$/.test(e.key)) { e.preventDefault(); mail.setLaneByIndex(Number(e.key)).catch(reportError); }
     else if (e.key === 'Escape' && mail.isSearching()) { mail.clearSearch(); }
     else if (e.key === 'Delete' && t === document.body) { e.preventDefault(); mail.deleteSelected(e.shiftKey).catch(reportError); }
   });
@@ -425,6 +454,16 @@ function setupEvents() {
     mail.reloadList().catch(() => {});
     calendar.onCalendarChanged().catch(() => {});
   });
+  on('rules-applied', (p) => {
+    if (!p || !p.count) return;
+    const subjects = (p.subjects || []).join('\n');
+    toast(p.count === 1 ? '1 Mail automatisch auf Wiedervorlage gelegt.' : `${p.count} Mails automatisch auf Wiedervorlage gelegt.`, 'info', 6000, { title: subjects });
+    if (p.mailboxId) mail.refreshFolders(p.mailboxId).catch(() => {});
+  });
+  on('lanes-changed', (p) => { if (p && p.accountId) mail.onLanesChanged(p.accountId).catch(() => {}); });
+  onBroadcast((m) => {
+    if (m.type === 'task-created') toast(m.due ? `Aufgabe angelegt – fällig ${m.due}.` : 'Aufgabe angelegt – sie liegt im Posteingang.');
+  });
   on('new-mail', (p) => {
     if (!p) return;
     toast(p.count > 1 ? `${p.count} neue Nachrichten` : `Neue Nachricht von ${p.from}: ${p.subject}`);
@@ -437,6 +476,7 @@ async function init() {
   hooks.onConfigSaved = applyConfig;
   hooks.onAccountsChanged = () => onAccountsChanged().catch(reportError);
   mail.hooks.snoozeItems = snoozeItems;
+  mail.hooks.openLaneSettings = (accountId) => openSettings('kanban', { accountId });
   mail.initMail({ navHost: els.tree, contentHost: els.content, onCounts: renderStatus, onSelection: updateActionState });
   calendar.initCalendar({ navHost: els.calNav, contentHost: els.content, onCounts: updateActionState });
   contacts.initContacts({ navHost: els.ctNav, contentHost: els.content, onSelection: updateActionState });

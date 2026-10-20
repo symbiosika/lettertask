@@ -43,6 +43,10 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
       footer.appendChild(btn);
     }
     function onKey(e) {
+      // Only the topmost dialog reacts (nested dialogs, e.g. a confirm inside the settings).
+      const overlays = document.querySelectorAll('.modal-overlay');
+      if (overlays.length && overlays[overlays.length - 1] !== overlay) return;
+      if (e.key === 'Enter' && e.target && e.target.dataset && e.target.dataset.noSubmit) return;
       if (e.key === 'Escape') { e.stopPropagation(); close(cancelValue, true); }
       else if (e.key === 'Enter' && !(e.target && (e.target.tagName === 'TEXTAREA' || e.target.isContentEditable))) {
         const p = buttons.find((b) => b.primary);

@@ -4,7 +4,8 @@ import { h, esc, toLocalIso } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, field } from './dialogs.js';
 import { PRESETS, presetHex, textOn, getCategories, setCategories } from './categories.js';
-import { state, loadCategories } from './state.js';
+import { state, loadCategories, loadLanes, lanesOf } from './state.js';
+import { LANE_NAME_RE } from './categories.js';
 import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
 import { signaturesPanel } from './signatures.js';
 import { chooseAccountKind, imapWizard, accountDetail, isImap, kindLabel } from './accounts.js';
@@ -23,6 +24,7 @@ const TABS = [
   ['reading', 'Lesen', 'mailOpen'],
   ['signatures', 'Signaturen', 'signature'],
   ['snooze', 'Wiedervorlage', 'snooze'],
+  ['kanban', 'Kanban', 'kanban'],
   ['accounts', 'Konten', 'user'],
 ];
 const TAB_ALIASES = { compose: 'signatures', account: 'accounts' };
@@ -63,6 +65,100 @@ function snoozeEditor(initial) {
   return { el: host, get: () => rows.filter((r) => r.label.trim()).map((r) => ({ label: r.label.trim(), rule: formatRule(r) })) };
 }
 
+/** Kanban lanes per account: ordered list with add / rename / delete / reorder. */
+function lanesPanel(initialAccountId) {
+  const accounts = state.accounts;
+  let accountId = initialAccountId && accounts.some((a) => a.id === initialAccountId) ? initialAccountId : accounts[0].id;
+  const edits = new Map(); // accountId -> string[] (only accounts the user touched)
+  const original = new Map();
+  const host = h('div.lane-editor', { dataset: { testid: 'lane-editor' } });
+  const accSel = select(accounts.map((a) => [a.id, `${a.displayName || a.email} <${a.email}>`]), accountId);
+  accSel.name = 'laneAccount';
+  accSel.addEventListener('change', () => { accountId = accSel.value; ensure().then(render); });
+  const listEl = h('div.lane-list', { role: 'list' });
+  const input = h('input.input.lane-new', { type: 'text', placeholder: 'Neue Lane, z. B. „ToDo“', name: 'newLane', maxLength: 30, dataset: { testid: 'lane-input', noSubmit: '1' } });
+  const hint = h('div.field-hint.lane-hint', 'Nur Buchstaben, Ziffern, Leerzeichen, - und _ (max. 30 Zeichen).');
+  const lanes = () => edits.get(accountId) || [];
+
+  async function ensure() {
+    if (edits.has(accountId)) return;
+    const l = await loadLanes(accountId);
+    original.set(accountId, [...l]);
+    edits.set(accountId, [...l]);
+  }
+  const validate = (name, except = -1) => {
+    const n = name.trim();
+    if (!LANE_NAME_RE.test(n)) return 'Ungültiger Name. Nur Buchstaben, Ziffern, Leerzeichen, - und _ (1–30 Zeichen).';
+    if (lanes().some((x, i) => i !== except && x.toLowerCase() === n.toLowerCase())) return `Die Lane „${n}“ gibt es bereits.`;
+    return null;
+  };
+  const add = () => {
+    const err = validate(input.value);
+    if (err) { input.classList.add('invalid'); toast(err, 'error'); return; }
+    input.classList.remove('invalid');
+    lanes().push(input.value.trim());
+    input.value = '';
+    render();
+    input.focus();
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  input.addEventListener('input', () => input.classList.remove('invalid'));
+
+  function render() {
+    listEl.innerHTML = '';
+    const l = lanes();
+    l.forEach((name, i) => {
+      const nameEl = h('span.lane-name', name);
+      const mv = (d) => { const j = i + d; if (j < 0 || j >= l.length) return; [l[i], l[j]] = [l[j], l[i]]; render(); };
+      const rename = async () => {
+        const nn = await promptDialogLocal(name);
+        if (nn === null || nn.trim() === name) return;
+        const err = validate(nn, i);
+        if (err) { toast(err, 'error'); return; }
+        const ok = await confirmDialog(`Lane „${name}“ in „${nn.trim()}“ umbenennen? Karten der bisherigen Lane verlieren dabei ihre Lane-Zuordnung (sie landen in „Ohne Lane“).`, { title: 'Lane umbenennen', ok: 'Umbenennen' });
+        if (ok) { l[i] = nn.trim(); render(); }
+      };
+      const del = async () => {
+        const ok = await confirmDialog(`Lane „${name}“ löschen? Karten dieser Lane landen in „Ohne Lane“.`, { title: 'Lane löschen', ok: 'Löschen', danger: true });
+        if (ok) { l.splice(i, 1); render(); }
+      };
+      listEl.appendChild(h('div.lane-item', { role: 'listitem', dataset: { testid: 'lane-item', name } },
+        h('kbd.kb-key', i < 9 ? String(i + 1) : '·'), nameEl, h('span.spacer'),
+        h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', html: icon('up', 14), disabled: i === 0, onclick: () => mv(-1), dataset: { testid: 'lane-up' } }),
+        h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', html: icon('down', 14), disabled: i === l.length - 1, onclick: () => mv(1), dataset: { testid: 'lane-down' } }),
+        h('button.icon-btn.sm', { type: 'button', title: 'Umbenennen', html: icon('edit', 14), onclick: () => rename().catch(reportError), dataset: { testid: 'lane-rename' } }),
+        h('button.icon-btn.sm', { type: 'button', title: 'Löschen', html: icon('close', 14), onclick: () => del().catch(reportError), dataset: { testid: 'lane-delete' } })));
+    });
+    if (!l.length) listEl.appendChild(h('div.dim.lane-none', 'Noch keine Lanes. Legen Sie z. B. „ToDo“, „In Arbeit“ und „Warten“ an.'));
+  }
+  async function promptDialogLocal(value) {
+    const inp = h('input.input', { value, maxLength: 30, style: { width: '100%' }, name: 'laneRename' });
+    const r = await modal({ title: 'Lane umbenennen', body: h('div', h('label.lbl', 'Neuer Name:'), inp), width: 340,
+      buttons: [{ label: 'OK', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }] });
+    return r === 'ok' ? inp.value : null;
+  }
+
+  ensure().then(render).catch(reportError);
+  host.append(
+    accounts.length > 1 ? field('Konto', accSel) : null,
+    listEl,
+    h('div.lane-add', input, h('button.btn.small', { type: 'button', dataset: { testid: 'lane-add' }, html: icon('plus', 14) + ' Hinzufügen', onclick: add })),
+    hint,
+  );
+  return {
+    el: host,
+    async save() {
+      for (const [acc, l] of edits) {
+        const before = original.get(acc) || [];
+        if (JSON.stringify(before) === JSON.stringify(l)) continue;
+        const saved = await call('save_lanes', { accountId: acc, lanes: l });
+        state.lanes.set(acc, saved || l);
+        original.set(acc, [...(saved || l)]);
+      }
+    },
+  };
+}
+
 export async function openSettings(initialTab = 'general', { accountId = null } = {}) {
   initialTab = TAB_ALIASES[initialTab] || initialTab;
   const c = { ...state.config };
@@ -81,6 +177,9 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   listMode.name = 'listMode';
   const snooze = snoozeEditor(snoozeOptions(c));
   const sigs = state.accounts.length ? signaturesPanel(state.accounts, accountId) : null;
+  const lanes = state.accounts.length ? lanesPanel(accountId) : null;
+  const kbPane = select([['bottom', 'Unten (unter dem Board)'], ['right', 'Rechts']], c.kanbanReadingPane || 'bottom');
+  kbPane.name = 'kanbanReadingPane';
   const accounts = accountsPanel({ clientId, tenant, builtin: !!c.builtinClientId, demo: !!c.demo, initialAccountId: accountId });
 
   const panels = {
@@ -103,6 +202,11 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       h('h3', 'Auf Wiedervorlage'),
       h('p.note', 'Diese Zeitpunkte erscheinen im Menü „Auf Wiedervorlage“. Die Nachricht verschwindet bis dahin im Ordner „Wiedervorlage“ und kommt dann ungelesen in den Posteingang zurück.'),
       snooze.el),
+    kanban: h('div.set-panel',
+      h('h3', 'Kanban'),
+      h('p.note', 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen. Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.'),
+      lanes ? lanes.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.'),
+      field('Lesebereich im Kanban', kbPane)),
     accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),
   };
   const nav = h('div.set-nav', { role: 'tablist' });
@@ -131,10 +235,13 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
         loadRemoteImages: remote.checked,
         readingPane: pane.value, markReadDelaySecs: parseInt(markRead.value, 10), listMode: listMode.value,
         showDateSeparators: seps.checked, snoozeOptions: snooze.get(),
+        kanbanReadingPane: kbPane.value,
       };
       delete config.signatureHtml;
       state.config = await call('save_config', { config });
       if (sigs) await sigs.save();
+      if (lanes) { try { await lanes.save(); } catch (e) { show('kanban'); throw e; } }
+      try { localStorage.setItem('oc.kanbanPane', JSON.stringify(kbPane.value)); } catch { /* ignore */ }
       return 'ok';
     },
   });
@@ -426,7 +533,7 @@ export async function aboutDialog() {
       h('div', { style: { fontWeight: '600', fontSize: '15px' } }, 'Mail, Kalender & Kontakte'),
       h('div', 'Fokussierter E-Mail-Client für Microsoft 365 (Graph API) und IMAP/SMTP.'),
       h('div', { style: { marginTop: '6px', color: '#666' } }, 'Rust · Tauri · Microsoft Graph v1.0 · IMAP/SMTP'),
-      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · T Kategorien · Entf löschen · Strg+E Suchen · F9 Senden/Empfangen · Strg+1 Mail · Strg+2 Kalender · Strg+3 Kontakte'))),
+      h('div', { style: { marginTop: '10px', color: '#666' } }, 'Tastenkürzel: Strg+N Neu · Strg+Umschalt+N Aufgabe · E Archivieren · S Wiedervorlage · 1–9 Kanban-Lane · Strg+Umschalt+K Liste/Kanban · Strg+R Antworten · Strg+Umschalt+R Allen antworten · Strg+F Weiterleiten · Strg+Q gelesen · Strg+U ungelesen · T Kategorien · Entf löschen · Strg+E Suchen · F9 Senden/Empfangen · Strg+1 Mail · Strg+2 Kalender · Strg+3 Kontakte'))),
     width: 480,
   });
 }

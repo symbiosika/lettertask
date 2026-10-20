@@ -8,7 +8,8 @@ import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, laneCats, 
 import { renderMessage, printMessage } from './mailview.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
-import { state, mailboxes, mailboxById, accountOfMailbox, foldersOf, folderById, wellKnown, loadFolders } from './state.js';
+import { state, mailboxes, mailboxById, accountOfMailbox, foldersOf, folderById, wellKnown, loadFolders, lanesOf, loadLanes } from './state.js';
+import { createBoard, viewToggle, laneOf } from './kanban.js';
 import { openCategoryManager } from './settings.js';
 
 const PAGE = 200;
@@ -32,6 +33,24 @@ let markReadTimer = null;
 let currentDetail = null;
 let onCountsChanged = () => {};
 let onSelectionChanged = () => {};
+let view = load('mailView', 'list'); // 'list' | 'kanban'
+let board = null;
+
+/** Kanban is shown for the folder unless server search results are displayed. */
+export function kanbanActive() { return view === 'kanban' && !list.search; }
+export function getView() { return view; }
+export function setView(v) {
+  if (v !== 'list' && v !== 'kanban') return;
+  view = v;
+  store('mailView', v);
+  applyReadingPaneLayout();
+  reloadList({ keepCount: false }).catch(reportError);
+  if (kanbanActive()) board.focus(); else els.list.focus();
+}
+export function toggleView() { setView(view === 'kanban' ? 'list' : 'kanban'); }
+function kanbanPane() { return (state.config && state.config.kanbanReadingPane) || load('kanbanPane', 'bottom'); }
+function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
+export function currentLanes() { return lanesOf(currentAccount()); }
 
 // ============================================================ setup
 export function initMail({ navHost, contentHost, onCounts, onSelection }) {
@@ -49,15 +68,71 @@ export function initMail({ navHost, contentHost, onCounts, onSelection }) {
   els.listpane.append(els.head, els.searchbar, els.list);
   els.split = h('div.splitter');
   els.read = h('div.readpane#readpane');
-  els.mailview.append(els.listpane, els.split, els.read);
+  els.board = h('div#board.hidden', { dataset: { testid: 'kanban-board' } });
+  els.mailview.append(els.board, els.listpane, els.split, els.read);
   contentHost.appendChild(els.mailview);
+  board = createBoard(els.board, {
+    items: () => list.items,
+    lanes: () => currentLanes(),
+    accountId: () => currentAccount(),
+    snoozed: () => { const f = currentFolder(); return !!(f && f.wellKnown === 'snoozed'); },
+    isSelected: (id) => list.selection.has(id),
+    cursor: () => list.cursor,
+    hideNoLane: () => !!load('kanbanHideNoLane', false),
+    paneMode: () => kanbanPane(),
+    title: () => { const f = currentFolder(); return f ? f.displayName : ''; },
+    count: () => list.total,
+    onSelect: (id, e) => {
+      if (e && (e.ctrlKey || e.metaKey)) { if (list.selection.has(id)) list.selection.delete(id); else list.selection.add(id); }
+      else if (e && e.shiftKey && list.anchor) selectRange(list.anchor, id);
+      else { list.selection = new Set([id]); list.anchor = id; }
+      list.cursor = id;
+      paintSelection();
+      selectionChanged();
+    },
+    onOpen: (id) => openMessage(findItem(id)),
+    onSetLane: (ids, lane) => setLaneFor(ids, lane).catch(reportError),
+    onContext: (id, x, y) => messageContextMenu(x, y),
+    onDelete: (permanent) => deleteSelected(permanent).catch(reportError),
+    dragPayload: () => ({ mailboxId: state.current.mailboxId, folderId: state.current.folderId, ids: [...list.selection] }),
+    onToggleView: (v) => setView(v),
+    onToggleNoLane: () => { store('kanbanHideNoLane', !load('kanbanHideNoLane', false)); renderList(); },
+    onTogglePane: () => setKanbanPane(kanbanPane() === 'bottom' ? 'right' : 'bottom').catch(reportError),
+    onEditLanes: () => hooks.openLaneSettings && hooks.openLaneSettings(currentAccount()),
+  });
 
   applyReadingPaneLayout();
   setupListEvents();
   renderListHead();
 }
 
+async function setKanbanPane(mode) {
+  store('kanbanPane', mode);
+  if (state.config) {
+    try { state.config = await call('save_config', { config: { ...state.config, kanbanReadingPane: mode } }, { silent: true }); } catch (e) { console.warn(e); }
+    if (state.config && !state.config.kanbanReadingPane) state.config.kanbanReadingPane = mode;
+  }
+  applyReadingPaneLayout();
+  renderList();
+}
+
 export function applyReadingPaneLayout() {
+  const kb = kanbanActive();
+  els.board.classList.toggle('hidden', !kb);
+  els.listpane.classList.toggle('hidden', kb);
+  els.mailview.classList.toggle('kanban', kb);
+  if (kb) {
+    const pane = kanbanPane();
+    els.mailview.classList.toggle('bottom', pane === 'bottom');
+    els.mailview.classList.remove('off');
+    els.split.className = 'splitter' + (pane === 'bottom' ? ' h' : '');
+    els.read.classList.remove('hidden');
+    if (pane === 'bottom') { els.board.style.width = ''; els.board.style.height = load('boardHeight', 380) + 'px'; }
+    else { els.board.style.height = ''; els.board.style.width = load('boardWidth', 760) + 'px'; }
+    makeSplitter(els.split, els.board, pane === 'bottom' ? 'y' : 'x', pane === 'bottom' ? 'boardHeight' : 'boardWidth');
+    return;
+  }
+  els.board.style.width = ''; els.board.style.height = '';
   const mode = (state.config && state.config.readingPane) || 'right';
   els.mailview.classList.toggle('bottom', mode === 'bottom');
   els.mailview.classList.toggle('off', mode === 'off');
@@ -365,6 +440,7 @@ function renderListHead() {
   }
   const sortHost = els.head.querySelector('.lh-sort');
   sortHost.innerHTML = '';
+  if (!list.search) sortHost.appendChild(viewToggle('list', (v) => setView(v)));
   const sortBtn = h('button.chip.sort', { type: 'button', title: 'Sortieren', dataset: { testid: 'sort-menu' }, html: `${icon('sort', 14)}<span>${esc(SORT_LABELS[list.sortBy] || 'Datum')}</span>` });
   sortBtn.addEventListener('click', () => showMenuAt(sortBtn, [
     { header: 'Sortieren nach' },
@@ -408,10 +484,13 @@ export async function reloadList({ keepCount = true } = {}) {
   const { mailboxId, folderId } = state.current;
   if (!mailboxId || !folderId) { renderList(); return; }
   if (list.search) { renderList(); return; }
-  const limit = keepCount ? Math.max(PAGE, list.items.length) : PAGE;
+  const kb = kanbanActive();
+  const limit = kb ? 1000 : keepCount ? Math.max(PAGE, list.items.length) : PAGE;
+  const accountId = accountOfMailbox(mailboxId);
+  if (kb && !state.lanes.has(accountId)) await loadLanes(accountId);
   const res = await call('list_messages', {
-    mailboxId, folderId, sortBy: list.sortBy, sortDesc: list.sortDesc,
-    unreadOnly: list.filter.unreadOnly, flaggedOnly: list.filter.flaggedOnly, category: list.filter.category,
+    mailboxId, folderId, sortBy: kb ? 'received' : list.sortBy, sortDesc: kb ? true : list.sortDesc,
+    unreadOnly: kb ? false : list.filter.unreadOnly, flaggedOnly: kb ? false : list.filter.flaggedOnly, category: kb ? null : list.filter.category,
     text: list.text || null, offset: 0, limit,
   }, { silent: true });
   if (state.current.folderId !== folderId) return;
@@ -427,7 +506,7 @@ export async function reloadList({ keepCount = true } = {}) {
 }
 
 async function loadMore() {
-  if (list.loading || list.search) return;
+  if (list.loading || list.search || kanbanActive()) return;
   const { mailboxId, folderId } = state.current;
   if (list.items.length < list.total) {
     list.loading = true;
@@ -457,6 +536,7 @@ async function loadMore() {
 function visibleItems() { return list.search ? list.search.items : list.items; }
 
 function renderList() {
+  if (kanbanActive()) { board.render(); renderListHead(); return; }
   const scroll = els.list.scrollTop;
   const compact = state.config && state.config.listMode === 'compact';
   const f = currentFolder();
@@ -562,6 +642,7 @@ export async function serverSearch(text, opts = {}) {
   const items = await call('search_messages', args);
   list.search = { text, items: items || [], opts };
   list.text = '';
+  applyReadingPaneLayout();
   list.selection.clear(); list.cursor = null;
   showReading(null);
   renderList();
@@ -575,6 +656,7 @@ export function clearSearch() {
   list.search = null;
   list.text = '';
   const sb = $('#search-input'); if (sb) sb.value = '';
+  if (had) applyReadingPaneLayout();
   if (had) reloadList({ keepCount: false }).catch(reportError);
   else renderListHead();
 }
@@ -582,7 +664,7 @@ export function clearSearch() {
 // ---------- events & selection ----------
 function rowId(el) { const r = el && el.closest && el.closest('.msg'); return r ? r.dataset.id : null; }
 function findItem(id) { return visibleItems().find((m) => m.id === id) || null; }
-function visibleOrder() { return Array.from(els.list.querySelectorAll('.msg')).map((r) => r.dataset.id); }
+function visibleOrder() { return kanbanActive() ? board.order() : Array.from(els.list.querySelectorAll('.msg')).map((r) => r.dataset.id); }
 
 function setupListEvents() {
   const L = els.list;
@@ -685,6 +767,7 @@ function selectRange(a, b) {
 }
 
 function paintSelection() {
+  if (kanbanActive()) { board.paintSelection(); return; }
   for (const r of els.list.querySelectorAll('.msg')) {
     const sel = list.selection.has(r.dataset.id);
     r.classList.toggle('selected', sel);
@@ -712,7 +795,7 @@ async function showReading(m, text) {
   clearTimeout(markReadTimer);
   const token = ++readToken;
   currentDetail = null;
-  const mode = (state.config && state.config.readingPane) || 'right';
+  const mode = kanbanActive() ? kanbanPane() : (state.config && state.config.readingPane) || 'right';
   if (!m) {
     els.read.innerHTML = '';
     els.read.appendChild(h('div.empty.reading', h('div.empty-ic', { html: icon(text ? 'mail' : 'mailOpen', 48) }), h('div', text || 'Wählen Sie eine Nachricht aus, um sie zu lesen.')));
@@ -1056,9 +1139,10 @@ function messageContextMenu(x, y) {
       : { label: 'Als ungelesen markieren', icon: 'mail', shortcut: 'Strg+U', onClick: () => markSelected(false) },
     { label: 'Kategorisieren', icon: 'tag', shortcut: 'T', submenu: categoryMenuItems },
     { label: 'Kennzeichnung', icon: 'flag', submenu: flagMenuItems },
-    { label: 'Auf Wiedervorlage', icon: 'snooze', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
+    { label: 'Auf Wiedervorlage', icon: 'snooze', shortcut: 'S', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
+    { label: 'Kanban-Lane', icon: 'kanban', submenu: laneMenuItems, testid: 'ctx-lane' },
     { separator: true },
-    { label: 'Archivieren', icon: 'archive', onClick: () => archiveSelected(), testid: 'ctx-archive' },
+    { label: 'Archivieren', icon: 'archive', shortcut: 'E', onClick: () => archiveSelected(), testid: 'ctx-archive' },
     { label: 'Verschieben', icon: 'move', submenu: () => moveMenuItems('move'), testid: 'ctx-move' },
     { label: 'Kopieren', icon: 'copy', submenu: () => moveMenuItems('copy') },
     { label: 'Löschen', icon: 'delete', shortcut: 'Entf', onClick: () => deleteSelected(false), testid: 'ctx-delete' },
@@ -1068,7 +1152,7 @@ function messageContextMenu(x, y) {
 }
 
 /** Set by the shell (snooze menu items are built there). */
-export const hooks = { snoozeItems: null };
+export const hooks = { snoozeItems: null, openLaneSettings: null };
 
 /** Called by the shell when backend events arrive. */
 export async function onMailChanged(p) {
@@ -1078,4 +1162,67 @@ export async function onMailChanged(p) {
   await Promise.all(tasks);
 }
 
-export function focusList() { els.list.focus(); }
+export function focusList() { if (kanbanActive()) board.focus(); else els.list.focus(); }
+
+// ============================================================ Kanban lanes
+/** Moves messages into `lane` (null = no lane); keeps all other categories. Undo via toast. */
+export async function setLaneFor(ids, lane) {
+  const { mailboxId } = state.current;
+  const lanes = currentLanes();
+  if (lane && !lanes.includes(lane)) { toast(`Die Lane „${lane}“ existiert nicht.`, 'error'); return; }
+  const before = new Map();
+  for (const id of ids) { const m = findItem(id); if (m) before.set(id, laneOf(m, lanes) || null); }
+  const apply = (id, l) => localUpdate([id], (m) => {
+    m.categories = [...visibleCats(m.categories), ...laneCats(m.categories).filter((c) => !lanes.includes(laneName(c))), ...(l ? [laneCategory(l)] : [])];
+  });
+  for (const id of ids) apply(id, lane);
+  renderList();
+  if (currentDetail && ids.includes(currentDetail.id)) currentDetail.categories = (findItem(currentDetail.id) || currentDetail).categories;
+  try {
+    await call('set_lane', { mailboxId, ids, lane: lane || null }, { silent: true });
+  } catch (e) {
+    for (const [id, l] of before) apply(id, l);
+    renderList();
+    throw e;
+  }
+  const label = lane ? `„${lane}“` : '„Ohne Lane“';
+  toast(ids.length === 1 ? `Nach ${label} verschoben.` : `${ids.length} Nachrichten nach ${label} verschoben.`, 'info', 5000, {
+    action: { label: 'Rückgängig', onClick: async () => {
+      const groups = new Map();
+      for (const [id, l] of before) { const k = l || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(id); }
+      for (const [id, l] of before) apply(id, l);
+      renderList();
+      for (const [k, gids] of groups) await call('set_lane', { mailboxId, ids: gids, lane: k || null }, { silent: true });
+    } },
+  });
+}
+
+/** Keyboard 1–9: lane N of the current account. */
+export async function setLaneByIndex(n) {
+  const s = getSelection();
+  if (!s.ids.length) return;
+  const lanes = currentLanes();
+  if (!lanes.length) { toast('Noch keine Kanban-Lanes – in den Einstellungen unter „Kanban“ anlegen.'); return; }
+  const lane = lanes[n - 1];
+  if (!lane) return;
+  await setLaneFor(s.ids, lane);
+}
+
+export function laneMenuItems() {
+  const s = getSelection();
+  const lanes = currentLanes();
+  return [
+    ...lanes.map((l, i) => ({
+      label: l, shortcut: i < 9 ? String(i + 1) : '', checked: s.items.length > 0 && s.items.every((m) => laneOf(m, lanes) === l),
+      onClick: () => setLaneFor(s.ids, l), testid: 'lane-' + l,
+    })),
+    lanes.length ? { separator: true } : null,
+    { label: 'Ohne Lane', disabled: !s.items.some((m) => laneOf(m, lanes)), onClick: () => setLaneFor(s.ids, null) },
+    { label: 'Lanes bearbeiten…', icon: 'settings', onClick: () => hooks.openLaneSettings && hooks.openLaneSettings(currentAccount()) },
+  ].filter(Boolean);
+}
+
+export async function onLanesChanged(accountId) {
+  await loadLanes(accountId);
+  if (accountId === currentAccount()) renderList();
+}
