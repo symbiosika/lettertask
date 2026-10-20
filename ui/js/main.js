@@ -553,7 +553,7 @@ async function init() {
     await loadConfig();
   } catch (e) {
     reportError(e);
-    state.config = { clientId: '', tenant: 'organizations', syncIntervalSecs: 120, loadRemoteImages: false, readingPane: 'right', markReadDelaySecs: 2, listMode: 'comfortable', showDateSeparators: true, snoozeOptions: [], demo: false };
+    state.config = { clientId: '', tenant: '', syncIntervalSecs: 120, loadRemoteImages: false, readingPane: 'right', markReadDelaySecs: 2, listMode: 'comfortable', showDateSeparators: true, snoozeOptions: [], demo: false };
   }
   mail.applyReadingPaneLayout();
   try { await loadAll(); } catch (e) { reportError(e); }

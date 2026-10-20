@@ -65,10 +65,11 @@ Ein eingebauter Fake-Graph-Server liefert Beispieldaten; nichts verlässt den Re
 
 ## Mit Microsoft 365 verwenden
 
-Die App-Registrierung von Symbiosika (Client-ID und Mandant) ist fest eingebaut – Anmelden genügt.
-Das ist unbedenklich: Desktop-Apps sind öffentliche Clients ohne Geheimnis, beide IDs sind
-öffentliche Kennungen. Mit dem fest eingebauten Mandanten können sich Konten dieses Tenants
-anmelden; unter Einstellungen › Konten › Erweitert lassen sich Client-ID und Mandant ändern.
+Die App-Registrierung von Symbiosika (Client-ID) ist fest eingebaut – Anmelden genügt.
+Das ist unbedenklich: Desktop-Apps sind öffentliche Clients ohne Geheimnis, die Client-ID ist
+eine öffentliche Kennung. Die Registrierung ist Multi-Tenant; als Mandant ist `organizations`
+voreingestellt, damit sich Arbeitskonten aus jedem Tenant anmelden können. Unter
+Einstellungen › Konten › Erweitert lassen sich Client-ID und Mandant ändern.
 Für eigene Builds: `LETTERTASK_CLIENT_ID=<guid> LETTERTASK_TENANT=<guid|organizations> cargo build`.
 
 **Anforderungen an die App-Registrierung** (Entra ID › App-Registrierungen):

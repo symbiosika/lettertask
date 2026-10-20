@@ -163,7 +163,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   initialTab = TAB_ALIASES[initialTab] || initialTab;
   const c = { ...state.config };
   const clientId = h('input.input', { value: c.clientId || '', placeholder: '00000000-0000-0000-0000-000000000000', name: 'clientId' });
-  const tenant = h('input.input', { value: c.tenant || 'organizations', name: 'tenant' });
+  const tenant = h('input.input', { value: c.tenant || '', name: 'tenant' });
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
@@ -233,7 +233,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       if (!(iv >= 30)) { show('general'); interval.classList.add('invalid'); toast('Das Synchronisierungsintervall muss mindestens 30 Sekunden betragen.', 'error'); return false; }
       const config = {
         ...state.config,
-        clientId: clientId.value.trim(), tenant: tenant.value.trim() || 'organizations', syncIntervalSecs: iv,
+        clientId: clientId.value.trim(), tenant: tenant.value.trim(), syncIntervalSecs: iv,
         loadRemoteImages: remote.checked,
         readingPane: pane.value, markReadDelaySecs: parseInt(markRead.value, 10), listMode: listMode.value,
         showDateSeparators: seps.checked, snoozeOptions: snooze.get(),
@@ -288,7 +288,7 @@ function accountsPanel({ clientId, tenant, builtin, demo, initialAccountId }) {
     builtin ? h('p.note', 'Diese Version enthält bereits eine App-Registrierung. Eigene Werte sind nur für Sonderfälle nötig.') : null,
     demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
     field('Anwendungs-ID (Client-ID)', clientId),
-    field('Mandant (Tenant)', tenant, '„organizations“, „common“ oder Ihre Mandanten-ID/Domäne'));
+    field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'));
   render();
   return { el: h('div.acc-panel', h('div.acc-cols', h('div.acc-side', listEl, add), detailHost), adv) };
 }
@@ -488,7 +488,7 @@ async function loginWithWait() {
 export async function welcomeDialog({ o365Only = false } = {}) {
   const c = state.config || {};
   const clientId = h('input.input', { value: c.clientId || '', placeholder: 'Anwendungs-ID (GUID)', style: { width: '100%' }, name: 'clientId' });
-  const tenant = h('input.input', { value: c.tenant || 'organizations', style: { width: '100%' }, name: 'tenant' });
+  const tenant = h('input.input', { value: c.tenant || '', style: { width: '100%' }, name: 'tenant' });
   const builtin = !!c.builtinClientId;
   const adv = h('details.welcome-adv' + (builtin ? '' : '.open'), { open: !builtin },
     h('summary', builtin ? 'Erweitert: eigene App-Registrierung verwenden' : 'App-Registrierung'),
@@ -514,8 +514,8 @@ export async function welcomeDialog({ o365Only = false } = {}) {
       const custom = id && id !== (c.clientId || '');
       if (!builtin || custom || adv.open) {
         if (!builtin && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { adv.open = true; clientId.classList.add('invalid'); toast('Bitte eine gültige Anwendungs-ID (GUID) eingeben.', 'error'); return false; }
-        if (id || tenant.value.trim() !== (c.tenant || 'organizations')) {
-          state.config = await call('save_config', { config: { ...state.config, clientId: id, tenant: tenant.value.trim() || 'organizations' } });
+        if (id || tenant.value.trim() !== (c.tenant || '')) {
+          state.config = await call('save_config', { config: { ...state.config, clientId: id, tenant: tenant.value.trim() } });
         }
       }
       return 'ok';
