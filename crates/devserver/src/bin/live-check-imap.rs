@@ -203,7 +203,18 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- write ----
     if write {
-        write_checks(&mut c, &mb, &account.email).await;
+        let stamp = chrono::Utc::now().format("%H%M%S").to_string();
+        let raw = Raw {
+            settings: mailcore::imap::ServerSettings { host: host.clone(), port, security: security(port).into(), username: user.clone() },
+            password: password.clone(),
+        };
+        write_checks(&mut c, &mb, &account.email, &stamp).await;
+        edge_checks(&mut c, &mb, &account.email, &stamp, &raw, &input).await;
+        println!("\n== Sicherheitsnetz: Reste mit Kennung {stamp} direkt per IMAP entfernen");
+        match raw.purge(&stamp).await {
+            Ok((msgs, folders)) => c.check(&format!("Server sauber ({msgs} Nachrichten, {folders} Ordner nachträglich entfernt)"), true, ""),
+            Err(e) => c.check("Server sauber", false, e.to_string()),
+        }
     }
 
     let _: Option<Value> = c.call("Konto entfernen (lokal)", "remove_account", json!({"accountId": mb})).await;
@@ -253,9 +264,8 @@ async fn purge(c: &mut Checker, mb: &str, label: &str, ids: Vec<String>, subject
     }
 }
 
-async fn write_checks(c: &mut Checker, mb: &str, me: &str) {
+async fn write_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str) {
     println!("\n== Schreibtests (alles wird wieder entfernt)");
-    let stamp = chrono::Utc::now().format("%H%M%S").to_string();
     let Some(inbox) = folder(c, mb, "inbox").await else { return };
 
     // Folders.
@@ -413,5 +423,337 @@ async fn write_checks(c: &mut Checker, mb: &str, me: &str) {
         let ids: Vec<String> = c.list(mb, &f.id).await.into_iter().map(|m| m.id).collect();
         purge(c, mb, "Inhalt Testordner", ids, &subjects).await;
         let _: Option<Value> = c.call("Testordner löschen", "delete_folder", json!({"mailboxId": mb, "folderId": f.id})).await;
+    }
+}
+
+/// A second, independent IMAP connection – plays "another mail client" and
+/// cleans up whatever the service layer left behind.
+struct Raw {
+    settings: mailcore::imap::ServerSettings,
+    password: String,
+}
+
+impl Raw {
+    async fn conn(&self) -> mailcore::Result<mailcore::imap::conn::Conn> {
+        mailcore::imap::conn::connect(&self.settings, &self.password).await
+    }
+
+    /// UIDs in `folder` whose subject contains `needle`.
+    async fn search(&self, folder: &str, needle: &str) -> anyhow::Result<Vec<u32>> {
+        let mut c = self.conn().await?;
+        c.session.select(folder).await?;
+        let mut uids: Vec<u32> = c.session.uid_search(format!("SUBJECT {}", mailcore::imap::quote(needle))).await?.into_iter().collect();
+        uids.sort_unstable();
+        let _ = c.session.logout().await;
+        Ok(uids)
+    }
+
+    async fn store(&self, folder: &str, uid: u32, query: &str) -> anyhow::Result<()> {
+        use futures::TryStreamExt;
+        let mut c = self.conn().await?;
+        c.session.select(folder).await?;
+        let _: Vec<_> = c.session.uid_store(uid.to_string(), query).await?.try_collect().await?;
+        if query.contains("\\Deleted") {
+            let _: Vec<_> = c.session.expunge().await?.try_collect().await?;
+        }
+        let _ = c.session.logout().await;
+        Ok(())
+    }
+
+    /// Raw source of the first message in `folder` whose subject contains `needle`.
+    async fn source(&self, folder: &str, needle: &str) -> anyhow::Result<Option<String>> {
+        use futures::TryStreamExt;
+        let Some(uid) = self.search(folder, needle).await?.pop() else { return Ok(None) };
+        let mut c = self.conn().await?;
+        c.session.select(folder).await?;
+        let f: Vec<_> = c.session.uid_fetch(uid.to_string(), "BODY.PEEK[]").await?.try_collect().await?;
+        let raw = f.first().and_then(|f| f.body()).map(|b| String::from_utf8_lossy(b).into_owned());
+        drop(f);
+        let _ = c.session.logout().await;
+        Ok(raw)
+    }
+
+    /// Deletes every message whose subject contains `stamp` and every folder
+    /// whose name contains it. Returns (messages, folders) removed.
+    async fn purge(&self, stamp: &str) -> anyhow::Result<(usize, usize)> {
+        use futures::TryStreamExt;
+        let mut c = self.conn().await?;
+        let names: Vec<_> = c.session.list(Some(""), Some("*")).await?.try_collect().await?;
+        let mut names: Vec<String> = names.iter().filter(|n| !n.attributes().iter().any(|a| format!("{a:?}") == "NoSelect")).map(|n| unescape(n.name())).collect();
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        let (mut msgs, mut folders) = (0, 0);
+        for name in &names {
+            if c.session.select(name).await.is_err() {
+                continue;
+            }
+            let uids: Vec<u32> = c.session.uid_search(format!("SUBJECT {}", mailcore::imap::quote(stamp))).await?.into_iter().collect();
+            if !uids.is_empty() {
+                msgs += uids.len();
+                let _: Vec<_> = c.session.uid_store(mailcore::imap::uid_set(&uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+                let _: Vec<_> = c.session.expunge().await?.try_collect().await?;
+            }
+        }
+        let _ = c.session.close().await;
+        for name in names.iter().filter(|n| n.contains(stamp)) {
+            if c.session.delete(name).await.is_ok() {
+                folders += 1;
+            }
+        }
+        let _ = c.session.logout().await;
+        Ok((msgs, folders))
+    }
+}
+
+/// LIST may hand out quoted-string names with their escapes still in place.
+fn unescape(name: &str) -> String {
+    name.replace("\\\"", "\"").replace("\\\\", "\\")
+}
+
+/// Deterministic pseudo-random bytes (no rand dependency needed).
+fn noise(len: usize) -> Vec<u8> {
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+async fn wait_for(c: &mut Checker, mb: &str, folder: &str, subject: &str) -> Option<MessageSummary> {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(90) {
+        if let Some(m) = find(c, mb, folder, subject).await {
+            return Some(m);
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    None
+}
+
+fn draft(mb: &str, to: Value, subject: &str, body: &str, atts: Value) -> Value {
+    json!({"id": null, "mailboxId": mb, "mode": "new", "to": to, "cc": [], "bcc": [], "subject": subject,
+        "bodyHtml": body, "importance": "normal", "requestReadReceipt": false,
+        "newAttachments": atts, "removedAttachmentIds": []})
+}
+
+async fn edge_checks(c: &mut Checker, mb: &str, me: &str, stamp: &str, raw: &Raw, input: &Value) {
+    let b64 = |s: &[u8]| base64::engine::general_purpose::STANDARD.encode(s);
+    let Some(inbox) = folder(c, mb, "inbox").await else { return };
+    let inbox_raw = inbox.id.clone();
+
+    println!("\n== Randfälle: Anmeldung");
+    let mut bad = input.clone();
+    bad["password"] = json!("falsches-passwort-123");
+    bad["smtpPassword"] = json!("falsches-passwort-123");
+    let r: Option<Value> = c.call("Verbindungstest mit falschem Passwort", "test_imap_account", json!({"input": bad})).await;
+    if let Some(r) = r {
+        c.check("IMAP lehnt ab, mit Fehlertext", r["imapOk"] == false && r["imapError"].as_str().is_some_and(|e| !e.is_empty()), r.to_string());
+        c.check("SMTP lehnt ab, mit Fehlertext", r["smtpOk"] == false && r["smtpError"].as_str().is_some_and(|e| !e.is_empty()), r.to_string());
+        c.check("Fehlertext enthält kein Passwort", !r.to_string().contains("falsches-passwort-123"), "Passwort im Fehlertext");
+    }
+    let mut unknown = input.clone();
+    unknown["imap"]["host"] = json!("imap.unbekannt.invalid");
+    unknown["smtp"]["host"] = json!("smtp.unbekannt.invalid");
+    let t = Instant::now();
+    let r: Option<Value> = c.call("Verbindungstest mit unbekanntem Server", "test_imap_account", json!({"input": unknown})).await;
+    if let Some(r) = r {
+        c.check("unbekannter Server wird gemeldet", r["imapOk"] == false && r["smtpOk"] == false, r.to_string());
+        c.check("Antwort in unter 30 s", t.elapsed() < Duration::from_secs(30), format!("{} s", t.elapsed().as_secs()));
+    }
+
+    println!("\n== Randfälle: Ordner mit Sonderzeichen");
+    let parent_name = format!("Prüfung Ä ö ü ß & Co {stamp}");
+    let parent: Option<Folder> = c.call("Ordner mit Umlauten und & anlegen", "create_folder", json!({"mailboxId": mb, "parentId": null, "name": parent_name})).await;
+    if let Some(p) = &parent {
+        c.check("Anzeigename exakt erhalten", p.display_name == parent_name, format!("{:?}", p.display_name));
+        let child: Option<Folder> = c.call("Unterordner mit € und Emoji anlegen", "create_folder", json!({"mailboxId": mb, "parentId": p.id, "name": "Unter € 📁"})).await;
+        if let Some(ch) = &child {
+            c.check("Unterordner hängt am Elternordner", ch.parent_id.as_deref() == Some(p.id.as_str()), format!("{:?}", ch.parent_id));
+            let renamed: Option<Folder> = c.call("Unterordner umbenennen (Anführungszeichen)", "rename_folder", json!({"mailboxId": mb, "folderId": ch.id, "name": "Kunde \"Müller\""})).await;
+            if let Some(r) = &renamed {
+                c.check("Neuer Name exakt erhalten", r.display_name == "Kunde \"Müller\"", format!("{:?}", r.display_name));
+                let listed: Vec<Folder> = c.call("Ordnerliste nach Umbenennen", "list_folders", json!({"mailboxId": mb})).await.unwrap_or_default();
+                c.check("Umbenannter Ordner in der Liste", listed.iter().any(|f| f.id == r.id && f.display_name == r.display_name), "fehlt");
+            }
+        }
+        let dup: Option<Folder> = c.svc.dispatch("create_folder", json!({"mailboxId": mb, "parentId": null, "name": parent_name})).await.ok().and_then(|v| serde_json::from_value(v).ok());
+        c.check("Doppelter Ordnername wird abgelehnt oder ist derselbe", dup.as_ref().is_none_or(|d| d.id == p.id), format!("{dup:?}"));
+    }
+    let err = c.svc.dispatch("delete_folder", json!({"mailboxId": mb, "folderId": inbox.id})).await;
+    c.check("Posteingang lässt sich nicht löschen", err.is_err(), "gelöscht?!");
+    let err = c.svc.dispatch("create_folder", json!({"mailboxId": mb, "parentId": null, "name": "  "})).await;
+    c.check("Leerer Ordnername wird abgelehnt", err.is_err(), "angelegt");
+
+    println!("\n== Randfälle: Versand und Empfang");
+    // Header injection: a CR/LF in the subject must not create a new header.
+    let inj_subj = format!("{MARK} Injektion {stamp}\r\nX-Injiziert: ja");
+    let sent: Option<Value> = c.call("Betreff mit Zeilenumbruch senden", "send_draft", json!({"draft": draft(mb, json!([{"name": "", "address": me}]), &inj_subj, "<p>x</p>", json!([]))})).await;
+    if sent.is_some() {
+        // The subject may arrive with the line break folded or removed, so
+        // wait on the raw server for the stamp instead of an exact subject.
+        let mut src = None;
+        let t = Instant::now();
+        while src.is_none() && t.elapsed() < Duration::from_secs(90) {
+            src = raw.source(&inbox_raw, &format!("Injektion {stamp}")).await.ok().flatten();
+            if src.is_none() {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+        match src {
+            Some(src) => {
+                let head = src.split("\r\n\r\n").next().unwrap_or("");
+                c.check("Kein injizierter Header", !head.lines().any(|l| l.to_ascii_lowercase().starts_with("x-injiziert")), "X-Injiziert als eigener Header angekommen");
+            }
+            None => c.check("Mail mit Zeilenumbruch kommt an", false, "nicht gefunden"),
+        }
+    } else {
+        c.note("(Ablehnen des Betreffs ist ebenfalls sicher)");
+    }
+    // Unicode subject, quoted display name, duplicate recipient, attachments.
+    let uni_subj = format!("{MARK} Ünïcödé 😀 „Zitat“ – {stamp} {}", "lang ".repeat(40).trim_end());
+    let big = noise(5 * 1024 * 1024);
+    let pdf_name = "Prüfbericht März 2026 (final) – Kopie.pdf";
+    let atts = json!([
+        {"name": pdf_name, "contentType": "application/pdf", "contentBase64": b64(b"%PDF-1.4 Testinhalt")},
+        {"name": "gross.bin", "contentType": "application/octet-stream", "contentBase64": b64(&big)},
+        {"name": "leer.txt", "contentType": "text/plain", "contentBase64": ""},
+    ]);
+    let mut d = draft(mb, json!([{"name": "Müller, Hans \"Test\"", "address": me}]), &uni_subj, "<p>Grüße <b>fett</b> &amp; &lt;kein Tag&gt;</p>", atts);
+    d["cc"] = json!([{"name": "", "address": me.to_uppercase()}]);
+    let t = Instant::now();
+    let sent: Option<Value> = c.call("Unicode-Betreff + 5 MB + Umlaut-Anhang senden", "send_draft", json!({"draft": d})).await;
+    if sent.is_some() {
+        c.note(format!("Versand {} ms", t.elapsed().as_millis()));
+        let got = wait_for(c, mb, &inbox_raw, &uni_subj).await;
+        c.check("Unicode-Betreff kommt unverändert an", got.is_some(), "Betreff verändert oder nicht angekommen");
+        if let Some(m) = got {
+            c.check("Anhang-Kennzeichen gesetzt", m.has_attachments, "hasAttachments false");
+            c.check("Anzeigename mit Komma und Anführungszeichen", m.to.first().is_some_and(|a| a.name == "Müller, Hans \"Test\""), format!("{:?}", m.to));
+            let det: Option<MessageDetail> = c.call("Unicode-Mail öffnen", "get_message", json!({"mailboxId": mb, "messageId": m.id})).await;
+            if let Some(det) = det {
+                c.check("HTML-Entities bleiben Text", det.body_html.contains("&lt;kein Tag&gt;"), "Entities verändert");
+                c.check("Drei Anhänge", det.attachments.len() == 3, format!("{:?}", det.attachments.iter().map(|a| &a.name).collect::<Vec<_>>()));
+                c.check("Umlaut-Dateiname exakt", det.attachments.iter().any(|a| a.name == pdf_name), "Dateiname verändert");
+                if let Some(a) = det.attachments.iter().find(|a| a.name == "gross.bin") {
+                    let t = Instant::now();
+                    let p: Option<Option<String>> = c.call("5-MB-Anhang herunterladen", "download_attachment", json!({"mailboxId": mb, "messageId": m.id, "attachmentId": a.id, "action": "save"})).await;
+                    if let Some(Some(path)) = p {
+                        let bytes = std::fs::read(&path).unwrap_or_default();
+                        c.check(&format!("5-MB-Anhang bitgenau ({} ms)", t.elapsed().as_millis()), bytes == big, format!("{} statt {} Bytes", bytes.len(), big.len()));
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+                if let Some(a) = det.attachments.iter().find(|a| a.name == pdf_name) {
+                    let p: Option<Option<String>> = c.call("Umlaut-Anhang speichern", "download_attachment", json!({"mailboxId": mb, "messageId": m.id, "attachmentId": a.id, "action": "save"})).await;
+                    if let Some(Some(path)) = p {
+                        c.check("Gespeicherter Dateiname ohne Pfadanteile", !Path::new(&path).file_name().unwrap_or_default().to_string_lossy().contains('/'), path.clone());
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+
+            // Reply chain: the reply carries In-Reply-To of the original.
+            let reply: Option<Draft> = c.call("Antwort erzeugen", "create_draft", json!({"mailboxId": mb, "mode": "reply", "sourceMessageId": m.id})).await;
+            let orig_mid = raw.source(&inbox_raw, stamp).await.ok().flatten().and_then(|s| {
+                s.lines().find(|l| l.to_ascii_lowercase().starts_with("message-id:")).map(|l| l[11..].trim().to_string())
+            });
+            if let Some(r) = reply {
+                let mut rd = serde_json::to_value(&r).unwrap_or_default();
+                rd["mailboxId"] = json!(mb);
+                rd["subject"] = json!(format!("{MARK} Antwortkette {stamp}"));
+                rd["newAttachments"] = json!([]);
+                rd["removedAttachmentIds"] = json!([]);
+                let s: Option<Value> = c.call("Antwort senden", "send_draft", json!({"draft": rd})).await;
+                if s.is_some() && wait_for(c, mb, &inbox_raw, &format!("{MARK} Antwortkette {stamp}")).await.is_some() {
+                    let src = raw.source(&inbox_raw, &format!("Antwortkette {stamp}")).await.ok().flatten().unwrap_or_default();
+                    let irt = src.lines().find(|l| l.to_ascii_lowercase().starts_with("in-reply-to:")).map(|l| l[12..].trim().to_string());
+                    c.check("In-Reply-To verweist auf Original", irt.is_some() && irt == orig_mid, format!("{irt:?} vs {orig_mid:?}"));
+                }
+            }
+        }
+    }
+
+    println!("\n== Randfälle: zweiter Client ändert gleichzeitig");
+    let task_subj = format!("{MARK} Fremdänderung {stamp}");
+    let t: Option<MessageSummary> = c.call("Aufgabe anlegen", "create_task", json!({"mailboxId": mb, "subject": task_subj, "bodyHtml": "", "due": null})).await;
+    if t.is_some() {
+        if let Some(uid) = raw.search(&inbox_raw, &format!("Fremdänderung {stamp}")).await.ok().and_then(|u| u.into_iter().last()) {
+            let _ = raw.store(&inbox_raw, uid, "+FLAGS (\\Seen \\Flagged)").await;
+            let m = find(c, mb, &inbox_raw, &task_subj).await;
+            c.check("Fremd gesetzte Flags nach Sync sichtbar", m.as_ref().is_some_and(|m| m.is_read && m.flag == "flagged"), format!("{:?}", m.map(|m| (m.is_read, m.flag))));
+            let cached = c.list(mb, &inbox_raw).await.into_iter().find(|m| m.subject == task_subj);
+            let _ = raw.store(&inbox_raw, uid, "+FLAGS (\\Deleted)").await;
+            if let Some(stale) = cached {
+                let r = c.svc.dispatch("set_flag", json!({"mailboxId": mb, "ids": [stale.id], "flag": "notFlagged"})).await;
+                c.note(format!("Aktion auf fremd gelöschte Mail: {}", match r { Ok(_) => "ignoriert".to_string(), Err(e) => format!("Fehler „{e}“") }));
+                c.check("Aktion auf fremd gelöschte Mail ohne Absturz", true, "");
+                let r = c.svc.dispatch("get_message", json!({"mailboxId": mb, "messageId": stale.id})).await;
+                c.check("Öffnen fremd gelöschter Mail meldet einen Fehler", r.is_err(), "lieferte Inhalt");
+            }
+            let gone = find(c, mb, &inbox_raw, &task_subj).await;
+            c.check("Fremd gelöschte Mail verschwindet nach Sync", gone.is_none(), "noch im Cache");
+        } else {
+            c.check("Aufgabe per zweitem Client gefunden", false, "nicht gefunden");
+        }
+    }
+
+    println!("\n== Randfälle: Kategorien und Suche");
+    let cat_subj = format!("{MARK} Kategorien {stamp}");
+    let t: Option<MessageSummary> = c.call("Aufgabe für Kategorien", "create_task", json!({"mailboxId": mb, "subject": cat_subj, "bodyHtml": "<p>Prüfbericht Größe</p>", "due": null})).await;
+    if let Some(t) = t {
+        let cats = ["Projekt Ä", "Rot & Blau", "100%", "a\"b"];
+        let _: Option<Value> = c.call("Kategorien mit Leerzeichen/Umlauten/Sonderzeichen", "set_categories", json!({"mailboxId": mb, "ids": [t.id], "categories": cats})).await;
+        let m = find(c, mb, &inbox_raw, &cat_subj).await;
+        let got: Vec<String> = m.map(|m| m.categories).unwrap_or_default();
+        for cat in cats {
+            c.check(&format!("Kategorie „{cat}“ übersteht Sync"), got.iter().any(|g| g == cat), format!("{got:?}"));
+        }
+        for q in [stamp.to_string(), "Prüfbericht".to_string(), "\"Kategorien".to_string(), "%_*".to_string()] {
+            let r = c.svc.dispatch("search_messages", json!({"mailboxId": mb, "text": q, "folderId": null})).await;
+            c.check(&format!("Suche nach {q:?} ohne Fehler"), r.is_ok(), format!("{:?}", r.err()));
+        }
+        let hits: Vec<MessageSummary> = c.svc.dispatch("search_messages", json!({"mailboxId": mb, "text": format!("Kategorien {stamp}"), "folderId": null})).await.ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        c.check("Suche findet die Aufgabe", hits.iter().any(|h| h.subject == cat_subj), format!("{} Treffer", hits.len()));
+    }
+
+    println!("\n== Randfälle: Ordner leeren und löschen");
+    if let Some(p) = &parent {
+        let ids: Vec<String> = c.list(mb, &inbox_raw).await.into_iter().filter(|m| m.subject.contains(stamp)).map(|m| m.id).collect();
+        let _: Option<Value> = c.call("Testmails in Umlaut-Ordner verschieben", "move_messages", json!({"mailboxId": mb, "ids": ids, "destFolderId": p.id})).await;
+        let _: Option<Value> = c.call("Ordner als gelesen markieren", "mark_folder_read", json!({"mailboxId": mb, "folderId": p.id})).await;
+        let left: Vec<MessageSummary> = c.list(mb, &p.id).await;
+        c.check("alle gelesen", left.iter().all(|m| m.is_read), format!("{} ungelesen", left.iter().filter(|m| !m.is_read).count()));
+        let _: Option<Value> = c.call("Ordner leeren", "empty_folder", json!({"mailboxId": mb, "folderId": p.id})).await;
+        let empty = c.list(mb, &p.id).await.is_empty();
+        c.check("Ordner leer", empty, "nicht leer");
+        let _: Option<Value> = c.call("Ordner mit Unterordner löschen", "delete_folder", json!({"mailboxId": mb, "folderId": p.id})).await;
+    }
+
+    println!("\n== Randfälle: Zeilenumbruch im Anzeigenamen");
+    // Same for the display name. Runs last: it used to crash the process.
+    let inj_name = format!("{MARK} Name {stamp}");
+    // In a task of its own so a panic is reported instead of ending the run.
+    let svc = c.svc.clone();
+    let args = json!({"draft": draft(mb, json!([{"name": "Evil\r\nX-Injiziert: ja", "address": me}]), &inj_name, "<p>x</p>", json!([]))});
+    let r = match tokio::spawn(async move { svc.dispatch("send_draft", args).await }).await {
+        Ok(r) => r,
+        Err(_) => {
+            c.check("Senden mit Zeilenumbruch im Namen ohne Absturz", false, "Panic im Service");
+            return;
+        }
+    };
+    if r.is_ok() {
+        if wait_for(c, mb, &inbox_raw, &inj_name).await.is_some() {
+            let src = raw.source(&inbox_raw, &format!("Name {stamp}")).await.ok().flatten().unwrap_or_default();
+            let head = src.split("\r\n\r\n").next().unwrap_or("");
+            c.check("Anzeigename: kein injizierter Header", !head.lines().any(|l| l.to_ascii_lowercase().starts_with("x-injiziert")), "X-Injiziert angekommen");
+        } else {
+            c.check("Mail mit Zeilenumbruch im Namen kommt an", false, "nicht gefunden");
+        }
+    } else {
+        c.check("Anzeigename mit Zeilenumbruch abgelehnt", true, "");
     }
 }

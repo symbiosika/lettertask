@@ -57,11 +57,22 @@ impl FileTokenStore {
     fn write_all(&self, map: &HashMap<String, String>) -> Result<()> {
         let data = serde_json::to_string(map)?;
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, data)?;
+        // Create the file with 0600 right away (writing first and chmod-ing
+        // afterwards leaves the tokens world-readable for a moment), and never
+        // reuse a leftover temp file that might have looser permissions.
+        let _ = std::fs::remove_file(&tmp);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        {
+            use std::io::Write;
+            let mut f = opts.open(&tmp)?;
+            f.write_all(data.as_bytes())?;
+            f.sync_all()?;
         }
         std::fs::rename(&tmp, &self.path)?;
         Ok(())
@@ -150,5 +161,21 @@ mod tests {
         s.delete("a");
         assert_eq!(s.load("a"), None);
         assert_eq!(s.load("b").as_deref(), Some("r2"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_store_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.json");
+        // a stale, world-readable temp file from an earlier crash
+        std::fs::write(path.with_extension("tmp"), "{}").unwrap();
+        std::fs::set_permissions(path.with_extension("tmp"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let s = FileTokenStore::new(path.clone());
+        s.save("a", "geheim").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!path.with_extension("tmp").exists());
     }
 }

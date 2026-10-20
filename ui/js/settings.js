@@ -437,9 +437,10 @@ export async function openAutoReply(accountId) {
 function stripHtml(s) {
   if (!s) return '';
   if (!/<[a-z]/i.test(s)) return s;
-  const d = document.createElement('div');
-  d.innerHTML = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
-  return d.textContent.trim();
+  // DOMParser documents are inert: server HTML never runs handlers or loads images.
+  const doc = new DOMParser().parseFromString(s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n'), 'text/html');
+  doc.querySelectorAll('style,script').forEach((n) => n.remove());
+  return (doc.body ? doc.body.textContent : '').trim();
 }
 function textToHtml(t) { return t ? '<p>' + esc(t).replace(/\n/g, '<br>') + '</p>' : ''; }
 

@@ -540,8 +540,12 @@ async fn calendar_view_recurrence_and_timezones() {
         .await;
     assert_eq!(s, 201, "{ev}");
     assert_eq!(ev["type"], "seriesMaster");
-    assert_eq!(ev["start"]["dateTime"], "2026-10-12T07:30:00.0000000");
-    assert_eq!(ev["start"]["timeZone"], "UTC");
+    // Like Graph: POST answers in the event's own zone, not the Prefer zone.
+    assert_eq!(ev["start"]["dateTime"], "2026-10-12T09:30:00.0000000");
+    assert_eq!(ev["start"]["timeZone"], "Europe/Berlin");
+    let (_, got) = t.req(Method::GET, &format!("/me/events/{}", ev["id"].as_str().unwrap()), None, &[UTC]).await;
+    assert_eq!(got["start"]["dateTime"], "2026-10-12T07:30:00.0000000");
+    assert_eq!(got["start"]["timeZone"], "UTC");
     assert_eq!(ev["recurrence"]["range"]["recurrenceTimeZone"], "Europe/Berlin");
     assert_eq!(ev["recurrence"]["range"]["endDate"], "0001-01-01");
     assert_eq!(ev["attendees"][0]["status"]["response"], "none");
@@ -612,7 +616,9 @@ async fn calendar_view_recurrence_and_timezones() {
         .await;
     assert_eq!(s, 200, "{ex}");
     assert_eq!(ex["type"], "exception");
-    assert_eq!(ex["start"]["dateTime"], "2026-10-19T11:00:00.0000000");
+    // PATCH answers in the series' zone (CEST): 11:00 UTC = 13:00.
+    assert_eq!(ex["start"]["dateTime"], "2026-10-19T13:00:00.0000000");
+    assert_eq!(ex["start"]["timeZone"], "Europe/Berlin");
     assert_eq!(t.delete(&format!("/me/events/{occ26}")).await, 204);
     let items = t.get_all(&view, &[UTC]).await;
     let jf: Vec<(&str, &str)> = items
@@ -637,7 +643,7 @@ async fn calendar_view_recurrence_and_timezones() {
     let (s, upd) = t.req(Method::PATCH, &format!("/me/events/{master}"), Some(json!({ "subject": "JF neu", "categories": ["Info"], "location": { "displayName": "Raum 1" } })), &[UTC]).await;
     assert_eq!(s, 200);
     assert_eq!(upd["location"]["displayName"], "Raum 1");
-    assert_eq!(upd["start"]["dateTime"], "2026-10-12T07:30:00.0000000");
+    assert_eq!(upd["start"]["dateTime"], "2026-10-12T09:30:00.0000000");
     assert_eq!(t.delete(&format!("/me/events/{master}")).await, 204);
     assert_eq!(t.get(&format!("/me/events/{master}")).await.0, 404);
     assert_eq!(t.srv.state.events("me").len(), 2);
@@ -659,7 +665,14 @@ async fn monthly_and_yearly_patterns() {
 
     let items = t.get_all("/me/calendarView?startDateTime=2026-01-01T00:00:00Z&endDateTime=2027-01-01T00:00:00Z&$top=50", &[UTC]).await;
     let dates = |s: &str| -> Vec<String> { items.iter().filter(|e| e["subject"] == s).map(|e| e["start"]["dateTime"].as_str().unwrap()[..10].to_string()).collect() };
-    assert_eq!(dates("M"), vec!["2026-01-31", "2026-03-31", "2026-05-31", "2026-07-31", "2026-08-31", "2026-10-31", "2026-12-31"]);
+    // Day 31 falls on the last day of shorter months (as in Outlook).
+    assert_eq!(
+        dates("M"),
+        vec![
+            "2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31", "2026-06-30", "2026-07-31", "2026-08-31",
+            "2026-09-30", "2026-10-31", "2026-11-30", "2026-12-31"
+        ]
+    );
     assert_eq!(dates("R"), vec!["2026-01-05", "2026-02-02", "2026-03-02", "2026-04-06"]);
     assert_eq!(dates("Y"), vec!["2026-03-15"]);
 }

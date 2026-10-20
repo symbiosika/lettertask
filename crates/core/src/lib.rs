@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod convert;
 pub mod error;
+pub mod files;
 pub mod graph;
 pub mod host;
 pub mod imap;

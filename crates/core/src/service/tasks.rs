@@ -25,7 +25,7 @@ fn graph_dt(dt: DateTime<Utc>) -> Value {
     json!({"dateTime": dt.format("%Y-%m-%dT%H:%M:%S").to_string(), "timeZone": "UTC"})
 }
 
-fn parse_due(due: Option<&str>) -> Result<Option<DateTime<Utc>>> {
+pub(crate) fn parse_due(due: Option<&str>) -> Result<Option<DateTime<Utc>>> {
     let Some(d) = due.filter(|d| !d.trim().is_empty()) else {
         return Ok(None);
     };
@@ -65,16 +65,47 @@ fn is_recurrence_category(c: &str) -> bool {
     recurrence_of(&[c.to_string()]).is_some()
 }
 
+/// Hidden category keeping the intended day of month of a monthly/quarterly/
+/// yearly task while an occurrence had to be clamped (31st → 28 Feb), so the
+/// rhythm returns to the 31st afterwards: "[#d31]".
+pub(crate) fn day_hint_category(day: u32) -> String {
+    format!("[#d{day}]")
+}
+
+fn day_hint_of(categories: &[String]) -> Option<u32> {
+    categories.iter().find_map(|c| {
+        let d: u32 = c.strip_prefix("[#d")?.strip_suffix(']')?.parse().ok()?;
+        (29..=31).contains(&d).then_some(d)
+    })
+}
+
+fn is_day_hint_category(c: &str) -> bool {
+    day_hint_of(&[c.to_string()]).is_some()
+}
+
 /// Next occurrence strictly after `now`, advancing from `anchor` in a fixed
 /// rhythm (missed occurrences are skipped). Local wall time is kept.
+#[cfg(test)]
 pub(crate) fn next_occurrence(rule: &str, anchor: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let a = anchor.with_timezone(&Local).naive_local();
+    next_occurrence_in(rule, anchor, now, None, &Local)
+}
+
+/// [`next_occurrence`] in time zone `tz`; `day` is the intended day of month
+/// for month based rules (defaults to the anchor's day).
+pub(crate) fn next_occurrence_in<Z: TimeZone>(
+    rule: &str,
+    anchor: DateTime<Utc>,
+    now: DateTime<Utc>,
+    day: Option<u32>,
+    tz: &Z,
+) -> Option<DateTime<Utc>> {
+    let a = anchor.with_timezone(tz).naive_local();
     let time = a.time();
     let add_months = |d: chrono::NaiveDate, n: i32| -> chrono::NaiveDate {
         let total = d.year() * 12 + d.month0() as i32 + n;
         let (y, m0) = (total.div_euclid(12), total.rem_euclid(12) as u32);
         // Clamp e.g. 31st to the last day of shorter months.
-        let mut day = d.day();
+        let mut day = day.unwrap_or(d.day()).clamp(1, 31);
         loop {
             if let Some(x) = chrono::NaiveDate::from_ymd_opt(y, m0 + 1, day) {
                 return x;
@@ -105,7 +136,7 @@ pub(crate) fn next_occurrence(rule: &str, anchor: DateTime<Utc>, now: DateTime<U
             "yearly" => add_months(anchor_day, 12 * i),
             _ => return None,
         };
-        let dt = at(date, time)?;
+        let dt = at_in(tz, date, time)?;
         if dt > now {
             return Some(dt);
         }
@@ -314,7 +345,12 @@ impl Service {
                 .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(Utc::now);
-            let Some(next) = next_occurrence(&rule, anchor, Utc::now()) else { continue };
+            let intended = day_hint_of(&m.categories).unwrap_or_else(|| anchor.with_timezone(&Local).day());
+            let Some(next) = next_occurrence_in(&rule, anchor, Utc::now(), Some(intended), &Local) else { continue };
+            let mut categories: Vec<String> = m.categories.iter().filter(|c| !is_day_hint_category(c)).cloned().collect();
+            if matches!(rule.as_str(), "monthly" | "quarterly" | "yearly") && next.with_timezone(&Local).day() != intended {
+                categories.push(day_hint_category(intended));
+            }
             let detail = self.get_message(mailbox_id, id).await?;
             let mb = self.store.get_mailbox(mailbox_id)?;
             self.place_mail(
@@ -325,7 +361,7 @@ impl Service {
                     to: vec![Address { name: mb.display_name.clone(), address: mb.address.clone() }],
                     reply_to: vec![],
                     due: Some(next),
-                    categories: m.categories.clone(),
+                    categories,
                 },
             )
             .await?;
@@ -348,7 +384,10 @@ impl Service {
                 Some(m) => m.categories,
                 None => self.get_message(mailbox_id, id).await?.summary.categories,
             };
-            let mut cats: Vec<String> = current.into_iter().filter(|c| !is_recurrence_category(c)).collect();
+            let mut cats: Vec<String> = current
+                .into_iter()
+                .filter(|c| !is_recurrence_category(c) && !is_day_hint_category(c))
+                .collect();
             if let Some(r) = rule {
                 cats.push(recurrence_category(r));
             }
@@ -433,9 +472,15 @@ fn option_time(options: &[SnoozeOption], base: &str) -> NaiveTime {
 }
 
 fn at(date: chrono::NaiveDate, time: NaiveTime) -> Option<DateTime<Utc>> {
-    Local
-        .from_local_datetime(&date.and_time(time))
-        .earliest()
+    at_in(&Local, date, time)
+}
+
+/// Wall time in `tz`; inside a DST gap (02:30 on the last Sunday of March)
+/// the first valid time after it, for ambiguous times the earlier instant.
+fn at_in<Z: TimeZone>(tz: &Z, date: chrono::NaiveDate, time: NaiveTime) -> Option<DateTime<Utc>> {
+    let local = date.and_time(time);
+    (0..=180)
+        .find_map(|m| tz.from_local_datetime(&(local + Duration::minutes(m))).earliest())
         .map(|d| d.with_timezone(&Utc))
 }
 
@@ -449,7 +494,9 @@ fn next_weekday(from: chrono::NaiveDate, wd: Weekday) -> chrono::NaiveDate {
 
 /// Due date from a token in the subject: #heute, #morgen, #übermorgen,
 /// #wochenende, #nächstewoche, #<N>t / #<N>d (days), #<N>w (weeks).
-pub(crate) fn due_from_subject(subject: &str, now: DateTime<Local>, options: &[SnoozeOption]) -> Option<DateTime<Utc>> {
+pub(crate) fn due_from_subject<Z: TimeZone>(subject: &str, now: DateTime<Z>, options: &[SnoozeOption]) -> Option<DateTime<Utc>> {
+    let tz = now.timezone();
+    let at = |date: chrono::NaiveDate, time: NaiveTime| at_in(&tz, date, time);
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -459,13 +506,14 @@ pub(crate) fn due_from_subject(subject: &str, now: DateTime<Local>, options: &[S
     let caps = re.captures(subject)?;
     let word = caps[1].to_lowercase();
     let today = now.date_naive();
+    let now = now.with_timezone(&Utc);
     let due = match word.as_str() {
         "heute" => {
             let five = at(today, NaiveTime::from_hms_opt(17, 0, 0)?)?;
-            if five > now.with_timezone(&Utc) + Duration::minutes(30) {
+            if five > now + Duration::minutes(30) {
                 five
             } else {
-                now.with_timezone(&Utc) + Duration::hours(1)
+                now + Duration::hours(1)
             }
         }
         "morgen" => at(today + Duration::days(1), option_time(options, "tomorrow"))?,
@@ -481,7 +529,7 @@ pub(crate) fn due_from_subject(subject: &str, now: DateTime<Local>, options: &[S
             at(today + Duration::days(days), option_time(options, &format!("days:{days}")))?
         }
     };
-    (due > now.with_timezone(&Utc)).then_some(due)
+    (due > now).then_some(due)
 }
 
 #[cfg(test)]
@@ -546,5 +594,183 @@ mod recurrence_tests {
         assert_eq!(a, followup_category(" AAQkADconv1 "));
         assert!(a.starts_with("[F_") && a.len() == 14);
         assert_ne!(a, followup_category("AAQkADconv2"));
+    }
+}
+
+/// Edge cases in a fixed zone (Europe/Berlin), independent of the machine's
+/// local time zone.
+#[cfg(test)]
+mod berlin_tests {
+    use super::*;
+    use chrono_tz::Europe::Berlin;
+
+    fn b(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        Berlin.with_ymd_and_hms(y, m, d, h, min, 0).earliest().unwrap().with_timezone(&Utc)
+    }
+
+    fn next(rule: &str, anchor: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        next_occurrence_in(rule, anchor, now, None, &Berlin)
+    }
+
+    fn next_day(rule: &str, anchor: DateTime<Utc>, day: u32) -> Option<DateTime<Utc>> {
+        next_occurrence_in(rule, anchor, anchor, Some(day), &Berlin)
+    }
+
+    #[test]
+    fn wall_time_survives_dst() {
+        // Spring forward (last Sunday of March): 08:00 stays 08:00.
+        assert_eq!(next("daily", b(2027, 3, 27, 8, 0), b(2027, 3, 27, 8, 0)), Some(b(2027, 3, 28, 8, 0)));
+        assert_eq!(b(2027, 3, 28, 8, 0).to_rfc3339(), "2027-03-28T06:00:00+00:00");
+        // Fall back (last Sunday of October).
+        assert_eq!(next("weekly", b(2026, 10, 19, 9, 0), b(2026, 10, 19, 9, 0)), Some(b(2026, 10, 26, 9, 0)));
+        assert_eq!(b(2026, 10, 26, 9, 0).to_rfc3339(), "2026-10-26T08:00:00+00:00");
+    }
+
+    #[test]
+    fn occurrence_inside_dst_gap_is_not_lost() {
+        // 02:30 does not exist on 2027-03-28; the task must not silently stop.
+        let n = next("daily", b(2027, 3, 27, 2, 30), b(2027, 3, 27, 2, 30)).expect("next occurrence");
+        assert_eq!(n.to_rfc3339(), "2027-03-28T01:00:00+00:00", "03:00 CEST, right after the gap");
+        // 02:30 exists twice on 2026-10-25: the first one.
+        let n = next("daily", b(2026, 10, 24, 2, 30), b(2026, 10, 24, 2, 30)).unwrap();
+        assert_eq!(n.to_rfc3339(), "2026-10-25T00:30:00+00:00");
+    }
+
+    #[test]
+    fn weekdays_skip_weekends() {
+        // 2026-10-23 is a Friday.
+        assert_eq!(next("weekdays", b(2026, 10, 22, 8, 0), b(2026, 10, 22, 8, 0)), Some(b(2026, 10, 23, 8, 0)));
+        assert_eq!(next("weekdays", b(2026, 10, 23, 8, 0), b(2026, 10, 23, 8, 0)), Some(b(2026, 10, 26, 8, 0)));
+        assert_eq!(next("weekdays", b(2026, 10, 24, 8, 0), b(2026, 10, 24, 8, 0)), Some(b(2026, 10, 26, 8, 0)));
+        assert_eq!(next("weekdays", b(2026, 10, 25, 8, 0), b(2026, 10, 25, 8, 0)), Some(b(2026, 10, 26, 8, 0)));
+        // Missed days while away: next working day after "now".
+        assert_eq!(next("weekdays", b(2026, 10, 19, 8, 0), b(2026, 10, 24, 12, 0)), Some(b(2026, 10, 26, 8, 0)));
+    }
+
+    #[test]
+    fn month_ends_and_leap_years() {
+        // 31st → end of February (2027 is no leap year), 2028 is.
+        assert_eq!(next("monthly", b(2027, 1, 31, 8, 0), b(2027, 1, 31, 8, 0)), Some(b(2027, 2, 28, 8, 0)));
+        assert_eq!(next("monthly", b(2028, 1, 31, 8, 0), b(2028, 1, 31, 8, 0)), Some(b(2028, 2, 29, 8, 0)));
+        // Without a hint the clamped day becomes the new anchor …
+        assert_eq!(next("monthly", b(2027, 2, 28, 8, 0), b(2027, 2, 28, 8, 0)), Some(b(2027, 3, 28, 8, 0)));
+        // … with the intended day the rhythm returns to the month end.
+        assert_eq!(next_day("monthly", b(2027, 2, 28, 8, 0), 31), Some(b(2027, 3, 31, 8, 0)));
+        assert_eq!(next_day("monthly", b(2027, 3, 31, 8, 0), 31), Some(b(2027, 4, 30, 8, 0)));
+        assert_eq!(next_day("monthly", b(2027, 4, 30, 8, 0), 31), Some(b(2027, 5, 31, 8, 0)));
+        assert_eq!(next_day("quarterly", b(2026, 11, 30, 8, 0), 30), Some(b(2027, 2, 28, 8, 0)));
+        assert_eq!(next_day("quarterly", b(2027, 2, 28, 8, 0), 30), Some(b(2027, 5, 30, 8, 0)));
+        // 29 February, yearly: 28 Feb in common years, back to the 29th in leap years.
+        assert_eq!(next("yearly", b(2028, 2, 29, 8, 0), b(2028, 2, 29, 8, 0)), Some(b(2029, 2, 28, 8, 0)));
+        assert_eq!(next_day("yearly", b(2031, 2, 28, 8, 0), 29), Some(b(2032, 2, 29, 8, 0)));
+        // Day hint never produces invalid dates.
+        assert_eq!(next_day("monthly", b(2027, 1, 15, 8, 0), 31), Some(b(2027, 2, 28, 8, 0)));
+    }
+
+    #[test]
+    fn year_boundaries_and_missed_occurrences() {
+        assert_eq!(next("daily", b(2026, 12, 31, 18, 0), b(2026, 12, 31, 18, 0)), Some(b(2027, 1, 1, 18, 0)));
+        assert_eq!(next("weekly", b(2026, 12, 28, 9, 0), b(2026, 12, 28, 9, 0)), Some(b(2027, 1, 4, 9, 0)));
+        assert_eq!(next("biweekly", b(2026, 12, 21, 9, 0), b(2026, 12, 21, 9, 0)), Some(b(2027, 1, 4, 9, 0)));
+        assert_eq!(next("monthly", b(2026, 12, 15, 9, 0), b(2026, 12, 15, 9, 0)), Some(b(2027, 1, 15, 9, 0)));
+        assert_eq!(next("quarterly", b(2026, 11, 15, 9, 0), b(2026, 11, 15, 9, 0)), Some(b(2027, 2, 15, 9, 0)));
+        assert_eq!(next("yearly", b(2026, 12, 31, 9, 0), b(2026, 12, 31, 9, 0)), Some(b(2027, 12, 31, 9, 0)));
+        // Months offline: the next occurrence after now, in the old rhythm.
+        assert_eq!(next("monthly", b(2026, 1, 15, 8, 0), b(2026, 10, 20, 12, 0)), Some(b(2026, 11, 15, 8, 0)));
+        assert_eq!(next("weekly", b(2025, 1, 6, 8, 0), b(2026, 10, 20, 12, 0)), Some(b(2026, 10, 26, 8, 0)));
+        // "Strictly after now".
+        assert_eq!(next("daily", b(2026, 10, 19, 8, 0), b(2026, 10, 20, 8, 0)), Some(b(2026, 10, 21, 8, 0)));
+        assert!(next("hourly", b(2026, 10, 19, 8, 0), b(2026, 10, 19, 8, 0)).is_none());
+        assert!(next("", b(2026, 10, 19, 8, 0), b(2026, 10, 19, 8, 0)).is_none());
+    }
+
+    #[test]
+    fn day_hint_categories() {
+        assert_eq!(day_hint_category(31), "[#d31]");
+        assert_eq!(day_hint_of(&["Info".into(), "[#monthly]".into(), "[#d31]".into()]), Some(31));
+        assert_eq!(day_hint_of(&["[#d15]".into()]), None, "only 29–31 need a hint");
+        assert_eq!(day_hint_of(&["[#dx]".into(), "[#d]".into()]), None);
+        assert!(!is_recurrence_category("[#d31]"));
+        // The hint is hidden but not a recurrence rule.
+        assert_eq!(recurrence_of(&["[#d31]".into(), "[#monthly]".into()]).as_deref(), Some("monthly"));
+    }
+
+    fn at_berlin(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<chrono_tz::Tz> {
+        Berlin.with_ymd_and_hms(y, m, d, h, min, 0).earliest().unwrap()
+    }
+
+    fn due(subject: &str, now: DateTime<chrono_tz::Tz>) -> Option<DateTime<chrono_tz::Tz>> {
+        due_from_subject(subject, now, &default_snooze_options()).map(|d| d.with_timezone(&Berlin))
+    }
+
+    #[test]
+    fn subject_tokens_at_boundary_times() {
+        // Late evening: "#heute" means in one hour, even across midnight.
+        let late = at_berlin(2026, 10, 21, 23, 30);
+        assert_eq!(due("x #heute", late), Some(at_berlin(2026, 10, 22, 0, 30)));
+        // 17:00 counts only with more than 30 minutes left.
+        assert_eq!(due("x #heute", at_berlin(2026, 10, 21, 16, 29)), Some(at_berlin(2026, 10, 21, 17, 0)));
+        assert_eq!(due("x #heute", at_berlin(2026, 10, 21, 16, 31)), Some(at_berlin(2026, 10, 21, 17, 31)));
+        // Friday/Saturday/Sunday → the next Saturday strictly after today.
+        assert_eq!(due("#wochenende", at_berlin(2026, 10, 23, 18, 0)), Some(at_berlin(2026, 10, 24, 8, 0)));
+        assert_eq!(due("#wochenende", at_berlin(2026, 10, 24, 7, 0)), Some(at_berlin(2026, 10, 31, 8, 0)));
+        assert_eq!(due("#wochenende", at_berlin(2026, 10, 25, 7, 0)), Some(at_berlin(2026, 10, 31, 8, 0)));
+        // "Nächste Woche" on Sunday is tomorrow, on Monday a week later.
+        assert_eq!(due("#nächstewoche", at_berlin(2026, 10, 25, 20, 0)), Some(at_berlin(2026, 10, 26, 8, 0)));
+        assert_eq!(due("#naechstewoche", at_berlin(2026, 10, 26, 7, 0)), Some(at_berlin(2026, 11, 2, 8, 0)));
+        // New Year.
+        assert_eq!(due("#morgen", at_berlin(2026, 12, 31, 23, 59)), Some(at_berlin(2027, 1, 1, 8, 0)));
+        assert_eq!(due("#übermorgen", at_berlin(2026, 12, 31, 10, 0)), Some(at_berlin(2027, 1, 2, 8, 0)));
+        assert_eq!(due("#2w", at_berlin(2026, 12, 25, 10, 0)), Some(at_berlin(2027, 1, 8, 8, 0)));
+        // Across DST: 08:00 local both times.
+        let d = due("#14t", at_berlin(2026, 10, 20, 10, 0)).unwrap();
+        assert_eq!(d, at_berlin(2026, 11, 3, 8, 0));
+        assert_eq!(d.with_timezone(&Utc).to_rfc3339(), "2026-11-03T07:00:00+00:00");
+        // Leap day.
+        assert_eq!(due("#morgen", at_berlin(2028, 2, 28, 9, 0)), Some(at_berlin(2028, 2, 29, 8, 0)));
+    }
+
+    #[test]
+    fn subject_token_spelling() {
+        let now = at_berlin(2026, 10, 21, 10, 0);
+        let tomorrow = Some(at_berlin(2026, 10, 22, 8, 0));
+        assert_eq!(due("#MORGEN", now), tomorrow);
+        assert_eq!(due("Bitte prüfen #Morgen!", now), tomorrow);
+        assert_eq!(due("#NÄCHSTEWOCHE", now), Some(at_berlin(2026, 10, 26, 8, 0)));
+        assert_eq!(due("#UEBERMORGEN", now), Some(at_berlin(2026, 10, 23, 8, 0)));
+        assert_eq!(due("#3T", now), Some(at_berlin(2026, 10, 24, 8, 0)));
+        assert_eq!(due("#3d", now), Some(at_berlin(2026, 10, 24, 8, 0)));
+        // The first token wins.
+        assert_eq!(due("#morgen #nächstewoche", now), tomorrow);
+        // Not standalone / not a token.
+        assert!(due("(#morgen)", now).is_none());
+        assert!(due("mail#morgen", now).is_none());
+        assert!(due("#morgens", now).is_none());
+        assert!(due("#1000t", now).is_none());
+        assert!(due("#0w", now).is_none());
+        assert!(due("", now).is_none());
+        assert!(due("#", now).is_none());
+        // Large but valid.
+        assert_eq!(due("#999w", now).map(|d| d.date_naive()), Some(now.date_naive() + Duration::weeks(999)));
+    }
+
+    #[test]
+    fn subject_tokens_use_configured_times() {
+        let now = at_berlin(2026, 10, 21, 10, 0);
+        let opts = vec![
+            SnoozeOption { label: "a".into(), rule: "tomorrow@07:30".into() },
+            SnoozeOption { label: "b".into(), rule: "days:3@09:15".into() },
+            SnoozeOption { label: "c".into(), rule: "weekend@25:00".into() },
+            SnoozeOption { label: "d".into(), rule: "nextWeek".into() },
+        ];
+        let d = |s: &str| due_from_subject(s, now, &opts).map(|d| d.with_timezone(&Berlin));
+        assert_eq!(d("#morgen"), Some(at_berlin(2026, 10, 22, 7, 30)));
+        assert_eq!(d("#3t"), Some(at_berlin(2026, 10, 24, 9, 15)));
+        // Invalid or missing times fall back to 08:00.
+        assert_eq!(d("#wochenende"), Some(at_berlin(2026, 10, 24, 8, 0)));
+        assert_eq!(d("#nächstewoche"), Some(at_berlin(2026, 10, 26, 8, 0)));
+        assert_eq!(d("#übermorgen"), Some(at_berlin(2026, 10, 23, 8, 0)));
+        // No options at all.
+        assert_eq!(due_from_subject("#morgen", now, &[]).map(|d| d.with_timezone(&Berlin)), Some(at_berlin(2026, 10, 22, 8, 0)));
     }
 }

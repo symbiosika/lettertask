@@ -368,11 +368,15 @@ impl Service {
         c: &Arc<GraphClient>,
         folder_id: &str,
     ) -> Result<(SyncResult, Vec<MessageSummary>)> {
+        // Full (re)sync window: everything cached in it that the server no
+        // longer lists was deleted meanwhile (e.g. while the token expired).
+        let mut full_since: Option<String> = None;
         let mut url = match self.store.delta_link(&mb.id, folder_id)? {
             Some(l) => l,
             None => {
                 let since = (Utc::now() - ChronoDuration::days(INITIAL_SYNC_DAYS))
                     .to_rfc3339_opts(SecondsFormat::Secs, true);
+                full_since = Some(since.clone());
                 format!(
                     "{}/mailFolders/{}/messages/delta?$select={}&$filter={}",
                     mb.graph_prefix(),
@@ -385,6 +389,7 @@ impl Service {
         let headers = [("Prefer", format!("odata.maxpagesize={PAGE_SIZE}"))];
         let mut result = SyncResult::default();
         let mut new_unread = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         loop {
             let page = c.get_h(&url, &headers).await?;
             let mut upserts = Vec::new();
@@ -402,6 +407,7 @@ impl Service {
                     }
                     continue;
                 }
+                seen.insert(id.clone());
                 let mut m = convert::message_summary(&item, &mb.id, folder_id);
                 m.folder_id = folder_id.to_string();
                 match self.store.get_summary(&mb.id, &id)? {
@@ -432,6 +438,14 @@ impl Service {
                 continue;
             }
             if let Some(delta) = page["@odata.deltaLink"].as_str() {
+                if let Some(since) = &full_since {
+                    for id in self.store.message_ids_since(&mb.id, folder_id, since)? {
+                        if !seen.contains(&id) {
+                            self.store.delete_message(&mb.id, &id)?;
+                            result.removed += 1;
+                        }
+                    }
+                }
                 self.store.set_delta_link(&mb.id, folder_id, Some(delta))?;
             }
             break;
@@ -947,38 +961,16 @@ pub(crate) fn kql(text: &str, field: &str, has_attachments: bool) -> String {
     q.trim().to_string()
 }
 
-pub(crate) fn sanitize_filename(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|ch| match ch {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_start_matches('.').to_string();
-    if trimmed.is_empty() {
-        "anhang".into()
-    } else {
-        trimmed
-    }
-}
+pub(crate) use crate::files::sanitize_filename;
 
 #[cfg(test)]
 mod tests {
-    use super::{kql, sanitize_filename};
+    use super::kql;
 
     #[test]
     fn builds_kql() {
         assert_eq!(kql("Rechnung März", "all", false), "Rechnung März");
         assert_eq!(kql("anna \"x\"", "from", false), "from:anna from:x");
         assert_eq!(kql("Angebot", "subject", true), "subject:Angebot hasAttachments:true");
-    }
-
-    #[test]
-    fn filenames_are_safe() {
-        assert_eq!(sanitize_filename("../../etc/passwd"), "_.._etc_passwd");
-        assert_eq!(sanitize_filename("Rechnung: 10/2026.pdf"), "Rechnung_ 10_2026.pdf");
-        assert_eq!(sanitize_filename(""), "anhang");
     }
 }

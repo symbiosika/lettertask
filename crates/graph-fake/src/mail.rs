@@ -622,6 +622,9 @@ fn delta(mb: &Mailbox, folder_id: &str, req: &Req) -> GResult {
     if let Some(tok) = req.q("deltatoken") {
         let t = decode(tok)?;
         let since = t["s"].as_u64().unwrap_or(0);
+        if since < mb.delta_floor {
+            return Err(GErr::new(StatusCode::GONE, "SyncStateNotFound", "The sync state generation is not found. Restart synchronization."));
+        }
         let select = t["sel"].as_str().map(str::to_string);
         let mut ids: Vec<&str> = Vec::new();
         for (seq, f, id) in &mb.changes {
