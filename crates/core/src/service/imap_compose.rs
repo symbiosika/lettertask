@@ -382,7 +382,7 @@ impl Service {
         let all: Vec<Address> = d.to.iter().chain(&d.cc).chain(&d.bcc).cloned().collect();
         self.collect_addresses(&mb, &all)?;
         if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
-            self.create_send_reminder(&d, at).await?;
+            self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await?;
         }
         Ok(())
     }

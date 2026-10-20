@@ -1081,3 +1081,102 @@ async fn kanban_lanes_as_hidden_categories() {
     let c: Config = call(&ctx.svc, "get_config", json!({})).await;
     assert_eq!(c.kanban_reading_pane, "bottom");
 }
+
+#[tokio::test]
+async fn follow_up_resolves_itself_when_reply_arrives() {
+    let ctx = setup().await;
+    let remind = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let input = json!({"id": null, "mailboxId": ctx.account, "mode": "new",
+        "to": [{"name": "Erika Beispiel", "address": "erika@fabrikam.example"}], "cc": [], "bcc": [],
+        "subject": "Angebot freigeben?", "bodyHtml": "<p>Bitte bis Freitag.</p>", "importance": "normal",
+        "requestReadReceipt": false, "newAttachments": [], "removedAttachmentIds": [], "remindAt": remind});
+    let _: Value = call(&ctx.svc, "send_draft", json!({"draft": input})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let reminder = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.subject == "Nachfassen: Angebot freigeben?").unwrap();
+    assert!(reminder.categories.iter().any(|c| c.starts_with("[F_")));
+
+    // Erika answers in the same thread.
+    let fake = ctx.fake.as_ref().unwrap();
+    let sent = fake.state.sent_messages("me").into_iter().find(|m| m["subject"] == "Angebot freigeben?").unwrap();
+    fake.state.inject_incoming("me", "inbox", json!({
+        "subject": "AW: Angebot freigeben?", "conversationId": sent["conversationId"], "isRead": false,
+        "from": {"emailAddress": {"name": "Erika Beispiel", "address": "erika@fabrikam.example"}},
+    }));
+    let inbox = ctx.folder("inbox").await;
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&snoozed.id).await.items.iter().any(|m| m.id == reminder.id), "reminder must be resolved");
+    let archive = ctx.folder("archive").await;
+    ctx.sync(&archive.id).await;
+    assert!(ctx.list(&archive.id).await.items.iter().any(|m| m.subject == "Nachfassen: Angebot freigeben?"));
+    assert!(ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == "AW: Angebot freigeben?"));
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, p)| e == "followup-resolved" && p["from"] == "Erika Beispiel"));
+}
+
+#[tokio::test]
+async fn recurring_task_reschedules_on_archive() {
+    let ctx = setup().await;
+    let due = (chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339();
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Monatsabschluss", "bodyHtml": "<p>Belege</p>", "due": due, "recurrence": "monthly"}),
+    )
+    .await;
+    assert_eq!(t.recurrence.as_deref(), Some("monthly"));
+    assert!(t.categories.contains(&"[#monthly]".to_string()));
+    // Due → back in the inbox, keeps its due time (anchor of the rhythm).
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    ctx.svc.sync_all(true).await;
+    let inbox = ctx.folder("inbox").await;
+    let back = ctx.list(&inbox.id).await.items.into_iter().find(|m| m.subject == "Monatsabschluss").unwrap();
+    assert!(!back.is_read);
+    assert!(back.due_at.is_some());
+    // Done → archived, next occurrence one month later waits in Wiedervorlage.
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [back.id]})).await;
+    let snoozed = ctx.folder("snoozed").await;
+    let next = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.subject == "Monatsabschluss").expect("next occurrence");
+    assert_eq!(next.recurrence.as_deref(), Some("monthly"));
+    let d0 = chrono::DateTime::parse_from_rfc3339(back.due_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Local);
+    let d1 = chrono::DateTime::parse_from_rfc3339(next.due_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Local);
+    assert!(d1 > d0 + chrono::Duration::days(27) && d1 < d0 + chrono::Duration::days(32), "{d0} → {d1}");
+    assert_eq!(d1.time().format("%H:%M").to_string(), d0.time().format("%H:%M").to_string());
+    // Turning recurrence off.
+    let _: Value = call(&ctx.svc, "set_recurrence", json!({"mailboxId": ctx.account, "ids": [next.id], "recurrence": null})).await;
+    let n = ctx.list(&snoozed.id).await.items.into_iter().find(|m| m.id == next.id).unwrap();
+    assert!(n.recurrence.is_none());
+    assert!(ctx.host.events.lock().unwrap().iter().any(|(e, _)| e == "recurrence-scheduled"));
+}
+
+#[tokio::test]
+async fn today_view_and_focus_time() {
+    let ctx = setup().await;
+    let _: Vec<String> = call(&ctx.svc, "save_lanes", json!({"accountId": ctx.account, "lanes": ["ToDo", "Warten"]})).await;
+    let inbox = ctx.folder("inbox").await;
+    let m = ctx.list(&inbox.id).await.items[0].clone();
+    let _: Value = call(&ctx.svc, "set_lane", json!({"mailboxId": ctx.account, "ids": [m.id], "lane": "ToDo"})).await;
+    let soon = (chrono::Utc::now() + chrono::Duration::minutes(2)).to_rfc3339();
+    let later = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let _: MessageSummary = call(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": "Gleich fällig", "due": soon})).await;
+    let _: MessageSummary = call(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": "Später", "due": later})).await;
+    let today: Value = call(&ctx.svc, "list_today", json!({})).await;
+    let due: Vec<String> = today["due"].as_array().unwrap().iter().map(|m| m["subject"].as_str().unwrap().to_string()).collect();
+    // "Gleich fällig" is due today unless the test runs right before midnight.
+    let tomorrow_starts_in = (chrono::Local::now().date_naive() + chrono::Duration::days(1))
+        .and_hms_opt(0, 0, 0).unwrap().and_local_timezone(chrono::Local).unwrap() - chrono::Local::now();
+    if tomorrow_starts_in > chrono::Duration::minutes(3) {
+        assert!(due.contains(&"Gleich fällig".to_string()), "{due:?}");
+    }
+    assert!(!due.contains(&"Später".to_string()));
+    assert_eq!(today["todo"][0]["lane"], "ToDo");
+    assert_eq!(today["todo"][0]["items"][0]["id"], m.id.as_str());
+
+    // Fokuszeit pauses the automatic fetch, manual sync still works.
+    let f: Value = call(&ctx.svc, "set_focus", json!({"minutes": 60})).await;
+    assert!(f["until"].is_string());
+    let g: Value = call(&ctx.svc, "get_focus", json!({})).await;
+    assert_eq!(g["until"], f["until"]);
+    let _: Value = call(&ctx.svc, "set_focus", json!({"minutes": 0})).await;
+    let g: Value = call(&ctx.svc, "get_focus", json!({})).await;
+    assert!(g["until"].is_null());
+    assert!(ctx.host.events.lock().unwrap().iter().filter(|(e, _)| e == "focus-changed").count() >= 2);
+}

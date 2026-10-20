@@ -4,7 +4,7 @@ import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, 
 import { icon } from './icons.js';
 import { isImap, kindLabel } from './accounts.js';
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
-import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, laneCats, isLaneCategory, laneCategory, laneName } from './categories.js';
+import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
@@ -1055,7 +1055,7 @@ export function categoryMenuItems() {
       onClick: () => toggleCategory(c.displayName),
     })),
     cats.length ? { separator: true } : null,
-    { label: 'Alle Kategorien entfernen', disabled: !s.items.some((m) => visibleCats(m.categories).length), onClick: () => setCategoriesFor(s.items.map((m) => ({ m, cats: laneCats(m.categories) }))) },
+    { label: 'Alle Kategorien entfernen', disabled: !s.items.some((m) => visibleCats(m.categories).length), onClick: () => setCategoriesFor(s.items.map((m) => ({ m, cats: hiddenCats(m.categories) }))) },
     { label: 'Kategorien verwalten…', icon: 'settings', onClick: () => openCategoryManager(accountId) },
   ].filter(Boolean);
 }
@@ -1173,7 +1173,7 @@ export async function setLaneFor(ids, lane) {
   const before = new Map();
   for (const id of ids) { const m = findItem(id); if (m) before.set(id, laneOf(m, lanes) || null); }
   const apply = (id, l) => localUpdate([id], (m) => {
-    m.categories = [...visibleCats(m.categories), ...laneCats(m.categories).filter((c) => !lanes.includes(laneName(c))), ...(l ? [laneCategory(l)] : [])];
+    m.categories = [...(m.categories || []).filter((c) => !isLaneCategory(c) || !lanes.includes(laneName(c))), ...(l ? [laneCategory(l)] : [])];
   });
   for (const id of ids) apply(id, lane);
   renderList();

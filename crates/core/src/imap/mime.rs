@@ -116,7 +116,7 @@ pub fn summary(
         raw.extend_from_slice(t);
     }
     let parsed = parse(&raw);
-    let (subject, from, to, date, importance, preview, has_att, mid) = match &parsed {
+    let (subject, from, to, date, importance, preview, has_att, thread) = match &parsed {
         Some(m) => {
             let ct = m
                 .root_part()
@@ -131,7 +131,7 @@ pub fn summary(
                 self::importance(m),
                 preview_text(m),
                 ct == "multipart/mixed",
-                m.message_id().unwrap_or("").to_string(),
+                thread_id(m).unwrap_or_default(),
             )
         }
         None => Default::default(),
@@ -144,7 +144,7 @@ pub fn summary(
         id,
         mailbox_id: mailbox_id.to_string(),
         folder_id: folder.to_string(),
-        conversation_id: mid,
+        conversation_id: thread,
         subject,
         from,
         to,
@@ -156,8 +156,35 @@ pub fn summary(
         has_attachments: has_att,
         categories: categories(flags),
         preview,
-        due_at: None,
+        due_at: due(flags),
+        recurrence: crate::model::recurrence_of(&categories(flags)),
     }
+}
+
+/// Due time from a `$due_…` keyword.
+pub fn due(flags: &[String]) -> Option<String> {
+    flags.iter().find_map(|f| super::keyword_due(f))
+}
+
+fn first_msg_id(v: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"<([^<>\s]+)>").expect("regex"));
+    re.captures(v).map(|c| c[1].to_string())
+}
+
+/// Thread root: first id in References, else In-Reply-To, else the own
+/// Message-ID (all without angle brackets).
+pub fn thread_id(m: &mail_parser::Message<'_>) -> Option<String> {
+    m.header_raw("References")
+        .and_then(first_msg_id)
+        .or_else(|| m.header_raw("In-Reply-To").and_then(first_msg_id))
+        .or_else(|| m.message_id().map(str::to_string))
+}
+
+/// Own Message-ID (without brackets) from raw header bytes.
+pub fn message_id_of(header: &[u8]) -> Option<String> {
+    parse(header).and_then(|m| m.message_id().map(str::to_string))
 }
 
 /// Attachments of a parsed message: (index, part). The index is the stable

@@ -45,20 +45,25 @@ export function textOn(hex) {
   return lum > 0.6 ? '#222' : '#fff';
 }
 
-// ---- Kanban lanes are categories "[K_<name>]" and hidden everywhere else.
+// ---- Hidden marker categories: Kanban lanes "[K_<name>]", follow-ups "[F_<hash>]",
+// recurrence "[#monthly]". They never show up as tags but must survive tag edits.
 export const LANE_PREFIX = '[K_';
 export const LANE_NAME_RE = /^[A-Za-z0-9ÄÖÜäöüß _-]{1,30}$/;
+const HIDDEN_PREFIXES = ['[K_', '[F_', '[#'];
+export function isHiddenCategory(name) {
+  return typeof name === 'string' && name.endsWith(']') && HIDDEN_PREFIXES.some((p) => name.startsWith(p));
+}
 export function isLaneCategory(name) { return typeof name === 'string' && name.startsWith(LANE_PREFIX) && name.endsWith(']'); }
 export function laneCategory(lane) { return `${LANE_PREFIX}${lane}]`; }
 export function laneName(category) { return isLaneCategory(category) ? category.slice(LANE_PREFIX.length, -1) : null; }
-/** Categories without lane markers (what the user sees as tags). */
-export function visibleCats(list) { return (list || []).filter((c) => !isLaneCategory(c)); }
-/** Lane markers of a category list. */
-export function laneCats(list) { return (list || []).filter(isLaneCategory); }
+/** Categories without hidden markers (what the user sees as tags). */
+export function visibleCats(list) { return (list || []).filter((c) => !isHiddenCategory(c)); }
+/** Hidden markers of a category list (lanes, follow-ups, recurrence). */
+export function hiddenCats(list) { return (list || []).filter(isHiddenCategory); }
 
-// Category lists per account (filled by the app shell). Lane categories are kept out.
+// Category lists per account (filled by the app shell). Hidden markers are kept out.
 const byAccount = new Map();
-export function setCategories(accountId, list) { byAccount.set(accountId, (list || []).filter((c) => !isLaneCategory(c.displayName))); }
+export function setCategories(accountId, list) { byAccount.set(accountId, (list || []).filter((c) => !isHiddenCategory(c.displayName))); }
 export function getCategories(accountId) { return byAccount.get(accountId) || []; }
 
 export function categoryHex(accountId, name) {

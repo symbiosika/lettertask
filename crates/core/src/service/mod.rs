@@ -380,8 +380,21 @@ impl Service {
                     &arg::<String>(a, "subject")?,
                     &arg::<Option<String>>(a, "bodyHtml")?.unwrap_or_default(),
                     arg::<Option<String>>(a, "due")?.as_deref(),
+                    arg::<Option<String>>(a, "recurrence")?.as_deref(),
                 )
                 .await?),
+            "set_recurrence" => {
+                self.set_recurrence(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<Vec<String>>(a, "ids")?,
+                    arg::<Option<String>>(a, "recurrence")?.as_deref(),
+                )
+                .await?;
+                ok(Value::Null)
+            }
+            "list_today" => ok(self.list_today()?),
+            "get_focus" => ok(json!({"until": self.focus_until().map(|u| u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))})),
+            "set_focus" => ok(self.set_focus(arg::<Option<i64>>(a, "minutes")?.unwrap_or(0))?),
             "get_lanes" => ok(self.get_lanes(&arg::<String>(a, "accountId")?)?),
             "save_lanes" => ok(self
                 .save_lanes(&arg::<String>(a, "accountId")?, &arg::<Vec<String>>(a, "lanes")?)
@@ -736,9 +749,20 @@ impl Service {
         tokio::spawn(async move {
             // Small delay so the UI is up before the first sync.
             tokio::time::sleep(Duration::from_secs(2)).await;
+            let mut focus_active = false;
             loop {
                 let Some(s) = svc.upgrade() else { return };
-                s.sync_all(true).await;
+                // Fokuszeit pauses the automatic fetch; when it ends, sync once.
+                match s.focus_until() {
+                    Some(_) => focus_active = true,
+                    None => {
+                        if focus_active {
+                            focus_active = false;
+                            s.emit("focus-changed", json!({"until": null}));
+                        }
+                        s.sync_all(true).await;
+                    }
+                }
                 let wait = s.config().sync_interval_secs.max(15);
                 drop(s);
                 tokio::time::sleep(Duration::from_secs(wait)).await;

@@ -83,7 +83,20 @@ pub struct MessageSummary {
     /// Follow-up due time (UTC); for snoozed mails the "Wiedervorlage" time.
     #[serde(default)]
     pub due_at: Option<String>,
+    /// Recurrence rule of a recurring task ("monthly", …), from the hidden "[#…]" category.
+    #[serde(default)]
+    pub recurrence: Option<String>,
 }
+
+/// Recurrence encoded in a hidden category "[#<rule>]".
+pub fn recurrence_of(categories: &[String]) -> Option<String> {
+    categories.iter().find_map(|c| {
+        let r = c.strip_prefix("[#")?.strip_suffix(']')?;
+        RECURRENCES.contains(&r).then(|| r.to_string())
+    })
+}
+
+pub const RECURRENCES: &[&str] = &["daily", "weekdays", "weekly", "biweekly", "monthly", "quarterly", "yearly"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

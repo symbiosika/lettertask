@@ -44,7 +44,8 @@ MessageSummary {
   isRead: bool, isDraft: bool, importance: "low"|"normal"|"high",
   flag: "notFlagged"|"flagged"|"complete", hasAttachments: bool,
   categories: string[], preview: string,
-  dueAt: string|null   // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
+  dueAt: string|null,  // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
+  recurrence: string|null // "monthly" etc., from the hidden "[#…]" category
 }
 Attachment   { id, name, contentType: string, size: number, isInline: bool, contentId: string|null }
 MessageDetail = MessageSummary & {
@@ -188,6 +189,29 @@ Event `rules-applied` `{ mailboxId, count, subjects: string[] }` after mails wer
 | `get_lanes` | `{ accountId }` | `string[]` lane names in order |
 | `save_lanes` | `{ accountId, lanes: string[] }` | `string[]` — validates names, creates missing "[K_…]" categories (O365 master categories / IMAP local), deletes categories of removed lanes and strips them from cached messages; renaming = remove + add |
 | `set_lane` | `{ mailboxId, ids, lane: string\|null }` | `null` — replaces any "[K_…]" category on the messages, keeps all other categories; null = no lane |
+
+### Follow-ups resolve themselves ("Nachfassen erledigt sich selbst")
+Reminder mails from `remindAt` carry a hidden category `"[F_<10 hex>]"` (hash of the sent mail's
+thread id). When a reply from someone else arrives in that thread, the inbox rule chain archives the
+reminder (wherever it is: Wiedervorlage or inbox) and emits `followup-resolved`
+`{ mailboxId, subject, from }`. "[F_…]" categories are hidden in the UI like lane categories.
+
+### Recurring tasks ("Wiederkehrend")
+Hidden category on the mail: `"[#daily]"`, `"[#weekdays]"`, `"[#weekly]"`, `"[#biweekly]"`, `"[#monthly]"`,
+`"[#quarterly]"`, `"[#yearly]"`. Fixed rhythm: when such a mail is **archived**, a copy (same subject,
+body, categories) is placed in "Wiedervorlage" due at the next occurrence after its due time (missed
+occurrences are skipped; without due time the anchor is "now"); the event `recurrence-scheduled`
+`{ mailboxId, subject, due }` follows. Recurring mails keep their dueAt when they return to the inbox.
+| `create_task` | gains optional `recurrence: "daily"\|"weekdays"\|"weekly"\|"biweekly"\|"monthly"\|"quarterly"\|"yearly"\|null` |
+| `set_recurrence` | `{ mailboxId, ids, recurrence: string\|null }` | `null` |
+MessageSummary gains `recurrence: string|null` (derived from the hidden category).
+
+### Heute
+| `list_today` | `{}` | `{ due: MessageSummary[], todo: { accountId, lane: string, items: MessageSummary[] }[] }` — all mails of all accounts whose dueAt is before the end of today (local time; snoozed and returned ones), plus per account the mails in its FIRST Kanban lane |
+
+### Fokuszeit
+| `get_focus` | `{}` | `{ until: ISO\|null }` |
+| `set_focus` | `{ minutes: number }` | `{ until: ISO\|null }` — 0 ends focus time. While active the background sync is paused (no auto fetch, no notifications, due snoozes are not returned); `sync_all` (manual "Senden/Empfangen") still works. Event `focus-changed` `{ until }`; when it expires the backend emits `focus-changed` `{ until: null }` and syncs once. |
 
 ### Signatures (per account, stored locally)
 | `get_signatures` | `{ accountId }` | `SignatureSettings` |
