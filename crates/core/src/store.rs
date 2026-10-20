@@ -244,6 +244,7 @@ impl Store {
                         let badge = AccountBadge { color: r.get(5)?, text: r.get(6)? };
                         (badge != AccountBadge::default()).then_some(badge)
                     },
+                    auth: String::new(),
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;

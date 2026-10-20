@@ -52,6 +52,8 @@ pub struct Service {
     last_sync: RwLock<Option<String>>,
     /// Cached IMAP sessions of IMAP accounts.
     pub(crate) imap: crate::imap::conn::Pool,
+    /// Access tokens of accounts signed in with Google.
+    google_tokens: std::sync::Mutex<HashMap<String, TokenSet>>,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -197,6 +199,7 @@ impl Service {
             sync_all_lock: tokio::sync::Mutex::new(()),
             last_sync: RwLock::new(None),
             imap: Default::default(),
+            google_tokens: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -310,8 +313,11 @@ impl Service {
             // ---- app / accounts ----
             "get_config" => ok(self.config()),
             "save_config" => ok(self.save_config(arg(a, "config")?)?),
-            "list_accounts" => ok(self.store.list_accounts()?),
+            "list_accounts" => ok(self.list_accounts_for_ui()?),
             "add_account" => ok(self.add_account().await?),
+            "add_google_account" => ok(self
+                .add_google_account(arg::<Option<String>>(a, "loginHint")?)
+                .await?),
             "discover_imap" => ok(self.discover_imap(&arg::<String>(a, "email")?).await),
             "test_imap_account" => ok(self.test_imap_account(&arg(a, "input")?).await),
             "add_imap_account" => ok(self.add_imap_account(arg(a, "input")?).await?),
@@ -709,6 +715,12 @@ impl Service {
         if c.tenant.trim().is_empty() || c.tenant.trim() == LEGACY_SYMBIOSIKA_TENANT_ID {
             c.tenant = builtin_tenant().to_string();
         }
+        let (google_id, google_secret) = builtin_google_client();
+        c.builtin_google_client = !demo && !google_id.is_empty();
+        if c.google_client_id.trim().is_empty() && !google_id.is_empty() {
+            c.google_client_id = google_id.to_string();
+            c.google_client_secret = google_secret.to_string();
+        }
         if c.snooze_options.is_empty() {
             c.snooze_options = default_snooze_options();
         }
@@ -731,6 +743,10 @@ impl Service {
             let cur = self.config.read().unwrap();
             cur.client_id != c.client_id || cur.tenant != c.tenant
         };
+        let changed_google = {
+            let cur = self.config.read().unwrap();
+            cur.google_client_id != c.google_client_id || cur.google_client_secret != c.google_client_secret
+        };
         std::fs::write(
             self.opts.data_dir.join("config.json"),
             serde_json::to_string_pretty(&c)?,
@@ -738,6 +754,10 @@ impl Service {
         *self.config.write().unwrap() = c.clone();
         if changed_auth {
             self.restore_clients()?;
+        }
+        if changed_google {
+            // Tokens are bound to the client that issued them.
+            self.google_tokens.lock().unwrap().clear();
         }
         Ok(c)
     }

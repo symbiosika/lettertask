@@ -1,8 +1,8 @@
-// Account setup: chooser (Microsoft 365 / IMAP), IMAP wizard, server settings editor.
+// Account setup: chooser (Microsoft 365 / Google / IMAP), IMAP wizard, server settings editor.
 import { call } from './api.js';
 import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
-import { modal, toast, reportError, busyClick } from './dialogs.js';
+import { modal, toast, reportError, busyClick, confirmDialog } from './dialogs.js';
 
 const SECURITY = [['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unverschlüsselt)']];
 const DEFAULT_PORT = {
@@ -17,7 +17,19 @@ const SOURCE_HINT = {
 
 export function accountKind(acc) { return (acc && acc.kind) || 'o365'; }
 export function isImap(acc) { return accountKind(acc) === 'imap'; }
-export function kindLabel(acc) { return isImap(acc) ? 'IMAP' : 'M365'; }
+/** IMAP account signed in with Google (Gmail / Google Workspace). */
+export function isGoogle(acc) { return isImap(acc) && acc.auth === 'google'; }
+export function kindLabel(acc) { return isGoogle(acc) ? 'Google' : isImap(acc) ? 'IMAP' : 'M365'; }
+/** CSS class of the account badge. */
+export function kindClass(acc) { return isGoogle(acc) ? 'google' : isImap(acc) ? 'imap' : 'o365'; }
+
+const GOOGLE_HOSTS = ['imap.gmail.com', 'smtp.gmail.com', 'imap.googlemail.com', 'smtp.googlemail.com'];
+/** Mailboxes at Google: gmail.com addresses, or servers discovered at Google. */
+function looksLikeGoogle(email, found) {
+  const domain = (email.split('@')[1] || '').toLowerCase();
+  return domain === 'gmail.com' || domain === 'googlemail.com'
+    || !!(found && found.imap && GOOGLE_HOSTS.includes(String(found.imap.host || '').toLowerCase()));
+}
 
 /** Editor for one server (IMAP or SMTP). Returns { el, get(), set(s) }. */
 export function serverEditor(kind, initial = {}) {
@@ -96,7 +108,7 @@ function testPanel(getInput) {
   return h('div.test-panel', btn, out);
 }
 
-/** "Konto hinzufügen": choose the kind of account. Returns 'o365' | 'imap' | null. */
+/** "Konto hinzufügen": choose the kind of account. Returns 'o365' | 'google' | 'imap' | null. */
 export async function chooseAccountKind() {
   let picked = null;
   const card = (kind, ic, title, text) => {
@@ -107,11 +119,12 @@ export async function chooseAccountKind() {
     return c;
   };
   const o365 = card('o365', 'mail', 'Microsoft 365 / Exchange Online', 'E-Mail, Kalender, Kontakte und Kategorien über Microsoft Graph. Anmeldung im Browser.');
+  const google = card('google', 'google', 'Google / Gmail', 'Gmail und Google Workspace. Anmeldung im Browser bei Google, E-Mail über IMAP/SMTP.');
   const imap = card('imap', 'server', 'IMAP / SMTP', 'Andere Anbieter (z. B. GMX, web.de, IONOS, eigener Server). Nur E-Mail, Kategorien lokal.');
-  const body = h('div.kind-choice', o365, imap);
+  const body = h('div.kind-choice', o365, google, imap);
   return new Promise((resolve) => {
     const p = modal({ title: 'Konto hinzufügen', body, width: 520, buttons: [{ label: 'Abbrechen', value: null, cancel: true }] });
-    for (const [el, kind] of [[o365, 'o365'], [imap, 'imap']]) {
+    for (const [el, kind] of [[o365, 'o365'], [google, 'google'], [imap, 'imap']]) {
       el.addEventListener('click', () => {
         picked = kind;
         const x = el.closest('.modal').querySelector('.modal-footer .btn');
@@ -122,7 +135,10 @@ export async function chooseAccountKind() {
   });
 }
 
-/** IMAP/SMTP wizard. Returns the created Account or null. */
+/**
+ * IMAP/SMTP wizard. Returns the created Account, null, or { google: true }
+ * when the user switches to "Mit Google anmelden" for a Gmail address.
+ */
 export async function imapWizard() {
   const name = h('input.input', { name: 'imapName', placeholder: 'Max Mustermann', autocomplete: 'name' });
   const email = h('input.input', { type: 'email', name: 'imapEmail', placeholder: 'name@beispiel.de', autocomplete: 'email', spellcheck: false });
@@ -159,6 +175,10 @@ export async function imapWizard() {
       },
     });
     if (r1 !== 'next') return null;
+    if (looksLikeGoogle(email.value.trim(), found)) {
+      const useGoogle = await confirmDialog('Dieses Postfach liegt bei Google. Empfohlen ist die Anmeldung mit Google – dann ist kein App-Passwort nötig.', { title: 'Gmail-Konto', ok: 'Mit Google anmelden', cancel: 'Mit Passwort fortfahren' });
+      if (useGoogle) return { google: true };
+    }
 
     // step 2
     const imapEd = serverEditor('imap', found.imap);
@@ -206,6 +226,47 @@ export async function imapWizard() {
     if (r2 && r2.account) { toast(`Konto ${r2.account.email} wurde hinzugefügt.`); return r2.account; }
     return null;
   }
+}
+
+/** Detail panel of an account signed in with Google: name, sign in again, remove. */
+function googleDetail(acc, box, remove, onSaved) {
+  const nameIn = h('input.input', { name: 'accDisplayName', value: acc.displayName || '' });
+  const save = h('button.btn.primary', { type: 'button', dataset: { testid: 'acc-save' } }, 'Kontoeinstellungen speichern');
+  save.addEventListener('click', busyClick(async () => {
+    try {
+      const inp = await call('get_imap_account', { accountId: acc.id }, { silent: true });
+      const updated = await call('update_imap_account', { accountId: acc.id, input: { ...inp, displayName: nameIn.value.trim() || acc.email } });
+      toast('Kontoeinstellungen gespeichert.');
+      onSaved && onSaved(updated);
+    } catch (e) { reportError(e); }
+  }));
+  const relogin = h('button.btn', { type: 'button', dataset: { testid: 'acc-google-relogin' }, html: icon('google', 15) + ' Erneut mit Google anmelden' });
+  relogin.addEventListener('click', busyClick(async () => {
+    const updated = await googleLogin(acc.email);
+    if (updated) onSaved && onSaved(updated);
+  }));
+  box.append(
+    h('p.note', 'Google-Konto (Gmail / Google Workspace). Die Anmeldung läuft über Google, E-Mails über IMAP/SMTP – ein Passwort wird nicht gespeichert. Kategorien und Wiedervorlage werden als IMAP-Schlagwörter auf dem Server abgelegt.'),
+    h('div.wiz-grid', h('label.srv-l', 'Anzeigename'), nameIn),
+    h('div.acc-actions', save, relogin, h('span.spacer'), remove));
+  return box;
+}
+
+/**
+ * Sign-in with Google in the browser (new account, or renewal when
+ * `loginHint` names an existing one). Returns the Account or null.
+ */
+export async function googleLogin(loginHint = null) {
+  const waiting = h('div.confirm-body', h('span', { html: icon('google', 32) }), h('div',
+    h('div', { style: { fontWeight: '600', marginBottom: '4px' } }, 'Anmeldung im Browser…'),
+    h('div', 'Bitte melden Sie sich im geöffneten Browserfenster bei Google an und erlauben Sie den Zugriff auf Gmail. Dieses Fenster schließt sich automatisch.')));
+  const overlay = h('div.modal-overlay', h('div.modal', { style: { width: '420px' } }, h('div.modal-title', h('span', 'Mit Google anmelden')), h('div.modal-body', waiting)));
+  document.body.appendChild(overlay);
+  try {
+    const acc = await call('add_google_account', { loginHint }, { silent: true });
+    toast(loginHint ? `Konto ${acc.email} ist wieder angemeldet.` : `Konto ${acc.email} wurde hinzugefügt.`);
+    return acc;
+  } catch (e) { reportError(e); return null; } finally { overlay.remove(); }
 }
 
 /** Name of the account in the views: the own name, else the address. */
@@ -389,7 +450,7 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
   const header = h('div.acc-head',
     avatar,
     h('div.acc-head-text',
-      h('div', h('span.kind-badge.' + (isImap(acc) ? 'imap' : 'o365'), kindLabel(acc))),
+      h('div', h('span.kind-badge.' + kindClass(acc), kindLabel(acc))),
       h('div.acc-name', acc.displayName || acc.email), h('div.dim', acc.email),
       avatarEditor(acc, () => onAvatar && onAvatar(acc))));
   // Live preview while editing (the picture, if any, stays in front).
@@ -401,6 +462,7 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
   box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }));
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));
+  if (isGoogle(acc)) return googleDetail(acc, box, remove, onSaved);
   if (!isImap(acc)) {
     box.append(
       h('p.note', 'Microsoft-365-Konto. Anmeldung, E-Mail, Kalender, Kontakte und Kategorien laufen über Microsoft Graph. Der Anzeigename wird von Microsoft 365 übernommen.'),

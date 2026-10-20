@@ -14,7 +14,7 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
-use super::ServerSettings;
+use super::{Credential, ServerSettings};
 use crate::error::{Error, Result};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -73,6 +73,8 @@ pub struct Conn {
     pub selected: Option<String>,
     pub can_move: bool,
     pub uidplus: bool,
+    /// Non-synchronizing literals (LITERAL+ / LITERAL-) are allowed.
+    pub nonsync_literals: bool,
 }
 
 impl Conn {
@@ -264,8 +266,26 @@ pub async fn timed<T>(f: impl std::future::Future<Output = async_imap::error::Re
         .map_err(imap_err)
 }
 
-/// Opens a connection and logs in.
+/// Opens a connection and logs in with a password.
 pub async fn connect(s: &ServerSettings, password: &str) -> Result<Conn> {
+    connect_with(s, &Credential::Password(password.to_string())).await
+}
+
+/// SASL XOAUTH2: the initial response, then an empty one to the error
+/// challenge a server sends when it rejects the token.
+struct XOAuth2 {
+    response: Option<String>,
+}
+
+impl async_imap::Authenticator for XOAuth2 {
+    type Response = String;
+    fn process(&mut self, _challenge: &[u8]) -> String {
+        self.response.take().unwrap_or_default()
+    }
+}
+
+/// Opens a connection and logs in.
+pub async fn connect_with(s: &ServerSettings, credential: &Credential) -> Result<Conn> {
     let host = s.host.trim();
     if host.is_empty() {
         return Err(Error::invalid("IMAP-Server fehlt."));
@@ -298,13 +318,24 @@ pub async fn connect(s: &ServerSettings, password: &str) -> Result<Conn> {
     if s.security != "starttls" {
         read_greeting(&mut client).await?;
     }
-    let session = tokio::time::timeout(OP_TIMEOUT, client.login(&s.username, password))
+    let login = async {
+        match credential {
+            Credential::Password(password) => client.login(&s.username, password).await,
+            Credential::OAuth2(token) => {
+                let response = Some(crate::google::xoauth2(&s.username, token));
+                client.authenticate("XOAUTH2", XOAuth2 { response }).await
+            }
+        }
+    };
+    let rejected = match credential {
+        Credential::Password(_) => "IMAP-Anmeldung fehlgeschlagen: Benutzername oder Passwort falsch.",
+        Credential::OAuth2(_) => "IMAP-Anmeldung mit Google fehlgeschlagen. Bitte das Konto erneut mit Google anmelden.",
+    };
+    let session = tokio::time::timeout(OP_TIMEOUT, login)
         .await
         .map_err(|_| Error::Network("Zeitüberschreitung bei der IMAP-Anmeldung".into()))?
         .map_err(|(e, _)| match e {
-            async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => Error::Auth(
-                "IMAP-Anmeldung fehlgeschlagen: Benutzername oder Passwort falsch.".into(),
-            ),
+            async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => Error::Auth(rejected.into()),
             other => imap_err(other),
         })?;
     let mut conn = Conn {
@@ -312,10 +343,12 @@ pub async fn connect(s: &ServerSettings, password: &str) -> Result<Conn> {
         selected: None,
         can_move: false,
         uidplus: false,
+        nonsync_literals: false,
     };
     if let Ok(caps) = timed(conn.session.capabilities()).await {
         conn.can_move = caps.has_str("MOVE");
         conn.uidplus = caps.has_str("UIDPLUS");
+        conn.nonsync_literals = caps.has_str("LITERAL+") || caps.has_str("LITERAL-");
     }
     Ok(conn)
 }

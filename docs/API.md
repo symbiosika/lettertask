@@ -17,13 +17,17 @@ All JSON keys are **camelCase**. Timestamps are ISO-8601 UTC strings with `Z`
 
 ```ts
 Address      { name: string, address: string }
-Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[], avatar: string|null, label: string|null, badge: AccountBadge|null }
+Account      { id: string, email: string, displayName: string, kind: "o365"|"imap", mailboxes: Mailbox[], avatar: string|null, label: string|null, badge: AccountBadge|null,
+               auth?: "google" /* IMAP account signed in with Google (Gmail / Workspace) */ }
 AccountBadge { color: "#rrggbb"|null, text: string|null }   // text: up to 2 lines ("\n") of up to 8 characters
                // kind "imap": no calendar, no mailbox settings (auto reply); categories are local
                // (stored as IMAP keywords on messages), "Wiedervorlage" times are kept locally.
+               // auth "google": IMAP/SMTP at imap.gmail.com / smtp.gmail.com with SASL XOAUTH2;
+               // "Archiv" is Gmail's "All Mail" (\All), sent copies are filed by Gmail itself.
 ServerSettings { host: string, port: number, security: "ssl"|"starttls"|"none", username: string }
 ImapAccountInput { email: string, displayName: string, imap: ServerSettings, smtp: ServerSettings,
-                   password: string, smtpPassword: string|null /* null = same as IMAP */ }
+                   password: string, smtpPassword: string|null /* null = same as IMAP */,
+                   auth?: "password"|"google" /* default "password"; "google": passwords unused */ }
 Signature    { id: string, name: string, html: string }
 SignatureSettings { signatures: Signature[], defaultId: string|null,
                     useOnNew: bool /* default true */, useOnReply: bool /* default true */,
@@ -104,7 +108,9 @@ Config {
   showDateSeparators: bool /* thin "Heute / Gestern / Älter" separators in the list */,
   snoozeOptions: SnoozeOption[] /* entries of the "Wiedervorlage" dropdown, editable in settings */,
   demo: bool /* read-only: running against the built-in demo server */,
-  builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" */
+  builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" */,
+  googleClientId: string, googleClientSecret: string /* OAuth client ("Desktop app") for Gmail; empty → built-in, if any */,
+  builtinGoogleClient: bool /* read-only: a Google client is compiled in */
 }
 SnoozeOption { label: string, rule: string }
 // Kanban lanes are categories named "[K_<lane>]" (LANE_PREFIX "[K_", suffix "]").
@@ -132,7 +138,8 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `discover_imap` | `{ email }` | `{ imap: ServerSettings, smtp: ServerSettings, source: "ispdb"\|"autoconfig"\|"guess" }` — Thunderbird ISPDB / autoconfig lookup, else guesses (imap./smtp.<domain>) |
 | `test_imap_account` | `{ input: ImapAccountInput }` | `{ imapOk: bool, smtpOk: bool, imapError: string\|null, smtpError: string\|null }` |
 | `add_imap_account` | `{ input: ImapAccountInput }` | `Account` — verifies IMAP+SMTP login first, password goes to the OS keychain |
-| `update_imap_account` | `{ accountId, input: ImapAccountInput }` | `Account` (password "" = keep the stored one) |
+| `add_google_account` | `{ loginHint: string\|null }` | `Account` — "Mit Google anmelden": opens the system browser (Google OAuth, PKCE, loopback redirect), waits up to 5 min, verifies IMAP+SMTP via XOAUTH2; the refresh token goes to the OS keychain. Signing in to an existing account renews its login. |
+| `update_imap_account` | `{ accountId, input: ImapAccountInput }` | `Account` (password "" = keep the stored one; Google accounts: only `displayName` changes) |
 | `get_imap_account` | `{ accountId }` | `ImapAccountInput` with password "" |
 | `remove_account` | `{ accountId }` | `null` |
 | `set_account_order` | `{ accountIds: string[] }` | `null` — display order from top to bottom (folder pane, menus, „Von“); emits `accounts-changed` |
