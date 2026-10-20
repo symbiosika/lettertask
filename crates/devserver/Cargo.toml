@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Serves ui/ and the service API over HTTP (browser dev + e2e tests)"
+default-run = "devserver"
 
 [dependencies]
 mailcore = { path = "../core" }

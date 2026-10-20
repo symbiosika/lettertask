@@ -79,8 +79,8 @@ impl Checker {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut client_id = std::env::var("OUTLOOK_CLIENT_ID").unwrap_or_default();
-    let mut tenant = std::env::var("OUTLOOK_TENANT").unwrap_or_else(|_| "organizations".into());
+    let mut client_id = std::env::var("OUTLOOK_CLIENT_ID").unwrap_or_else(|_| mailcore::model::builtin_client_id().to_string());
+    let mut tenant = std::env::var("OUTLOOK_TENANT").unwrap_or_else(|_| mailcore::model::builtin_tenant().to_string());
     let (mut write, mut demo) = (false, false);
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {

@@ -115,7 +115,9 @@ async function init() {
   render();
   setupClose();
   subject.focus();
-  await editor.setHtml('');
+  // The editor starts empty; reloading it here would replace the document the
+  // user may already be typing into.
+  await editor.ready;
   document.body.dataset.ready = '1';
   if (document.activeElement !== subject) subject.focus();
 }

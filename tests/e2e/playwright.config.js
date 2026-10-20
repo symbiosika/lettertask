@@ -17,11 +17,15 @@ module.exports = defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'cargo run -p devserver --bin devserver -- --demo --port 8080',
+    // Build first, then exec the binary itself so Playwright's shutdown signal
+    // reaches the server (with `cargo run` it lingered and the next run reused
+    // its already modified demo data).
+    command: 'cargo build -q -p devserver --bin devserver && exec target/debug/devserver --demo --port 8080',
     cwd: '../..',
     url: 'http://127.0.0.1:8080/',
     timeout: 600_000,
-    reuseExistingServer: !process.env.CI,
+    // Always start fresh: the tests rely on pristine demo data.
+    reuseExistingServer: false,
     stdout: 'ignore',
     stderr: 'pipe',
   },

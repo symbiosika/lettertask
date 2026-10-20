@@ -34,7 +34,7 @@ Contact      { id: string, accountId: string, source: "o365"|"local"|"collected"
                readOnly: bool }
 ContactInput { displayName, givenName, surname, emails: string[], company, jobTitle,
                phones: {kind, number}[], notes }
-Mailbox      { id: string, accountId: string, address: string, displayName: string, kind: "primary" | "shared" }
+Mailbox      { id: string, accountId: string, address: string, displayName: string, kind: "primary" }
 Folder       { id: string, mailboxId: string, parentId: string|null, displayName: string,
                wellKnown: "inbox"|"drafts"|"sentitems"|"deleteditems"|"archive"|"junkemail"|"outbox"|"snoozed"|null,
                unreadCount: number, totalCount: number, childFolderCount: number }

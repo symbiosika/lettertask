@@ -24,11 +24,9 @@ pub const SCOPES: &[&str] = &[
     "profile",
     "User.Read",
     "Mail.ReadWrite",
-    "Mail.ReadWrite.Shared",
     "Mail.Send",
-    "Mail.Send.Shared",
     "Calendars.ReadWrite",
-    "Calendars.ReadWrite.Shared",
+    "Contacts.ReadWrite",
     "MailboxSettings.ReadWrite",
     "People.Read",
 ];

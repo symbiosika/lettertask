@@ -391,13 +391,19 @@ pub struct SnoozeOption {
     pub rule: String,
 }
 
-/// Client ID of the app registration compiled into release builds
-/// (`OUTLOOK_CLASSIC_CLIENT_ID=<guid> cargo build`). Desktop apps are public
-/// clients, so the ID is not a secret.
-pub const BUILTIN_CLIENT_ID: Option<&str> = option_env!("OUTLOOK_CLASSIC_CLIENT_ID");
+/// App registration of Symbiosika in Entra ID. Desktop apps are public
+/// clients (no secret), so client and tenant id are not confidential.
+/// Other builds can override both via `OUTLOOK_CLASSIC_CLIENT_ID` /
+/// `OUTLOOK_CLASSIC_TENANT` at compile time.
+const SYMBIOSIKA_CLIENT_ID: &str = "c0bb40f0-6019-427c-bbfb-01c552e44257";
+const SYMBIOSIKA_TENANT_ID: &str = "be11db5c-df94-439f-b934-4c3240c9d1ad";
 
 pub fn builtin_client_id() -> &'static str {
-    BUILTIN_CLIENT_ID.map(str::trim).unwrap_or("")
+    option_env!("OUTLOOK_CLASSIC_CLIENT_ID").map(str::trim).unwrap_or(SYMBIOSIKA_CLIENT_ID)
+}
+
+pub fn builtin_tenant() -> &'static str {
+    option_env!("OUTLOOK_CLASSIC_TENANT").map(str::trim).unwrap_or(SYMBIOSIKA_TENANT_ID)
 }
 
 pub fn default_snooze_options() -> Vec<SnoozeOption> {
@@ -421,7 +427,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             client_id: String::new(),
-            tenant: "organizations".into(),
+            tenant: builtin_tenant().into(),
             sync_interval_secs: 60,
             load_remote_images: false,
             reading_pane: "right".into(),

@@ -556,6 +556,9 @@ impl Service {
         if c.client_id.trim().is_empty() && !builtin.is_empty() {
             c.client_id = builtin.to_string();
         }
+        if c.tenant.trim().is_empty() {
+            c.tenant = builtin_tenant().to_string();
+        }
         if c.snooze_options.is_empty() {
             c.snooze_options = default_snooze_options();
         }

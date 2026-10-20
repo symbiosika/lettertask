@@ -124,3 +124,5 @@ body.task .editor-wrap { flex: 1; min-height: 0; border-top: 1px solid var(--bor
 .inbox-zero-note .iz-ic { color: var(--accent); display: inline-flex; }
 .inbox-zero-note.out { opacity: 0; transform: translate(-50%, -60%); }
 @media (prefers-reduced-motion: reduce) { .inbox-zero-note { transition: none; } }
+.sb-status .st { min-width: 0; }
+.sb-status .st-text { white-space: normal; line-height: 1.25; }
