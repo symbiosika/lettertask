@@ -184,6 +184,16 @@ pub struct Calendar {
     pub color: Option<String>,
     pub can_edit: bool,
     pub is_default: bool,
+    /// Outlook calendar group, e.g. "Kalender von Personen"; None = the default group.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Group id for calendars outside the default group (their events are read
+    /// through `/me/calendarGroups/{id}/calendars/{id}`).
+    #[serde(default)]
+    pub group_id: Option<String>,
+    /// Owner of a calendar shared by someone else.
+    #[serde(default)]
+    pub owner: Option<Address>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

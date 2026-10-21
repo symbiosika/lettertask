@@ -132,3 +132,42 @@
 .sp-time { display: inline; white-space: nowrap; }
 .sp-time .ico { display: inline-block; vertical-align: -1px; margin-right: 3px; }
 .ev.sprint .sp-subj, .sp-item .sp-subj { font-weight: 500; }
+.cal-group { margin: 10px 0 2px; padding: 0 8px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+
+/* Briefing card (hover + click peek) */
+.peek.briefing { width: 380px; padding: 0 0 12px; border-top: 4px solid var(--bc); }
+.peek.briefing.hover { box-shadow: 0 12px 32px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .04); animation: bc-in .12s ease-out; }
+@keyframes bc-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.briefing > * { margin-left: 16px; margin-right: 16px; }
+.bc-head { display: flex; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 6px; font-size: 11.5px; }
+.bc-cal { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bc); flex: none; }
+.bc-when { flex: none; padding: 2px 8px; border-radius: 999px; font-weight: 600; background: var(--hover); color: var(--text-2); }
+.bc-when.now { background: #e6f6ec; color: #1f7a45; }
+.bc-when.soon { background: #fff1e0; color: #b25e00; }
+.bc-when.today { background: var(--accent-weak); color: var(--accent); }
+.bc-when.past { color: var(--text-dim); }
+.briefing .peek-title { font-size: 17px; line-height: 1.3; margin-bottom: 10px; }
+.briefing .peek-title.cancelled { text-decoration: line-through; color: var(--text-dim); }
+.bc-facts { display: flex; flex-direction: column; gap: 6px; }
+.bc-fact { display: flex; gap: 10px; align-items: flex-start; color: var(--text); line-height: 1.4; }
+.bc-fact .ico { color: var(--text-dim); margin-top: 1px; }
+.bc-tag { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 4px; background: var(--hover); color: var(--text-2); font-size: 11px; line-height: 18px; white-space: nowrap; }
+.bc-tag.imp { background: #fdecec; color: #c62f34; }
+.bc-join { display: flex; width: calc(100% - 32px); justify-content: center; gap: 8px; margin-top: 12px; height: 32px; }
+.bc-sec { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.bc-label { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+.bc-label .dim { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.bc-people { display: flex; align-items: center; flex-wrap: wrap; gap: 0; }
+.bc-av { width: 26px; height: 26px; border-radius: 50%; color: #fff; font-size: 10.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; margin-right: -4px; box-shadow: 0 0 0 2px var(--bg); position: relative; }
+.bc-av::after { content: ''; position: absolute; right: -1px; bottom: -1px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--bg); background: #c2c7cf; }
+.bc-av.accepted::after, .bc-av.organizer::after { background: #3fa66b; }
+.bc-av.tentativelyAccepted::after { background: #8b6fcf; }
+.bc-av.declined::after { background: var(--danger); }
+.bc-av.declined { opacity: .55; }
+.bc-av.more { background: var(--hover); color: var(--text-2); }
+.bc-av.more::after { display: none; }
+.bc-orgname { margin-left: 14px; font-size: 12px; }
+.bc-agenda { color: var(--text-2); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.bc-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.briefing .peek-actions { margin-left: 0; margin-right: 0; padding-left: 16px; padding-right: 16px; }

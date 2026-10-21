@@ -125,8 +125,12 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
         .collect();
 
     // ---- calendars & events (first, so the invitation can link to its event)
-    mb.calendars.push(Cal { id: new_id("AAMkAC"), name: "Feiertage".into(), color: "lightGreen".into(), hex_color: "#2e7d32".into(), can_edit: false, is_default: false });
-    mb.calendars.push(Cal { id: new_id("AAMkAC"), name: "Team".into(), color: "lightPurple".into(), hex_color: "#8e24aa".into(), can_edit: true, is_default: false });
+    mb.calendars.push(Cal { id: new_id("AAMkAC"), name: "Feiertage".into(), color: "lightGreen".into(), hex_color: "#2e7d32".into(), can_edit: false, is_default: false, group: String::new(), owner: None });
+    mb.calendars.push(Cal { id: new_id("AAMkAC"), name: "Team".into(), color: "lightPurple".into(), hex_color: "#8e24aa".into(), can_edit: true, is_default: false, group: String::new(), owner: None });
+    // Calendars of colleagues the user added in Outlook ("Kalender von Personen").
+    for (who, hex) in [(LAURA, "#d97706"), (JONAS, "#0d9488")] {
+        mb.calendars.push(Cal { id: new_id("AAMkAC"), name: who.0.into(), color: "auto".into(), hex_color: hex.into(), can_edit: false, is_default: false, group: "Kalender von Personen".into(), owner: Some((who.0.into(), who.1.into())) });
+    }
     let invite_event = seed_events(mb, now);
 
     let pdf = crate::png::tiny_pdf("Rechnung 2026-1043 - Fabrikam AG - 4.284,00 EUR");
@@ -356,6 +360,8 @@ fn seed_events(mb: &mut Mailbox, now: DateTime<Utc>) -> Option<(String, chrono::
     let default_cal = mb.default_calendar_id();
     let team = mb.calendars.iter().find(|c| c.name == "Team").map(|c| c.id.clone()).unwrap_or_default();
     let holidays = mb.calendars.iter().find(|c| c.name == "Feiertage").map(|c| c.id.clone()).unwrap_or_default();
+    let laura_cal = mb.calendars.iter().find(|c| c.name == LAURA.0).map(|c| c.id.clone()).unwrap_or_default();
+    let jonas_cal = mb.calendars.iter().find(|c| c.name == JONAS.0).map(|c| c.id.clone()).unwrap_or_default();
     let today = from_utc(now.naive_utc(), Berlin).date();
     let monday = today - Duration::days(today.weekday().num_days_from_monday() as i64);
     let day = |offset: i64| monday + Duration::days(offset);
@@ -370,6 +376,18 @@ fn seed_events(mb: &mut Mailbox, now: DateTime<Utc>) -> Option<(String, chrono::
         mb.events.insert(id.clone(), ev);
         Some(id)
     };
+
+    if !laura_cal.is_empty() {
+        add(mb, &laura_cal, json!({ "subject": "Kundenworkshop Fabrikam", "start": dt(day(1), 13, 0), "end": dt(day(1), 16, 0),
+            "location": { "displayName": "Fabrikam AG, Hamburg" }, "organizer": { "emailAddress": { "name": LAURA.0, "address": LAURA.1 } } }), json!({}));
+        add(mb, &laura_cal, json!({ "subject": "Urlaub", "isAllDay": true, "start": allday(day(7)), "end": allday(day(10)), "showAs": "oof" }), json!({}));
+        add(mb, &laura_cal, json!({ "subject": "Zahnarzt", "start": dt(day(3), 8, 0), "end": dt(day(3), 9, 0), "sensitivity": "private" }), json!({}));
+    }
+    if !jonas_cal.is_empty() {
+        add(mb, &jonas_cal, json!({ "subject": "Messe Hannover", "isAllDay": true, "start": allday(day(2)), "end": allday(day(4)), "showAs": "oof" }), json!({}));
+        add(mb, &jonas_cal, json!({ "subject": "Lieferantengespräch Tailspin", "start": dt(day(0), 14, 0), "end": dt(day(0), 15, 0),
+            "isOnlineMeeting": true, "location": { "displayName": "Microsoft Teams-Besprechung" } }), json!({}));
+    }
 
     add(mb, &default_cal, json!({
         "subject": "Jour fixe Geschäftsleitung",

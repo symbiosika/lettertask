@@ -62,7 +62,10 @@ MessageDetail = MessageSummary & {
   isMeetingRequest: bool, eventId: string|null   // set for meeting invitations
 }
 Category     { id: string, displayName: string, color: string /* "preset0".."preset24" or "none" */ }
-Calendar     { id, accountId, name: string, color: string|null /* hex like "#4a90d9" */, canEdit: bool, isDefault: bool }
+Calendar     { id, accountId, name: string, color: string|null /* hex like "#4a90d9" */, canEdit: bool, isDefault: bool,
+               group: string|null /* Outlook calendar group, e.g. "Kalender von Personen"; null = default group */,
+               groupId: string|null /* set for calendars outside the default group */,
+               owner: Address|null /* owner of a calendar shared by someone else */ }
 Attendee     { name, address, type: "required"|"optional"|"resource",
                response: "none"|"organizer"|"tentativelyAccepted"|"accepted"|"declined"|"notResponded" }
 Recurrence   { pattern: "daily"|"weekly"|"absoluteMonthly"|"absoluteYearly", interval: number,
@@ -247,7 +250,7 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 | `delete_category` | `{ accountId, id }` | `null` |
 
 ### Calendar
-| `list_calendars` | `{ accountId }` | `Calendar[]` |
+| `list_calendars` | `{ accountId }` | `Calendar[]` — default group (`/me/calendars`) plus the calendars of all other calendar groups (`/me/calendarGroups/{id}/calendars`), e.g. colleagues' calendars added in Outlook |
 | `list_events` | `{ accountId, calendarIds: string[], start: ISO, end: ISO }` | `Event[]` (expanded occurrences in range) |
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |

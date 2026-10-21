@@ -156,10 +156,24 @@ pub struct Cal {
     pub hex_color: String,
     pub can_edit: bool,
     pub is_default: bool,
+    /// Calendar group ("" = the default group "Meine Kalender"). Like Graph,
+    /// `/me/calendars` only lists the default group.
+    pub group: String,
+    /// Owner of a shared calendar (name, address); None = the mailbox owner.
+    pub owner: Option<(String, String)>,
+}
+
+pub const DEFAULT_CAL_GROUP: &str = "Meine Kalender";
+
+/// Stable id of a calendar group from its name.
+pub fn cal_group_id(name: &str) -> String {
+    let name = if name.is_empty() { DEFAULT_CAL_GROUP } else { name };
+    format!("AAMkGRP{:x}", name.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)))
 }
 
 impl Cal {
     pub fn render(&self, owner_name: &str, owner_addr: &str) -> Value {
+        let (owner_name, owner_addr) = self.owner.as_ref().map_or((owner_name, owner_addr), |(n, a)| (n.as_str(), a.as_str()));
         json!({
             "id": self.id,
             "name": self.name,
@@ -278,6 +292,8 @@ impl Mailbox {
                 hex_color: String::new(),
                 can_edit: true,
                 is_default: true,
+                group: String::new(),
+                owner: None,
             }],
             events: HashMap::new(),
             auto_reply: json!({

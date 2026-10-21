@@ -31,7 +31,22 @@ impl Service {
         {
             Ok(list) => {
                 let mut cals: Vec<Calendar> = list.iter().map(|v| convert::calendar(v, account_id)).collect();
-                cals.sort_by_key(|c| !c.is_default);
+                self.add_group_calendars(&c, account_id, &mut cals).await;
+                // Only calendars of other people carry an owner.
+                let me = self
+                    .store
+                    .list_accounts()?
+                    .into_iter()
+                    .find(|a| a.id == account_id)
+                    .and_then(|a| a.mailboxes.into_iter().next())
+                    .map(|m| m.address.to_lowercase())
+                    .unwrap_or_default();
+                for cal in &mut cals {
+                    if cal.owner.as_ref().is_some_and(|o| o.address.to_lowercase() == me) {
+                        cal.owner = None;
+                    }
+                }
+                cals.sort_by_key(|c| (!c.is_default, c.group.is_some()));
                 self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
                 Ok(cals)
             }
@@ -40,6 +55,56 @@ impl Service {
                 .get_account_json(account_id, CACHE_KEY)?
                 .unwrap_or_default()),
             Err(e) => Err(e),
+        }
+    }
+
+    /// `/me/calendars` only covers the default calendar group; calendars the
+    /// user added from other people ("Kalender von Personen") or other groups
+    /// are listed per group. Failures here keep the plain list.
+    async fn add_group_calendars(&self, c: &Arc<GraphClient>, account_id: &str, cals: &mut Vec<Calendar>) {
+        let groups = match c.get_all("/me/calendarGroups?$top=50&$select=id,name", &[], 200).await {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("calendarGroups: {e}");
+                return;
+            }
+        };
+        for g in groups {
+            let (gid, gname) = (convert::s(&g, "id"), convert::s(&g, "name"));
+            if gid.is_empty() {
+                continue;
+            }
+            let path = format!(
+                "/me/calendarGroups/{}/calendars?$top=100&$select=id,name,color,hexColor,canEdit,isDefaultCalendar,owner",
+                seg(&gid)
+            );
+            let list = match c.get_all(&path, &[], 500).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::warn!("calendarGroups/{gname}: {e}");
+                    continue;
+                }
+            };
+            for v in list {
+                let mut cal = convert::calendar(&v, account_id);
+                if let Some(known) = cals.iter_mut().find(|k| k.id == cal.id) {
+                    known.group = Some(gname.clone());
+                    if known.owner.is_none() {
+                        known.owner = cal.owner;
+                    }
+                } else {
+                    cal.group = Some(gname.clone());
+                    cal.group_id = Some(gid.clone());
+                    cals.push(cal);
+                }
+            }
+        }
+        // The default group needs no heading of its own.
+        let default_group = cals.iter().find(|k| k.is_default).and_then(|k| k.group.clone());
+        for cal in cals.iter_mut() {
+            if cal.group.is_some() && cal.group == default_group {
+                cal.group = None;
+            }
         }
     }
 
@@ -59,12 +124,16 @@ impl Service {
             return Err(Error::invalid("Ungültiger Zeitraum"));
         }
         let c = self.client(account_id)?;
+        let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
         let results: Vec<(String, Result<Vec<Value>>)> = stream::iter(calendar_ids.iter().cloned())
             .map(|cid| {
                 let c = c.clone();
+                let base = match known.iter().find(|k| k.id == cid).and_then(|k| k.group_id.as_deref()) {
+                    Some(gid) => format!("/me/calendarGroups/{}/calendars/{}", seg(gid), seg(&cid)),
+                    None => format!("/me/calendars/{}", seg(&cid)),
+                };
                 let path = format!(
-                    "/me/calendars/{}/calendarView?startDateTime={}&endDateTime={}&$select={EVENT_SELECT}&$top=250",
-                    seg(&cid),
+                    "{base}/calendarView?startDateTime={}&endDateTime={}&$select={EVENT_SELECT}&$top=250",
                     urlencoding::encode(&start),
                     urlencoding::encode(&end),
                 );
@@ -95,13 +164,19 @@ impl Service {
     }
 
     async fn fetch_event(&self, c: &Arc<GraphClient>, account_id: &str, event_id: &str) -> Result<(Value, Event)> {
-        let v = c
-            .get_h(
-                &format!("/me/events/{}?$select={EVENT_SELECT},body", seg(event_id)),
-                &utc_header(),
-            )
-            .await?;
-        let calendar_id = self.calendar_of(account_id, event_id, c).await;
+        // Events of other people's calendars are not reachable via /me/events.
+        let cached = self.store.event_calendar(account_id, event_id).ok().flatten();
+        let group_path = cached.as_deref().and_then(|cid| {
+            let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY).ok().flatten().unwrap_or_default();
+            let gid = known.into_iter().find(|k| k.id == cid)?.group_id?;
+            Some(format!("/me/calendarGroups/{}/calendars/{}/events/{}", seg(&gid), seg(cid), seg(event_id)))
+        });
+        let path = group_path.unwrap_or_else(|| format!("/me/events/{}", seg(event_id)));
+        let v = c.get_h(&format!("{path}?$select={EVENT_SELECT},body"), &utc_header()).await?;
+        let calendar_id = match cached {
+            Some(cid) => cid,
+            None => self.calendar_of(account_id, event_id, c).await,
+        };
         let ev = convert::event(&v, account_id, &calendar_id);
         Ok((v, ev))
     }
