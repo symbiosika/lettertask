@@ -22,6 +22,36 @@ function splitHtml(html) {
   return { styles, body: doc.body ? doc.body.innerHTML : '' };
 }
 
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+
+/** Turns bare web addresses in the text into links (text inside <a> stays as is). */
+function linkify(root) {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement && n.parentElement.closest('a,style,script') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) if (/https?:\/\/|www\./i.test(n.data)) nodes.push(n);
+  for (const node of nodes) {
+    const text = node.data;
+    const frag = root.ownerDocument.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(URL_RE)) {
+      // Trailing punctuation usually ends the sentence, not the address.
+      const url = m[0].replace(/[.,;:!?)\]}'»“”]+$/, '');
+      if (!url || /^www\.$/i.test(url)) continue;
+      frag.append(text.slice(last, m.index));
+      const a = root.ownerDocument.createElement('a');
+      a.href = /^www\./i.test(url) ? 'https://' + url : url;
+      a.textContent = url;
+      frag.append(a);
+      last = m.index + url.length;
+    }
+    if (!last) continue;
+    frag.append(text.slice(last));
+    node.replaceWith(frag);
+  }
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -187,8 +217,11 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     ready,
     getHtml: () => {
       if (!doc) return pending || '';
+      // Links are made on read, not while typing: rewriting text under the caret would move it.
+      const body = doc.body.cloneNode(true);
+      linkify(body);
       const styles = [...doc.head.querySelectorAll('style:not([data-oc])')].map((s) => s.outerHTML).join('');
-      return styles ? `<html><head>${styles}</head><body>${doc.body.innerHTML}</body></html>` : doc.body.innerHTML;
+      return styles ? `<html><head>${styles}</head><body>${body.innerHTML}</body></html>` : body.innerHTML;
     },
     getText: () => (doc ? doc.body.innerText : ''),
     /** The editable document (null until loaded). */
