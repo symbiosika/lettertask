@@ -24,6 +24,13 @@ export function splitBtn(label, ic, onClick, onMenu, { testid, menuTestid, prima
   return h('div.split' + (primary ? '.primary' : ''), main, drop);
 }
 
+/** "+ | a | b | c": one primary button group, each segment creates one kind of item. */
+export function newBtns(items) {
+  const plus = h('span.new-plus', { 'aria-hidden': 'true', html: icon('plus', 16) });
+  return h('div.split.primary.new-btns', { role: 'group', 'aria-label': 'Neu' }, plus,
+    ...items.map(([ic, title, onClick, testid]) => tbBtn('', ic, onClick, { testid, title, primary: true, iconOnly: true })));
+}
+
 export function setPressed(b, on) {
   b.classList.toggle('active', !!on);
   b.setAttribute('aria-pressed', on ? 'true' : 'false');

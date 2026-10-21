@@ -71,7 +71,6 @@ test('Fokuszeit: 1 Stunde starten und wieder beenden', async ({ page }) => {
 
 test('Wiederkehrende Aufgabe: ↻-Badge, Archivieren plant die nächste ein', async ({ page }) => {
   await openApp(page);
-  await page.locator('[data-testid=tb-new-menu]').click();
   const popup = await popupFrom(page, () => page.locator('[data-testid=new-task]').click());
   await expect(popup.locator('body[data-ready="1"]')).toHaveCount(1);
   const subject = `Monatsabschluss ${Date.now()}`;
