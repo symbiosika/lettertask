@@ -258,3 +258,74 @@ async fn recipients_and_discard_edge_cases() {
     let s: Vec<Address> = call(&ctx.svc, "suggest_recipients", json!({"mailboxId": ctx.account, "query": "\"Erika\" OR 1=1"})).await;
     assert!(s.len() <= 10);
 }
+
+/// Waits until the background queue has reported `n` results.
+async fn send_results(ctx: &Ctx, n: usize) -> Vec<(String, Value)> {
+    for _ in 0..500 {
+        let ev: Vec<(String, Value)> = ctx
+            .host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(e, _)| e == "send-done" || e == "send-failed")
+            .cloned()
+            .collect();
+        if ev.len() >= n {
+            assert_eq!(ctx.svc.pending_sends(), 0);
+            return ev;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("background send did not finish");
+}
+
+#[tokio::test]
+async fn background_send_returns_at_once_and_sends_in_order() {
+    let ctx = setup().await;
+    let to = json!([{"name": "Erika", "address": "erika@fabrikam.example"}]);
+    for subject in ["Queue 1", "Queue 2"] {
+        let _: Value = call(
+            &ctx.svc,
+            "send_draft",
+            json!({"background": true, "draft": draft(&ctx, &json!({"subject": subject, "to": to, "bodyHtml": "<p>x</p>"}))}),
+        )
+        .await;
+    }
+    let ev = send_results(&ctx, 2).await;
+    assert!(ev.iter().all(|(e, _)| e == "send-done"), "{ev:?}");
+    let order: Vec<&str> = ev.iter().map(|(_, p)| p["subject"].as_str().unwrap()).collect();
+    assert_eq!(order, ["Queue 1", "Queue 2"]);
+    for subject in ["Queue 1", "Queue 2"] {
+        assert_eq!(ctx.fake.state.sent_messages(ME).iter().filter(|m| m["subject"] == subject).count(), 1);
+        assert!(drafts_on_server(&ctx, subject).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn background_send_checks_first_and_keeps_failed_mail_as_draft() {
+    let ctx = setup().await;
+    // Mistakes the user can fix are reported right away; nothing is queued.
+    let e = call_err(
+        &ctx.svc,
+        "send_draft",
+        json!({"background": true, "draft": draft(&ctx, &json!({"subject": "x", "to": [{"name": "", "address": "kein-at"}]}))}),
+    )
+    .await;
+    assert!(e.contains("Ungültige Adresse"), "{e}");
+    assert_eq!(ctx.svc.pending_sends(), 0);
+
+    ctx.fake.state.inject_fault(graph_fake::Fault::status(500).on_path("/send"));
+    let _: Value = call(
+        &ctx.svc,
+        "send_draft",
+        json!({"background": true, "draft": draft(&ctx, &json!({"subject": "Hängt", "to": [{"name": "", "address": "erika@fabrikam.example"}], "bodyHtml": "<p>x</p>"}))}),
+    )
+    .await;
+    let ev = send_results(&ctx, 1).await;
+    assert_eq!(ev[0].0, "send-failed");
+    assert_eq!(ev[0].1["subject"], "Hängt");
+    assert!(ev[0].1["message"].as_str().unwrap().contains("Entwürfe"), "{ev:?}");
+    assert_eq!(drafts_on_server(&ctx, "Hängt").len(), 1);
+    assert!(ctx.fake.state.sent_messages(ME).iter().all(|m| m["subject"] != "Hängt"));
+}

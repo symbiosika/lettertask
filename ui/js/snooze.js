@@ -1,9 +1,12 @@
 // "Auf Wiedervorlage": rule evaluation and labels. Rule grammar (docs/API.md):
-//   "<base>@HH:MM"  base = tomorrow | days:N | weekend (next Saturday) | nextWeek (next Monday)
+//   "<base>@HH:MM"  base = today | tomorrow | days:N | weekend (next Saturday) | nextWeek (next Monday)
+//   "hours:N"       now + N hours (same day possible)
 import { WEEKDAYS_SHORT, fmtTime, pad, startOfDay, addDays, sameDay } from './util.js';
 
 export const DEFAULT_SNOOZE = [
   { label: 'Morgen 8 Uhr', rule: 'tomorrow@08:00' },
+  { label: 'In 4 Stunden', rule: 'hours:4' },
+  { label: 'Heute 18 Uhr', rule: 'today@18:00' },
   { label: 'Übermorgen 8 Uhr', rule: 'days:2@08:00' },
   { label: 'Am Wochenende 8 Uhr', rule: 'weekend@08:00' },
   { label: 'Nächste Woche', rule: 'nextWeek@08:00' },
@@ -12,13 +15,16 @@ export const DEFAULT_SNOOZE = [
 ];
 
 export function parseRule(rule) {
-  const m = /^(tomorrow|weekend|nextWeek|days:(\d+))(?:@(\d{1,2}):(\d{2}))?$/.exec(String(rule || '').trim());
+  const hm = /^hours:(\d+)$/.exec(String(rule || '').trim());
+  if (hm) return { base: 'hours', days: Math.max(1, Number(hm[1])), hour: 8, minute: 0 };
+  const m = /^(today|tomorrow|weekend|nextWeek|days:(\d+))(?:@(\d{1,2}):(\d{2}))?$/.exec(String(rule || '').trim());
   if (!m) return null;
   const base = m[1].startsWith('days:') ? 'days' : m[1];
   return { base, days: m[2] ? Number(m[2]) : base === 'tomorrow' ? 1 : 0, hour: m[3] ? Number(m[3]) : 8, minute: m[4] ? Number(m[4]) : 0 };
 }
 
 export function formatRule({ base, days, hour, minute }) {
+  if (base === 'hours') return `hours:${Math.max(1, days || 1)}`;
   const t = `${pad(hour)}:${pad(minute)}`;
   if (base === 'days') return `days:${Math.max(1, days || 1)}@${t}`;
   return `${base}@${t}`;
@@ -28,9 +34,11 @@ export function formatRule({ base, days, hour, minute }) {
 export function computeSnooze(rule, now = new Date()) {
   const r = parseRule(rule);
   if (!r) return null;
+  if (r.base === 'hours') return new Date(now.getTime() + r.days * 3600000);
   const today = startOfDay(now);
   let day;
-  if (r.base === 'tomorrow') day = addDays(today, 1);
+  if (r.base === 'today') day = today;
+  else if (r.base === 'tomorrow') day = addDays(today, 1);
   else if (r.base === 'days') day = addDays(today, Math.max(1, r.days));
   else if (r.base === 'weekend') {
     // next Saturday strictly after today
@@ -66,6 +74,8 @@ export function snoozeOptions(config) {
 }
 
 export const BASE_LABELS = [
+  ['hours', 'In N Stunden'],
+  ['today', 'Heute'],
   ['tomorrow', 'Morgen'],
   ['days', 'In N Tagen'],
   ['weekend', 'Am Wochenende (Sa)'],

@@ -54,6 +54,10 @@ pub struct Service {
     pub(crate) imap: crate::imap::conn::Pool,
     /// Access tokens of accounts signed in with Google.
     google_tokens: std::sync::Mutex<HashMap<String, TokenSet>>,
+    /// Mails sent in the background, in order, to one worker (started on demand).
+    send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
+    /// Mails queued or being sent in the background.
+    pending_sends: std::sync::atomic::AtomicUsize,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -200,6 +204,8 @@ impl Service {
             last_sync: RwLock::new(None),
             imap: Default::default(),
             google_tokens: Default::default(),
+            send_queue: Default::default(),
+            pending_sends: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -517,7 +523,12 @@ impl Service {
                 .await?),
             "save_draft" => ok(self.save_draft(arg(a, "draft")?).await?),
             "send_draft" => {
-                self.send_draft(arg(a, "draft")?).await?;
+                let d = arg(a, "draft")?;
+                if arg::<Option<bool>>(a, "background")?.unwrap_or(false) {
+                    self.queue_send(d)?;
+                } else {
+                    self.send_draft(d).await?;
+                }
                 ok(Value::Null)
             }
             "discard_draft" => {
@@ -538,8 +549,13 @@ impl Service {
                     &arg::<Option<String>>(a, "bodyHtml")?.unwrap_or_default(),
                     arg::<Option<String>>(a, "due")?.as_deref(),
                     arg::<Option<String>>(a, "recurrence")?.as_deref(),
+                    arg::<Option<crate::model::Address>>(a, "delegate")?
+                        .as_ref()
+                        .map(|d| (d, arg::<Option<bool>>(a, "todoPrefix").ok().flatten().unwrap_or(true))),
                 )
                 .await?),
+            "list_delegations" => ok(self.list_delegations()?),
+            "find_delegation" => ok(self.find_delegation(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)?),
             "set_recurrence" => {
                 self.set_recurrence(
                     &arg::<String>(a, "mailboxId")?,
@@ -550,6 +566,14 @@ impl Service {
                 ok(Value::Null)
             }
             "list_today" => ok(self.list_today()?),
+            "list_due" => {
+                let end = arg::<String>(a, "end")?;
+                let end = chrono::DateTime::parse_from_rfc3339(&end)
+                    .map_err(|_| Error::invalid(format!("Ungültiges Datum: {end}")))?
+                    .with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                ok(self.due_before(&end)?)
+            }
             "get_focus" => ok(json!({"until": self.focus_until().map(|u| u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))})),
             "set_focus" => ok(self.set_focus(arg::<Option<i64>>(a, "minutes")?.unwrap_or(0))?),
             "get_lanes" => ok(self.get_lanes(&arg::<String>(a, "accountId")?)?),

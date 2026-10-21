@@ -46,3 +46,39 @@ test('Neuen Termin anlegen', async ({ page }) => {
   await edit.close({ runBeforeUnload: false });
   await page.locator('[data-testid=nav-mail]').click();
 });
+
+test('Briefing-Karte beim Überfahren eines Termins', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=nav-calendar]').click();
+  await page.locator('[data-testid=tb-view-week]').click();
+  await page.locator('[data-testid=tb-today]').click();
+  const ev = page.locator('.tg-col .ev', { hasText: 'Daily Stand-up' }).first();
+  await ev.hover();
+  const card = page.locator('[data-testid=briefing].hover');
+  await expect(card).toBeVisible();
+  await expect(card.locator('.peek-title')).toHaveText('Daily Stand-up');
+  await expect(card.locator('[data-testid=briefing-when]')).not.toBeEmpty();
+  await expect(card.locator('[data-testid=briefing-join]')).toBeVisible();
+  await expect(card.locator('.bc-av').first()).toBeVisible();
+  // pointer onto the card keeps it open, leaving closes it
+  await card.hover();
+  await expect(card).toBeVisible();
+  await page.mouse.move(5, 5);
+  await expect(card).toHaveCount(0);
+});
+
+test('Kalender von Personen werden angezeigt', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=nav-calendar]').click();
+  await expect(page.locator('[data-testid=cal-group]')).toHaveText(/Kalender von Personen/i);
+  await expect(page.locator('[data-testid=cal-item]', { hasText: 'Laura Schmidt' })).toBeVisible();
+  await page.locator('[data-testid=tb-view-week]').click();
+  await page.locator('[data-testid=tb-today]').click();
+  const ev = page.locator('.ev', { hasText: 'Lieferantengespräch Tailspin' }).first();
+  await expect(ev).toBeVisible();
+  await ev.hover();
+  await expect(page.locator('[data-testid=briefing].hover .bc-cal')).toContainText('Kalender von Jonas Weber');
+  // hiding the colleague's calendar removes its events
+  await page.locator('[data-testid=cal-item]', { hasText: 'Jonas Weber' }).locator('input').uncheck();
+  await expect(page.locator('.ev', { hasText: 'Lieferantengespräch Tailspin' })).toHaveCount(0);
+});

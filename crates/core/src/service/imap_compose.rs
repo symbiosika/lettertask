@@ -3,6 +3,7 @@
 //! copy is stored in Sent.
 
 use base64::Engine;
+use serde_json::json;
 
 use super::compose::{cid_to_data, data_to_cid, prepend_to_body};
 use super::imap_mail::{expunge_uids, uid_search};
@@ -391,7 +392,8 @@ impl Service {
         self.imap_load_draft(&mb, &id, &d.mode).await
     }
 
-    pub(crate) async fn imap_send_draft(&self, d: DraftInput) -> Result<()> {
+    /// Returns the thread id (root Message-ID) of the sent mail.
+    pub(crate) async fn imap_send_draft(&self, d: DraftInput) -> Result<Option<String>> {
         if d.to.is_empty() && d.cc.is_empty() && d.bcc.is_empty() {
             return Err(Error::invalid("Bitte mindestens einen Empfänger angeben."));
         }
@@ -432,11 +434,18 @@ impl Service {
                 address: a.address.trim().to_string(),
             })
             .collect();
-        self.collect_addresses(&mb, &all)?;
-        if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
-            self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await?;
+        // The mail is out; failures from here on must not report it as unsent.
+        if let Err(e) = self.collect_addresses(&mb, &all) {
+            tracing::warn!("Adressen konnten nicht gemerkt werden: {e}");
         }
-        Ok(())
+        if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
+            if let Err(e) = self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await {
+                tracing::warn!("Erinnerung konnte nicht angelegt werden: {e}");
+                self.host.notify("Erinnerung konnte nicht angelegt werden", &format!("{}: {e}", d.subject));
+                self.emit("reminder-failed", json!({"mailboxId": mb, "subject": d.subject, "message": e.to_string()}));
+            }
+        }
+        Ok(Some(o.message_id.trim_matches(['<', '>']).to_string()))
     }
 
     /// Tasks/reminders: a normal (non-draft) mail from yourself, unread in

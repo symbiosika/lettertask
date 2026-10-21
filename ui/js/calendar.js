@@ -1,14 +1,16 @@
-// Calendar module of the main window: date navigator, calendar list, day/week/month views.
+// Calendar module of the main window: date navigator, calendar list, day/week/month views
+// and the "14 Tage" overview (appointments and due tasks/Wiedervorlagen per day).
 import { call, openWindow } from './api.js';
 import {
   h, esc, load, store, startOfDay, addDays, addMinutes, sameDay, startOfWeek, startOfMonth, fmtTime, fmtDateLong,
-  WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName,
+  WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName, initials, avatarColor,
 } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenu, busyClick } from './dialogs.js';
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
 import { isImap, accountLabel } from './accounts.js';
+import { fmtSnoozeTarget } from './snooze.js';
 
 /** Accounts with a calendar (IMAP accounts have none). */
 function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
@@ -26,7 +28,10 @@ const cal = {
   selectedId: null,
   slot: null, // {start: Date, end: Date}
   loadToken: 0,
+  tasks: [], // "14 Tage": due mails (MessageSummary) in range, overdue ones included
+  sprint: { events: load('sprintEvents', true), tasks: load('sprintTasks', true) },
 };
+const SPRINT_DAYS = 14;
 const els = {};
 let onStatus = () => {};
 
@@ -65,6 +70,7 @@ function range() {
   if (cal.view === 'day') return { start: d, end: addDays(d, 1), days: 1 };
   if (cal.view === 'workweek') { const s = startOfWeek(d); return { start: s, end: addDays(s, 5), days: 5 }; }
   if (cal.view === 'week') { const s = startOfWeek(d); return { start: s, end: addDays(s, 7), days: 7 }; }
+  if (cal.view === 'sprint') return { start: d, end: addDays(d, SPRINT_DAYS), days: SPRINT_DAYS };
   const first = startOfMonth(d);
   const s = startOfWeek(first);
   return { start: s, end: addDays(s, 42), days: 42 };
@@ -83,15 +89,23 @@ export async function refresh() {
 async function loadRange(token) {
   if (!cal.calendars.size) await loadCalendars();
   const { start, end } = range();
+  const sprint = cal.view === 'sprint';
+  const wantEvents = !sprint || cal.sprint.events;
+  const tasksP = sprint && cal.sprint.tasks
+    ? call('list_due', { end: end.toISOString() }, { silent: true }).catch((e) => { console.warn(e); return []; })
+    : Promise.resolve([]);
   const results = await Promise.all(calAccounts().map(async (a) => {
+    if (!wantEvents) return [];
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
     if (!ids.length) return [];
     try {
       return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString() }, { silent: true })) || [];
     } catch (e) { reportError(e); return []; }
   }));
+  const tasks = await tasksP;
   if (token !== cal.loadToken) return;
   cal.events = results.flat();
+  cal.tasks = tasks || [];
   render();
   renderNav();
 }
@@ -111,6 +125,7 @@ export function goToday() { cal.date = startOfDay(new Date()); cal.navMonth = st
 export function step(dir) {
   const v = cal.view;
   if (v === 'day') cal.date = addDays(cal.date, dir);
+  else if (v === 'sprint') cal.date = addDays(cal.date, SPRINT_DAYS * dir);
   else if (v === 'month') cal.date = new Date(cal.date.getFullYear(), cal.date.getMonth() + dir, 1);
   else cal.date = addDays(cal.date, 7 * dir);
   cal.navMonth = startOfMonth(cal.date);
@@ -130,7 +145,13 @@ export function renderNav() {
   for (const a of calAccounts()) {
     const sec = h('div.cal-list');
     sec.appendChild(h('div.tree-root.static', h('span.tr-label', 'Meine Kalender'), h('span.tr-sub', accountLabel(a))));
+    // Outlook calendar groups, e.g. "Kalender von Personen" (calendars of colleagues).
+    let group = null;
     for (const c of cal.calendars.get(a.id) || []) {
+      if ((c.group || null) !== group) {
+        group = c.group || null;
+        if (group) sec.appendChild(h('div.cal-group', { dataset: { testid: 'cal-group' } }, group));
+      }
       const color = c.color || '#2f6fe4';
       const cb = h('input.cal-check', { type: 'checkbox', checked: !cal.hidden.has(c.id) });
       cb.style.setProperty('--cc', color);
@@ -139,7 +160,8 @@ export function renderNav() {
         store('hiddenCalendars', [...cal.hidden]);
         refresh().catch(reportError);
       });
-      sec.appendChild(h('label.cal-item', { title: c.name }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' })));
+      const who = c.owner && c.owner.address ? `${c.name}\n${c.owner.address}` : c.name;
+      sec.appendChild(h('label.cal-item', { title: who, dataset: { testid: 'cal-item' } }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' })));
     }
     els.nav.appendChild(sec);
   }
@@ -220,6 +242,7 @@ function headerTitle() {
 // ------------------------------------------------------------- render
 function render() {
   closePeek();
+  if (cal.view === 'sprint') { renderSprint(); onStatus(); return; }
   if (!calAccounts().length) {
     els.body.innerHTML = '';
     els.body.appendChild(h('div.empty.cal-empty', h('span.empty-ic', { html: icon('calendar', 48) }),
@@ -396,7 +419,7 @@ function eventBlock(ev, kind) {
   const cls = 'div.ev.' + kind + (ev.id === cal.selectedId ? '.selected' : '') + (ev.showAs === 'tentative' ? '.tentative' : '') + (ev.showAs === 'free' ? '.free' : '') + (ev.isCancelled ? '.cancelled' : '') + (ev.responseStatus === 'notResponded' || ev.responseStatus === 'none' && !ev.isOrganizer ? '.unanswered' : '');
   const s = new Date(ev.start), e = new Date(ev.end);
   const el = h(cls, {
-    dataset: { id: ev.id, accountId: ev.accountId }, title: `${eventTitle(ev)}${ev.location ? '\n' + ev.location : ''}\n${ev.isAllDay ? 'Ganztägig' : fmtTime(s) + ' – ' + fmtTime(e)}`,
+    dataset: { id: ev.id, accountId: ev.accountId }, 'aria-label': `${eventTitle(ev)}, ${ev.isAllDay ? 'ganztägig' : fmtTime(s) + ' – ' + fmtTime(e)}`,
     style: { background: ev.showAs === 'free' ? '#fff' : lighten(color, 0.55), color: '#1f2328', '--bar': shade(color, 0.78) },
   });
   const icons = (ev.recurrence || ev.type === 'occurrence' ? icon('recurrence', 11) : '') + (ev.isOnlineMeeting ? icon('teams', 11) : '') + (ev.sensitivity === 'private' ? icon('lock', 11) : '');
@@ -408,6 +431,7 @@ function eventBlock(ev, kind) {
     el.innerHTML = `${ev.isAllDay ? '' : `<span class="ev-time">${fmtTime(s)}</span> `}<span class="ev-subj">${esc(eventTitle(ev))}</span>`;
   }
   el.addEventListener('mousedown', (x) => x.stopPropagation());
+  attachHover(el, ev);
   el.addEventListener('click', (x) => { x.stopPropagation(); selectEvent(ev, el); });
   el.addEventListener('dblclick', (x) => { x.stopPropagation(); openEvent(ev); });
   el.addEventListener('contextmenu', (x) => { x.preventDefault(); x.stopPropagation(); selectEvent(ev, el, false); eventContextMenu(ev, x.clientX, x.clientY); });
@@ -446,6 +470,90 @@ function renderMonth() {
   els.body.appendChild(grid);
 }
 
+// ------------------------------------------------------------- "14 Tage"
+export function sprintFilter() { return { ...cal.sprint }; }
+export function setSprintFilter(key, on) {
+  cal.sprint[key] = on;
+  store(key === 'events' ? 'sprintEvents' : 'sprintTasks', on);
+  refresh().catch(reportError);
+}
+
+function eventsOn(d) {
+  return cal.events.filter((ev) => {
+    if (ev.isAllDay) { const r = allDayRange(ev); return r.start <= d && r.end > d; }
+    const s = new Date(ev.start), e = new Date(ev.end);
+    return s < addDays(d, 1) && (e > d || s >= d);
+  });
+}
+
+function taskItem(m, overdue) {
+  const due = new Date(m.dueAt);
+  const el = h('div.sp-item.sp-task' + (overdue ? '.overdue' : ''), {
+    dataset: { id: m.id, testid: 'sprint-task' },
+    title: `${m.subject || '(Kein Betreff)'}\n${overdue ? 'Überfällig seit' : 'Fällig'} ${fmtSnoozeTarget(due)}`,
+  });
+  el.innerHTML = `<span class="sp-time">${icon('snooze', 11)}${overdue ? 'überfällig' : fmtTime(due)}</span> <span class="sp-subj">${esc(m.subject || '(Kein Betreff)')}</span>`;
+  el.addEventListener('dblclick', () => openWindow('message', { mailboxId: m.mailboxId, messageId: m.id, folderId: m.folderId }).catch(reportError));
+  el.addEventListener('click', (x) => { x.stopPropagation(); els.body.querySelectorAll('.sp-item.selected').forEach((y) => y.classList.remove('selected')); el.classList.add('selected'); });
+  return el;
+}
+
+function sprintEvent(ev, day) {
+  const el = eventBlock(ev, 'sprint');
+  const s = new Date(ev.start);
+  if (!isAllDayLike(ev)) el.innerHTML = `<span class="sp-time">${sameDay(s, day) ? fmtTime(s) : '…'}</span> <span class="sp-subj">${esc(eventTitle(ev))}</span>`;
+  return el;
+}
+
+function renderSprint() {
+  const { start } = range();
+  els.body.innerHTML = '';
+  const today = startOfDay(new Date());
+  const toggle = (key, label, testid) => {
+    const on = cal.sprint[key];
+    const b = h('button.chip.sp-filter' + (on ? '.on' : ''), { type: 'button', role: 'switch', 'aria-checked': on ? 'true' : 'false', dataset: { testid } },
+      h('span.sp-check', { html: on ? icon('check', 12) : '' }), label);
+    b.addEventListener('click', () => setSprintFilter(key, !on));
+    return b;
+  };
+  const counts = h('span.dim.sp-count');
+  const bar = h('div.sp-bar', h('span.sp-title', `${SPRINT_DAYS} Tage`), toggle('events', 'Termine', 'sprint-show-events'), toggle('tasks', 'Aufgaben & Wiedervorlagen', 'sprint-show-tasks'), h('span.spacer'), counts);
+  const grid = h('div.sprintgrid', { dataset: { testid: 'sprint-grid' } });
+  let nEv = 0, nTask = 0;
+  for (let i = 0; i < SPRINT_DAYS; i++) {
+    const d = addDays(start, i);
+    const wd = d.getDay();
+    const isToday = sameDay(d, today);
+    const col = h('div.sp-day' + (wd === 0 || wd === 6 ? '.weekend' : '') + (isToday ? '.today' : '') + (d < today ? '.past' : ''), { dataset: { date: toLocalIso(d).slice(0, 10), testid: 'sprint-day' } });
+    col.appendChild(h('div.sp-head', { onclick: () => { cal.date = d; setView('day'); } }, h('span.sp-wd', WEEKDAYS_SHORT[wd].toUpperCase()), h('span.sp-date', `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.`)));
+    const evs = cal.sprint.events ? eventsOn(d) : [];
+    const allDay = evs.filter(isAllDayLike);
+    // Timed appointments and tasks interleaved by time; overdue tasks lead today's column.
+    const timed = evs.filter((ev) => !isAllDayLike(ev)).map((ev) => ({ t: Math.max(new Date(ev.start), d), el: () => sprintEvent(ev, d) }));
+    const tasks = cal.sprint.tasks ? cal.tasks.filter((m) => {
+      const due = new Date(m.dueAt);
+      return sameDay(due, d) || (isToday && due < today);
+    }) : [];
+    for (const m of tasks) {
+      const due = new Date(m.dueAt);
+      const overdue = due < new Date();
+      timed.push({ t: overdue ? new Date(0) : due, el: () => taskItem(m, overdue) });
+    }
+    timed.sort((a, b) => a.t - b.t);
+    for (const ev of allDay) col.appendChild(sprintEvent(ev, d));
+    for (const x of timed) col.appendChild(x.el());
+    nEv += evs.length; nTask += tasks.length;
+    col.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.ev,.sp-item,.sp-head')) return;
+      const st = new Date(d); st.setHours(9);
+      newEvent({ start: st, end: addMinutes(st, 30) });
+    });
+    grid.appendChild(col);
+  }
+  counts.textContent = [cal.sprint.events ? `${nEv} Termine` : '', cal.sprint.tasks ? `${nTask} Aufgaben` : ''].filter(Boolean).join(' · ');
+  els.body.append(bar, grid);
+}
+
 // ------------------------------------------------------------- selection / peek
 function selectEvent(ev, el, peek = true) {
   cal.selectedId = ev.id;
@@ -455,7 +563,7 @@ function selectEvent(ev, el, peek = true) {
 }
 
 let peekEl = null;
-function closePeek() { if (peekEl) { peekEl.remove(); peekEl = null; } }
+function closePeek() { hideHover(true); if (peekEl) { peekEl.remove(); peekEl = null; } }
 document.addEventListener('mousedown', (e) => { if (peekEl && !peekEl.contains(e.target) && !e.target.closest('.ev')) closePeek(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePeek(); });
 
@@ -472,51 +580,195 @@ export function eventTimeText(ev) {
   return sameDay(s, e) ? `${fmtDateLong(s)}, ${fmtTime(s)} – ${fmtTime(e)}` : `${fmtDateLong(s)} ${fmtTime(s)} – ${fmtDateLong(e)} ${fmtTime(e)}`;
 }
 
-function showPeek(ev, anchor) {
-  closePeek();
+const DAY_MS = 86400000;
+
+/** "in 2 Std. 10 Min." / "läuft · noch 20 Min." / "morgen" / "vor 3 Tagen" relative to now. */
+function relativeWhen(ev, now = new Date()) {
+  const s = ev.isAllDay ? allDayRange(ev).start : new Date(ev.start);
+  const e = ev.isAllDay ? allDayRange(ev).end : new Date(ev.end);
+  const dur = (ms) => {
+    const m = Math.round(ms / 60000);
+    if (m < 60) return `${m} Min.`;
+    const hh = Math.floor(m / 60), mm = m % 60;
+    return mm ? `${hh} Std. ${mm} Min.` : `${hh} Std.`;
+  };
+  if (s <= now && e > now) return { text: ev.isAllDay ? 'heute' : `läuft · noch ${dur(e - now)}`, cls: 'now' };
+  const days = Math.round((startOfDay(s) - startOfDay(now)) / DAY_MS);
+  if (s > now) {
+    if (days === 0) return { text: `in ${dur(s - now)}`, cls: s - now <= 30 * 60000 ? 'soon' : 'today' };
+    if (days === 1) return { text: 'morgen', cls: 'later' };
+    if (days < 7) return { text: `in ${days} Tagen`, cls: 'later' };
+    return { text: `in ${Math.round(days / 7)} Wo.`, cls: 'later' };
+  }
+  const ago = -Math.round((startOfDay(e) - startOfDay(now)) / DAY_MS);
+  return { text: ago <= 0 ? 'vorbei' : ago === 1 ? 'gestern' : `vor ${ago} Tagen`, cls: 'past' };
+}
+
+function durationText(ev) {
+  if (ev.isAllDay) {
+    const r = allDayRange(ev);
+    const n = Math.round((r.end - r.start) / DAY_MS);
+    return n > 1 ? `${n} Tage` : 'ganztägig';
+  }
+  const m = Math.round((new Date(ev.end) - new Date(ev.start)) / 60000);
+  if (m < 60) return `${m} Min.`;
+  return m % 60 ? `${Math.floor(m / 60)} Std. ${m % 60} Min.` : `${m / 60} Std.`;
+}
+
+function whenLine(ev) {
+  const s = new Date(ev.start);
+  if (ev.isAllDay) {
+    const r = allDayRange(ev), last = addDays(r.end, -1);
+    return sameDay(r.start, last) ? `${WEEKDAYS[r.start.getDay()]}, ${fmtDateShortLong(r.start)}` : `${fmtDateShortLong(r.start)} – ${fmtDateShortLong(last)}`;
+  }
+  const e = new Date(ev.end);
+  return sameDay(s, e)
+    ? `${WEEKDAYS[s.getDay()]}, ${fmtDateShortLong(s)} · ${fmtTime(s)} – ${fmtTime(e)}`
+    : `${fmtDateShortLong(s)} ${fmtTime(s)} – ${fmtDateShortLong(e)} ${fmtTime(e)}`;
+}
+function fmtDateShortLong(d) { return `${d.getDate()}. ${MONTHS[d.getMonth()]}`; }
+
+/** Teams/Zoom/Meet link: the online meeting url, else the first meeting link in location/preview. */
+function joinUrl(ev) {
+  if (ev.onlineMeetingUrl) return ev.onlineMeetingUrl;
+  const m = /(https:\/\/(?:teams\.microsoft\.com|[\w.-]*zoom\.us|meet\.google\.com)\/\S+)/i.exec(`${ev.location || ''} ${ev.bodyPreview || ''}`);
+  return m ? m[1] : null;
+}
+
+function avatar(a, cls = '') {
+  const name = displayName(a);
+  return `<span class="bc-av ${cls} ${esc(a.response || '')}" style="background:${avatarColor(a.address || name)}" title="${esc(name)} – ${esc(RESPONSE_TEXT[a.response] || '')}">${esc(initials(a.name, a.address))}</span>`;
+}
+
+/**
+ * "Briefing card" for an appointment: when, where, how to join, who and what.
+ * Shared by the hover card and the click peek (which adds the actions).
+ */
+function briefingCard(ev, { actions = false } = {}) {
   const color = evColor(ev);
-  const p = h('div.peek', { role: 'dialog', 'aria-label': 'Termindetails' });
-  p.appendChild(h('div.peek-bar', { style: { background: color } }));
-  p.appendChild(h('div.peek-title', eventTitle(ev)));
-  p.appendChild(h('div.peek-row', { html: icon('clock', 14) + ' ' + esc(eventTimeText(ev)) }));
-  if (ev.location) p.appendChild(h('div.peek-row', { html: icon('location', 14) + ' ' + esc(ev.location) }));
-  if (ev.isOnlineMeeting && ev.onlineMeetingUrl) {
-    const a = h('a.peek-link', { href: '#', html: icon('teams', 14) + ' An Microsoft Teams-Besprechung teilnehmen' });
-    a.addEventListener('click', (e) => { e.preventDefault(); import('./api.js').then((m) => m.openUrl(ev.onlineMeetingUrl)); });
-    p.appendChild(h('div.peek-row', a));
+  const calObj = calendarById(ev.accountId, ev.calendarId);
+  const p = h('div.peek.briefing', { role: 'dialog', 'aria-label': 'Termindetails', dataset: { testid: 'briefing' } });
+  p.style.setProperty('--bc', color);
+  const when = relativeWhen(ev);
+  const owner = calObj && calObj.owner ? calObj.owner.name || calObj.owner.address : null;
+  p.appendChild(h('div.bc-head',
+    h('span.bc-cal', h('span.bc-dot'), owner ? `Kalender von ${owner}` : calObj ? calObj.name : 'Kalender'),
+    h('span.spacer'),
+    h('span.bc-when.' + when.cls, { dataset: { testid: 'briefing-when' } }, when.text)));
+  p.appendChild(h('div.peek-title' + (ev.isCancelled ? '.cancelled' : ''), (ev.isCancelled ? 'Abgesagt: ' : '') + eventTitle(ev)));
+
+  const facts = h('div.bc-facts');
+  const fact = (ic, html) => facts.appendChild(h('div.bc-fact', { html: icon(ic, 15) + `<span>${html}</span>` }));
+  fact('clock', `${esc(whenLine(ev))} <span class="dim">· ${esc(durationText(ev))}</span>${ev.recurrence || ev.type === 'occurrence' ? ` <span class="bc-tag">${icon('recurrence', 11)} Serie</span>` : ''}`);
+  const url = joinUrl(ev);
+  const loc = ev.location && !/^Microsoft Teams/i.test(ev.location) ? ev.location : '';
+  if (loc) fact('location', esc(loc));
+  p.appendChild(facts);
+  if (url) {
+    const join = h('button.btn.primary.bc-join', { type: 'button', dataset: { testid: 'briefing-join' }, html: icon('teams', 15) + (/teams\.microsoft/i.test(url) || ev.isOnlineMeeting ? ' Teams-Besprechung beitreten' : ' Online-Besprechung beitreten') });
+    join.addEventListener('click', () => import('./api.js').then((m) => m.openUrl(url)));
+    p.appendChild(join);
   }
-  if (ev.organizer) p.appendChild(h('div.peek-row', { html: icon('user', 14) + ' Organisator: ' + esc(displayName(ev.organizer)) }));
-  if (ev.attendees && ev.attendees.length) {
-    const att = h('div.peek-att');
-    for (const a of ev.attendees.slice(0, 8)) att.appendChild(h('div', { html: `<span class="resp ${esc(a.response)}"></span>${esc(displayName(a))} <span class="dim">– ${esc(RESPONSE_TEXT[a.response] || '')}${a.type === 'optional' ? ', optional' : ''}</span>` }));
-    if (ev.attendees.length > 8) att.appendChild(h('div.dim', `… und ${ev.attendees.length - 8} weitere`));
-    p.appendChild(att);
+
+  const people = (ev.attendees || []).filter((a) => a.type !== 'resource');
+  if (ev.organizer || people.length) {
+    const sec = h('div.bc-sec');
+    const count = (r) => people.filter((a) => a.response === r).length;
+    const open = people.length - count('accepted') - count('declined') - count('tentativelyAccepted') - count('organizer');
+    const parts = [count('accepted') && `${count('accepted')} zugesagt`, count('tentativelyAccepted') && `${count('tentativelyAccepted')} vielleicht`, count('declined') && `${count('declined')} abgesagt`, open > 0 && `${open} offen`].filter(Boolean);
+    sec.appendChild(h('div.bc-label', people.length ? `${people.length + (ev.organizer && !people.some((a) => a.address === ev.organizer.address) ? 1 : 0)} Personen` : 'Organisator', parts.length ? h('span.dim', ' · ' + parts.join(' · ')) : null));
+    const row = h('div.bc-people');
+    if (ev.organizer) row.insertAdjacentHTML('beforeend', avatar({ ...ev.organizer, response: 'organizer' }, 'org'));
+    const shown = people.filter((a) => !ev.organizer || a.address !== ev.organizer.address);
+    row.insertAdjacentHTML('beforeend', shown.slice(0, 9).map((a) => avatar(a)).join(''));
+    if (shown.length > 9) row.appendChild(h('span.bc-av.more', `+${shown.length - 9}`));
+    if (ev.organizer) row.appendChild(h('span.bc-orgname', { html: `<b>${esc(displayName(ev.organizer))}</b> <span class="dim">organisiert</span>` }));
+    sec.appendChild(row);
+    if (actions && people.length) {
+      const att = h('div.peek-att');
+      for (const a of people.slice(0, 12)) att.appendChild(h('div', { html: `<span class="resp ${esc(a.response)}"></span>${esc(displayName(a))} <span class="dim">– ${esc(RESPONSE_TEXT[a.response] || '')}${a.type === 'optional' ? ', optional' : ''}</span>` }));
+      if (people.length > 12) att.appendChild(h('div.dim', `… und ${people.length - 12} weitere`));
+      sec.appendChild(att);
+    }
+    p.appendChild(sec);
   }
-  if (ev.categories && ev.categories.length) p.appendChild(h('div.peek-row', { html: ev.categories.map((c) => { const bg = categoryHex(ev.accountId, c); return `<span class="cat-chip" style="background:${bg};color:${textOn(bg)}">${esc(c)}</span>`; }).join(' ') }));
-  if (!ev.isOrganizer && ev.attendees && ev.attendees.length) {
-    p.appendChild(h('div.peek-row.dim', `Ihre Antwort: ${RESPONSE_TEXT[ev.responseStatus] || '–'} · Anzeigen als: ${SHOWAS_TEXT[ev.showAs] || ''}`));
+
+  const agenda = (ev.bodyPreview || '').replace(/_{5,}[\s\S]*$/, '').replace(/\s+/g, ' ').trim();
+  if (agenda && ev.sensitivity !== 'private') {
+    p.appendChild(h('div.bc-sec', h('div.bc-label', 'Worum geht’s'), h('div.bc-agenda', { dataset: { testid: 'briefing-agenda' } }, agenda)));
   }
-  const actions = h('div.peek-actions');
-  if (!ev.isOrganizer && !ev.isCancelled) {
-    actions.append(
-      h('button.btn.small', { html: icon('accept', 12) + ' Annehmen', onclick: busyClick(() => respond(ev, 'accept'), actions) }),
-      h('button.btn.small', { html: icon('tentative', 12) + ' Vorbehalt', onclick: busyClick(() => respond(ev, 'tentativelyAccept'), actions) }),
-      h('button.btn.small', { html: icon('decline', 12) + ' Ablehnen', onclick: busyClick(() => respond(ev, 'decline'), actions) }),
-    );
+
+  const meta = [];
+  if (ev.categories && ev.categories.length) meta.push(...ev.categories.map((c) => { const bg = categoryHex(ev.accountId, c); return `<span class="cat-chip" style="background:${bg};color:${textOn(bg)}">${esc(c)}</span>`; }));
+  if (!ev.isOrganizer && people.length && !owner) meta.push(`<span class="bc-tag">Ihre Antwort: ${esc(RESPONSE_TEXT[ev.responseStatus] || '–')}</span>`);
+  if (ev.showAs && SHOWAS_TEXT[ev.showAs] && ev.showAs !== 'busy') meta.push(`<span class="bc-tag">${esc(SHOWAS_TEXT[ev.showAs])}</span>`);
+  if (ev.importance === 'high') meta.push(`<span class="bc-tag imp">Wichtig</span>`);
+  if (ev.sensitivity === 'private') meta.push(`<span class="bc-tag">${icon('lock', 11)} Privat</span>`);
+  if (ev.isReminderOn && !ev.isAllDay && !owner) meta.push(`<span class="bc-tag">${icon('bell', 11)} ${ev.reminderMinutes} Min. vorher</span>`);
+  if (meta.length) p.appendChild(h('div.bc-meta', { html: meta.join(' ') }));
+
+  if (actions) {
+    const bar = h('div.peek-actions');
+    if (!ev.isOrganizer && !ev.isCancelled && people.length && !owner) {
+      bar.append(
+        h('button.btn.small', { html: icon('accept', 12) + ' Annehmen', onclick: busyClick(() => respond(ev, 'accept'), bar) }),
+        h('button.btn.small', { html: icon('tentative', 12) + ' Vorbehalt', onclick: busyClick(() => respond(ev, 'tentativelyAccept'), bar) }),
+        h('button.btn.small', { html: icon('decline', 12) + ' Ablehnen', onclick: busyClick(() => respond(ev, 'decline'), bar) }),
+      );
+    }
+    bar.append(h('span.spacer'), h('button.btn.small', { onclick: () => { closePeek(); openEvent(ev); } }, 'Öffnen'));
+    if (!calObj || calObj.canEdit) bar.append(h('button.btn.small', { onclick: () => { closePeek(); deleteEvent(ev).catch(reportError); } }, 'Löschen'));
+    p.appendChild(bar);
   }
-  actions.append(h('span.spacer'),
-    h('button.btn.small', { onclick: () => { closePeek(); openEvent(ev); } }, 'Öffnen'),
-    h('button.btn.small', { onclick: () => { closePeek(); deleteEvent(ev).catch(reportError); } }, 'Löschen'));
-  p.appendChild(actions);
+  return p;
+}
+
+function placeCard(p, anchor) {
   document.body.appendChild(p);
   const r = anchor.getBoundingClientRect();
   const pr = p.getBoundingClientRect();
   let left = r.right + 8;
   if (left + pr.width > innerWidth - 8) left = Math.max(8, r.left - pr.width - 8);
-  let top = Math.min(r.top, innerHeight - pr.height - 30);
+  const top = Math.min(r.top, innerHeight - pr.height - 12);
   p.style.left = left + 'px';
   p.style.top = Math.max(8, top) + 'px';
+}
+
+function showPeek(ev, anchor) {
+  closePeek();
+  hideHover(true);
+  const p = briefingCard(ev, { actions: true });
+  placeCard(p, anchor);
   peekEl = p;
+}
+
+// Hover: the same card without actions, after a short delay; it stays while the
+// pointer is on the card (so "Beitreten" can be clicked).
+let hoverEl = null, hoverTimer = 0, hoverHide = 0;
+function hideHover(now = false) {
+  clearTimeout(hoverTimer);
+  clearTimeout(hoverHide);
+  const go = () => { if (hoverEl) { hoverEl.remove(); hoverEl = null; } };
+  if (now) go(); else hoverHide = setTimeout(go, 180);
+}
+function attachHover(el, ev) {
+  el.addEventListener('mouseenter', () => {
+    if (peekEl) return;
+    clearTimeout(hoverHide);
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => {
+      if (peekEl || !el.isConnected) return;
+      hideHover(true);
+      const p = briefingCard(ev);
+      p.classList.add('hover');
+      p.addEventListener('mouseenter', () => clearTimeout(hoverHide));
+      p.addEventListener('mouseleave', () => hideHover());
+      placeCard(p, el);
+      hoverEl = p;
+    }, 380);
+  });
+  el.addEventListener('mouseleave', () => hideHover());
+  el.addEventListener('mousedown', () => hideHover(true));
 }
 
 async function respond(ev, response) {

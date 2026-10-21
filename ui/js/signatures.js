@@ -180,6 +180,13 @@ export function signaturesPanel(accounts, initialAccountId) {
   if (accountId) switchAccount(accountId).catch(console.warn);
 
   async function save() {
+    // Take over what the editor shows even if no input event reported it
+    // (e.g. a paste in an engine that does not fire one).
+    const s = selected();
+    if (s && editor.doc()) {
+      const html = editor.getHtml();
+      if (html !== (s.html || '')) { s.html = html; markDirty(); }
+    }
     for (const [accId, w] of work) {
       if (!w.dirty) continue;
       const sigs = w.settings.signatures;

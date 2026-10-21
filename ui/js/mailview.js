@@ -91,7 +91,6 @@ export function buildSrcdoc(bodyHtml, allowRemote) {
   head.insertAdjacentHTML('afterbegin',
     `<meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
-    `<base target="_blank">` +
     `<style>html{background:#fff}body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;margin:4px 2px 24px;word-wrap:break-word;overflow-wrap:anywhere}` +
     `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font-family:Consolas,"Cascadia Mono",monospace;font-size:13px}blockquote{margin:0 0 0 .8ex;border-left:2px solid #c9d3e3;padding-left:1.2ex;color:#57606a}a{color:#2f6fe4}` +
     `::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#d0d4da;border-radius:5px;border:2px solid #fff}</style>`);
@@ -108,8 +107,10 @@ function linkOf(target) {
 /** Mounts the body iframe and wires link interception. */
 export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
   host.innerHTML = '';
-  // No allow-scripts, no allow-popups/forms/top-navigation: links only open
-  // through the click handler below (http(s) in the browser, mailto in compose).
+  // No allow-scripts, no allow-popups/forms/top-navigation: links open through
+  // the click handler below (http(s) in the browser, mailto in compose). WebKitGTK
+  // delivers no events from this frame, so there a click navigates the frame and
+  // the app's navigation guard (src-tauri) hands the URL to the browser instead.
   const frame = h('iframe.mail-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', referrerpolicy: 'no-referrer' });
   frame.srcdoc = buildSrcdoc(bodyHtml, allowRemote);
   frame.addEventListener('load', () => {
@@ -160,7 +161,8 @@ const FLAG_TEXT = { flagged: 'Zur Nachverfolgung gekennzeichnet', complete: 'Als
 
 /**
  * Renders a message into container.
- * opts: { accountId, config, onChanged(), setCategories(cats) → Promise, onAction(name), moreItems: [] , onManageCategories() }
+ * opts: { accountId, config, onChanged(), onResponded(response) → Promise (meeting request answered),
+ *         setCategories(cats) → Promise, onAction(name), moreItems: [] , onManageCategories() }
  */
 export function renderMessage(container, msg, opts) {
   const { accountId, config } = opts;
@@ -278,14 +280,33 @@ export function renderMessage(container, msg, opts) {
   if (msg.importance === 'high') bars.appendChild(h('div.infobar.important', { html: icon('important', 16) + ' Diese Nachricht wurde mit hoher Wichtigkeit gesendet.' }));
   if (msg.isMeetingRequest && msg.eventId) {
     const bar = h('div.infobar.meeting', h('span.ib-text', { html: icon('calendar', 16) + ' Besprechungsanfrage' }), h('span.spacer'));
+    const DONE = { accept: 'Zugesagt', tentativelyAccept: 'Mit Vorbehalt zugesagt', decline: 'Abgelehnt' };
     const mk = (label, ic, response) => h('button.btn.small', {
       onclick: busyClick(async () => {
+        // Answered once is answered: the buttons do not come back.
+        if (bar.dataset.answered) return;
         await call('respond_event', { accountId, eventId: msg.eventId, response, comment: '', sendResponse: true });
-        toast('Antwort gesendet.');
-        opts.onChanged && opts.onChanged();
+        bar.dataset.answered = response;
+        for (const b of bar.querySelectorAll('.btn')) b.remove();
+        bar.appendChild(h('span.ib-done', { dataset: { testid: 'meeting-answered' } }, DONE[response]));
+        if (opts.onResponded) await opts.onResponded(response);
+        else { toast('Antwort gesendet.'); opts.onChanged && opts.onChanged(); }
       }, bar), html: icon(ic, 15) + ' ' + esc(label),
     });
     bar.append(mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline'));
+    bars.appendChild(bar);
+  }
+  if (opts.delegation && opts.onDelegationDone) {
+    const d = opts.delegation;
+    const bar = h('div.infobar.delegation', { dataset: { testid: 'delegation-bar' } },
+      h('span.ib-text', { html: icon('people', 16) + `<span>Antwort auf die an <b>${esc(d.name)}</b> delegierte Aufgabe „${esc(d.subject)}“</span>` }),
+      h('span.spacer'));
+    bar.appendChild(h('button.btn.small.success', {
+      type: 'button', dataset: { testid: 'delegation-done' },
+      title: 'Delegierte Aufgabe und diese Antwort archivieren',
+      onclick: busyClick(() => opts.onDelegationDone(), bar),
+      html: icon('check', 15) + ' Aufgabe erledigt &amp; archivieren',
+    }));
     bars.appendChild(bar);
   }
   let remoteBar = null;

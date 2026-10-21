@@ -81,7 +81,7 @@ function renderToolbar() {
   const series = tbBtn('Serientyp', 'recurrence', () => recurrenceDialog(), { testid: 'ev-series' });
   setPressed(series, !!st.recurrence);
   tb.append(
-    group(tbBtn(saveLabel, hasAtt && !(st.event && st.event.id) ? 'send' : 'save', () => save(), { testid: 'ev-save' }), tbBtn('Löschen', 'delete', () => del(), { disabled: !(st.event && st.event.id), testid: 'ev-delete' })),
+    group(tbBtn(saveLabel, hasAtt && !(st.event && st.event.id) ? 'send' : 'save', () => save(), { testid: 'ev-save', primary: true }), tbBtn('Löschen', 'delete', () => del(), { disabled: !(st.event && st.event.id), testid: 'ev-delete' })),
     group(tbBtn(hasAtt ? 'Einladung absagen' : 'Teilnehmer einladen', 'people', () => toggleAttendees(), { testid: 'ev-invite' }), teams),
     group(h('div.tb-stack', { style: { gap: '4px', padding: '2px 4px' } },
       h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' }, title: 'Anzeigen als' }, h('span', { html: icon('clock', 14) }), showAs),

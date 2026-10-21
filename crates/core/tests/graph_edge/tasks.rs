@@ -254,3 +254,19 @@ async fn recurring_task_returned_to_inbox_keeps_its_rhythm() {
     assert_eq!(next_due.with_timezone(&Local).time().format("%H:%M").to_string(), expect.time().format("%H:%M").to_string());
     assert!(next_due > Utc::now());
 }
+
+#[tokio::test]
+async fn archive_and_mark_read_of_mail_deleted_on_server_meanwhile() {
+    // Exchange's calendar attendant deletes processed meeting responses on its
+    // own; the cached copy must still be archivable without a Graph 404.
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let items = ctx.list(&inbox.id).await.items;
+    let (a, b) = (items[0].clone(), items[1].clone());
+    assert!(ctx.fake.state.delete_message(ME, &a.id));
+    assert!(ctx.fake.state.delete_message(ME, &b.id));
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [a.id]})).await;
+    let _: Value = call(&ctx.svc, "set_read", json!({"mailboxId": ctx.account, "ids": [b.id], "isRead": true})).await;
+    let left = ctx.list(&inbox.id).await.items;
+    assert!(!left.iter().any(|x| x.id == a.id || x.id == b.id), "gone mails leave the cache");
+}

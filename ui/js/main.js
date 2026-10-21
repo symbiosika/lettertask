@@ -1,17 +1,18 @@
 // Main window shell: top bar with search, action bar, sidebar, events, shortcuts.
 import { call, on, onBusy } from './api.js';
-import { h, $, load, store, fmtTime, esc, toLocalIso, addDays, startOfDay } from './util.js';
+import { h, $, load, store, fmtTime, esc, addDays, startOfDay } from './util.js';
 import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
 import { openWindow } from './api.js';
 import { onBroadcast } from './bus.js';
-import { tbBtn, splitBtn, sep } from './toolbar.js';
+import { tbBtn, newBtns, sep } from './toolbar.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
 import { isImap, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
+import { dateTimeField } from './due.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
 const els = {
@@ -219,7 +220,7 @@ function snoozeItems() {
   const now = new Date();
   snoozeOptions(state.config).forEach((o, i) => {
     const d = computeSnooze(o.rule, now);
-    if (!d) return;
+    if (!d || d <= now) return; // e.g. "Heute 18 Uhr" in the evening
     items.push({ label: o.label, shortcut: fmtSnoozeTarget(d), icon: i === 0 ? 'snooze' : null, onClick: () => mail.snoozeSelected(d), testid: 'snooze-opt-' + i });
   });
   items.push({ separator: true },
@@ -246,14 +247,14 @@ async function quickSnooze() {
 async function customSnooze() {
   if (!mail.getSelection().ids.length) { toast('Bitte wählen Sie zuerst ein Element aus.'); return; }
   const def = addDays(startOfDay(new Date()), 1); def.setHours(8);
-  const input = h('input.input', { type: 'datetime-local', value: toLocalIso(def).slice(0, 16), name: 'snoozeAt', style: { width: '100%' } });
+  const input = dateTimeField(def, 'snoozeAt');
   const res = await modal({
     title: 'Auf Wiedervorlage', width: 360,
-    body: h('div', h('label.lbl', 'Wieder im Posteingang am:'), input),
+    body: h('div', h('label.lbl', 'Wieder im Posteingang am:'), input.el),
     buttons: [{ label: 'Wiedervorlage', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: () => {
-      const d = new Date(input.value);
-      if (isNaN(d) || d <= new Date()) { input.classList.add('invalid'); toast('Bitte einen Zeitpunkt in der Zukunft wählen.', 'error'); return false; }
+      const d = input.value();
+      if (!d || d <= new Date()) { input.el.classList.add('invalid'); toast('Bitte einen Zeitpunkt in der Zukunft wählen.', 'error'); return false; }
       return d;
     },
   });
@@ -268,11 +269,11 @@ function renderToolbar() {
   const dep = (b) => { selDependent.push(b); return b; };
   const lead = h('div.ab-lead');
   if (state.mode === 'mail') {
-    lead.appendChild(splitBtn('Neu', 'plus', () => mail.newMail(), (b) => showMenuAt(b, [
-      { label: 'E-Mail', icon: 'mail', shortcut: 'Strg+N', onClick: () => mail.newMail(), testid: 'new-mail' },
-      { label: 'Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', onClick: () => newTask(), testid: 'new-task' },
-      { label: 'Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', onClick: () => calendar.newEvent(), testid: 'new-event' },
-    ]), { testid: 'tb-new', menuTestid: 'tb-new-menu', primary: true, title: 'Neue E-Mail (Strg+N)' }));
+    lead.appendChild(newBtns([
+      ['mail', 'Neue E-Mail (Strg+N)', () => mail.newMail(), 'tb-new'],
+      ['task', 'Neue Aufgabe (Strg+Umschalt+N)', () => newTask(), 'new-task'],
+      ['calendarNew', 'Neuer Termin (Strg+Umschalt+A)', () => calendar.newEvent(), 'new-event'],
+    ]));
     tb.append(lead,
       h('div.ab-group',
         dep(tbBtn('Antworten', 'reply', () => mail.respond('reply'), { testid: 'tb-reply', title: 'Antworten (Strg+R)' })),
@@ -292,10 +293,10 @@ function renderToolbar() {
     );
     updateActionState();
   } else if (state.mode === 'contacts') {
-    lead.appendChild(splitBtn('Neu', 'plus', () => contacts.newContact(), (b) => showMenuAt(b, [
-      { label: 'Kontakt', icon: 'contacts', onClick: () => contacts.newContact(), testid: 'new-contact' },
-      { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'new-mail' },
-    ]), { testid: 'tb-new-contact', menuTestid: 'tb-new-menu', primary: true, title: 'Neuer Kontakt (Strg+N)' }));
+    lead.appendChild(newBtns([
+      ['contacts', 'Neuer Kontakt (Strg+N)', () => contacts.newContact(), 'tb-new-contact'],
+      ['mail', 'Neue E-Mail', () => mail.newMail(), 'new-mail'],
+    ]));
     tb.append(lead,
       h('div.ab-group',
         dep(tbBtn('E-Mail schreiben', 'mail', () => { const c = contacts.selectedContact(); if (c) contacts.writeTo(c, c.emails[0]); }, { testid: 'tb-ct-write' })),
@@ -305,13 +306,13 @@ function renderToolbar() {
       tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Kontakte synchronisieren (F9)', iconOnly: true }));
     updateActionState();
   } else {
-    lead.appendChild(splitBtn('Neu', 'plus', () => calendar.newEvent(), (b) => showMenuAt(b, [
-      { label: 'Termin', icon: 'calendarNew', onClick: () => calendar.newEvent(), testid: 'new-event' },
-      { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'new-mail' },
-    ]), { testid: 'tb-new-event', menuTestid: 'tb-new-menu', primary: true, title: 'Neuer Termin' }));
+    lead.appendChild(newBtns([
+      ['calendarNew', 'Neuer Termin', () => calendar.newEvent(), 'tb-new-event'],
+      ['mail', 'Neue E-Mail', () => mail.newMail(), 'new-mail'],
+    ]));
     const view = calendar.getView();
     const seg = h('div.segmented', { role: 'tablist' });
-    for (const [v, label] of [['day', 'Tag'], ['workweek', 'Arbeitswoche'], ['week', 'Woche'], ['month', 'Monat']]) {
+    for (const [v, label] of [['day', 'Tag'], ['workweek', 'Arbeitswoche'], ['week', 'Woche'], ['sprint', '14 Tage'], ['month', 'Monat']]) {
       const b = h('button.seg' + (view === v ? '.on' : ''), { type: 'button', role: 'tab', 'aria-selected': view === v ? 'true' : 'false', dataset: { testid: 'tb-view-' + v } }, label);
       b.addEventListener('click', () => { calendar.setView(v); renderToolbar(); });
       seg.appendChild(b);
@@ -454,6 +455,7 @@ async function loadAll() {
 async function selectInitialFolder() {
   const last = load('lastFolder', null);
   if (last && last.folderId === mail.TODAY && mailboxes().length) return mail.selectFolder(mailboxes()[0].id, mail.TODAY);
+  if (last && last.folderId === mail.DELEGATED && mailboxes().length) return mail.selectFolder(mailboxes()[0].id, mail.DELEGATED);
   if (last && folderById(last.mailboxId, last.folderId)) return mail.selectFolder(last.mailboxId, last.folderId);
   const mb = mailboxes()[0];
   if (!mb) { mail.renderFolderTree(); await mail.reloadList(); return; }
@@ -555,9 +557,19 @@ function setupEvents() {
     const d = p.due ? new Date(p.due) : null;
     toast(d && !isNaN(d) ? `Nächste Wiederholung: ${fmtSnoozeTarget(d)}` : 'Nächste Wiederholung eingeplant.', 'info', 6000, { title: p.subject || '' });
   });
+  // Mails go out in the background once the compose window has closed.
+  on('send-failed', (p) => {
+    if (!p) return;
+    const drafts = p.mailboxId && wellKnown(p.mailboxId, 'drafts');
+    toast(`Nicht gesendet: „${p.subject || '(Kein Betreff)'}“ – ${p.message}`, 'error', 15000, drafts ? {
+      action: { label: 'Entwürfe öffnen', onClick: () => { setMode('mail'); return mail.selectFolder(p.mailboxId, drafts.id); } },
+    } : {});
+  });
   on('lanes-changed', (p) => { if (p && p.accountId) mail.onLanesChanged(p.accountId).catch(() => {}); });
   onBroadcast((m) => {
-    if (m.type === 'task-created') toast(m.due ? `Aufgabe angelegt – fällig ${m.due}.` : 'Aufgabe angelegt – sie liegt im Posteingang.');
+    if (m.type === 'task-created' && m.delegate) toast(`Aufgabe an ${m.delegate.name || m.delegate.address} gesendet${m.due ? ` – Wiedervorlage ${m.due}` : ''}.`);
+    else if (m.type === 'delegation-done') toast(`Aufgabe „${m.subject}“ erledigt – archiviert.`);
+    else if (m.type === 'task-created') toast(m.due ? `Aufgabe angelegt – fällig ${m.due}.` : 'Aufgabe angelegt – sie liegt im Posteingang.');
   });
   on('new-mail', (p) => {
     if (!p) return;

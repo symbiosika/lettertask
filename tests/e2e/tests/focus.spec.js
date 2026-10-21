@@ -5,7 +5,6 @@ const { openApp, row, openFolder, select, popupFrom, api } = require('./helpers'
 async function account(page) { return (await api(page, 'list_accounts'))[0]; }
 
 async function newTask(page) {
-  await page.locator('[data-testid=tb-new-menu]').click();
   const popup = await popupFrom(page, () => page.locator('[data-testid=new-task]').click());
   await expect(popup.locator('body[data-ready="1"]')).toHaveCount(1);
   return popup;
@@ -15,8 +14,9 @@ test('Aufgabe „Sofort“ landet ungelesen im Posteingang', async ({ page }) =>
   await openApp(page);
   const popup = await newTask(page);
   await expect(popup.locator('.cw-title')).toHaveText('Neue Aufgabe');
-  // no recipients, only subject + notes + due
-  await expect(popup.locator('.rcpt-box')).toHaveCount(0);
+  // "An mich": no recipients, only subject + notes + due
+  await expect(popup.locator('[data-testid=task-for-me]')).toHaveClass(/on/);
+  await expect(popup.locator('.rcpt-box')).toBeHidden();
   await expect(popup.locator('[data-testid=task-due-now]')).toHaveClass(/on/);
   const subject = `Angebot prüfen ${Date.now()}`;
   await popup.locator('#subject').fill(subject);
@@ -62,7 +62,8 @@ test('Aufgabe ohne Betreff wird nicht angelegt', async ({ page }) => {
   await popup.locator('[data-testid=task-due-custom]').click();
   const at = popup.locator('[data-testid=task-due-at]');
   await expect(at).toBeVisible();
-  await at.fill('2020-01-01T08:00');
+  await at.fill('2020-01-01');
+  await popup.locator('[data-testid=task-due-at-time]').fill('08:00');
   await popup.locator('[data-testid=task-create]').click();
   await expect(popup.locator('.toast', { hasText: 'Zukunft' })).toBeVisible();
   await expect(popup.locator('#subject')).toBeVisible();
@@ -81,7 +82,7 @@ test('Erinnerung an mich: nach dem Senden liegt „Nachfassen“ auf Wiedervorla
   await popup.locator('#subject').fill(subject);
   await popup.locator('[data-testid=remind-on]').click();
   await expect(popup.locator('[data-testid=remind-when]')).toBeVisible();
-  await popup.locator('[data-testid=remind-when]').selectOption('opt1');
+  await popup.locator('[data-testid=remind-when]').selectOption('opt3');
   await expect(popup.locator('[data-testid=remind-when-preview]')).toContainText('08:00');
   const closed = popup.waitForEvent('close');
   await popup.locator('[data-testid=compose-send]').click();
@@ -264,4 +265,79 @@ test('Mail an mich mit #morgen wird automatisch auf Wiedervorlage gelegt', async
   await expect(row(page, subject)).toHaveCount(0);
   await openFolder(page, 'Wiedervorlage');
   await expect(row(page, subject)).toBeVisible({ timeout: 15_000 });
+});
+
+test('Aufgabe delegieren: Mail an die Person, Wiedervorlage und Liste „Delegiert“ mit Personenfilter', async ({ page }) => {
+  await openApp(page);
+  const popup = await newTask(page);
+  await popup.locator('[data-testid=task-for-other]').click();
+  await expect(popup.locator('.cw-title')).toHaveText('Neue Aufgabe delegieren');
+  await expect(popup.locator('[data-testid=task-repeat]')).toBeHidden();
+  await expect(popup.locator('[data-testid=task-todo-prefix]')).toBeChecked();
+  const subject = `Reisekosten abrechnen ${Date.now()}`;
+  await popup.locator('#subject').fill(subject);
+  await popup.locator('.rcpt-input').fill('Anna Muster <anna@fabrikam.example>');
+  await popup.locator('.rcpt-input').press('Enter');
+  const closed = popup.waitForEvent('close');
+  await popup.locator('[data-testid=task-create]').click();
+  await closed;
+  await expect(page.locator('.toast', { hasText: 'Aufgabe an Anna Muster gesendet' })).toBeVisible();
+  const mb = (await api(page, 'list_accounts'))[0].mailboxes[0].id;
+  await api(page, 'create_task', { mailboxId: mb, subject: `Vertrag prüfen ${Date.now()}`, bodyHtml: '', due: null, delegate: { name: 'Bob', address: 'bob@fabrikam.example' }, todoPrefix: false });
+
+  await page.locator('[data-testid=delegated-node]').click();
+  await expect(page.locator('.listpane .folder-name')).toHaveText('Delegiert');
+  await expect(page.locator('.m-sep.today-sec', { hasText: 'Anna Muster' })).toBeVisible();
+  await expect(page.locator('.m-sep.today-sec', { hasText: 'Bob' })).toBeVisible();
+  await expect(row(page, `ToDo: ${subject}`)).toBeVisible();
+  await page.locator('[data-testid=filter-person]').click();
+  await page.locator('.menu-item', { hasText: 'Anna Muster' }).click();
+  await expect(page.locator('.m-sep.today-sec', { hasText: 'Bob' })).toHaveCount(0);
+  await expect(row(page, `ToDo: ${subject}`)).toBeVisible();
+  // the marker stays hidden
+  await expect(page.locator('.cat-chip', { hasText: '[D_' })).toHaveCount(0);
+});
+
+test('Antwort auf eine Delegation: „Aufgabe erledigt & archivieren“ archiviert Antwort und Aufgabe', async ({ page }) => {
+  await openApp(page);
+  const mb = (await account(page)).mailboxes[0].id;
+  const subject = `ToDo: Messestand buchen ${Date.now()}`;
+  const due = new Date(Date.now() + 2 * 86400_000).toISOString();
+  await api(page, 'create_task', { mailboxId: mb, subject, bodyHtml: '<p>Bitte bis Ende der Woche.</p>', due, delegate: { name: 'Anna Muster', address: 'anna@fabrikam.example' } });
+  const res = await page.request.post('/api/demo/reply', { data: { subject, bodyHtml: '<p>Hallo, der Stand ist gebucht.<br>Viele Grüße, Anna</p>' } });
+  expect(res.ok()).toBeTruthy();
+  const inbox = (await api(page, 'list_folders', { mailboxId: mb })).find((f) => f.wellKnown === 'inbox');
+  await api(page, 'sync_folder', { mailboxId: mb, folderId: inbox.id });
+  await openFolder(page, 'Posteingang');
+  await select(page, `AW: ${subject}`);
+  const bar = page.locator('[data-testid=delegation-bar]');
+  await expect(bar).toContainText('Anna Muster');
+  await page.screenshot({ path: 'test-results/delegation-reply.png' });
+  await bar.locator('[data-testid=delegation-done]').click();
+  await expect(page.locator('.toast', { hasText: 'erledigt' })).toBeVisible();
+  await expect(row(page, `AW: ${subject}`)).toHaveCount(0);
+  expect((await api(page, 'list_delegations')).some((m) => m.subject === subject)).toBe(false);
+  // a normal mail has no such bar
+  await select(page, 'Freigabe erforderlich');
+  await expect(page.locator('[data-testid=delegation-bar]')).toHaveCount(0);
+});
+
+test('Antwort auf eine Delegation im Mail-Fenster: grüner Button archiviert und schließt', async ({ page }) => {
+  await openApp(page);
+  const mb = (await account(page)).mailboxes[0].id;
+  const subject = `ToDo: Catering bestellen ${Date.now()}`;
+  await api(page, 'create_task', { mailboxId: mb, subject, bodyHtml: '', due: null, delegate: { name: 'Bob Becker', address: 'bob@fabrikam.example' }, todoPrefix: false });
+  expect((await page.request.post('/api/demo/reply', { data: { subject } })).ok()).toBeTruthy();
+  const inbox = (await api(page, 'list_folders', { mailboxId: mb })).find((f) => f.wellKnown === 'inbox');
+  await api(page, 'sync_folder', { mailboxId: mb, folderId: inbox.id });
+  await openFolder(page, 'Posteingang');
+  const win = await popupFrom(page, () => row(page, `AW: ${subject}`).first().dblclick());
+  const bar = win.locator('[data-testid=delegation-bar]');
+  await expect(bar).toContainText('Bob Becker');
+  const closed = win.waitForEvent('close');
+  await bar.locator('[data-testid=delegation-done]').click();
+  await closed;
+  await expect(page.locator('.toast', { hasText: 'erledigt' })).toBeVisible();
+  await expect(row(page, `AW: ${subject}`)).toHaveCount(0);
+  expect((await api(page, 'list_delegations')).some((m) => m.subject === subject)).toBe(false);
 });

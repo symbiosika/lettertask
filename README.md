@@ -1,174 +1,93 @@
-# lettertask – fokussiertes Mailprogramm für Microsoft 365, Gmail und IMAP
+<p align="center">
+  <img src="docs/logo/logo.png" width="96" alt="lettertask logo">
+</p>
 
-Ein Desktop-Mailprogramm in **Rust** (Tauri 2) für konzentriertes Arbeiten nach dem
-**Inbox-Zero-Prinzip**: Das Postfach ist die Aufgabenliste. Die Oberfläche orientiert sich an
-eM Client – ruhig, schlicht, eine Mail = ein Eintrag (keine Konversations-Gruppierung).
+<h1 align="center">lettertask</h1>
 
-Microsoft-365-Postfächer werden ausschließlich über die **Microsoft Graph API** angebunden
-(EWS wird von Microsoft abgeschaltet), **Gmail / Google Workspace** per Google-Anmeldung über
-IMAP/SMTP (OAuth2), andere Anbieter über **IMAP/SMTP**.
+<p align="center">
+  <b>Your inbox is your to-do list.</b><br>
+  A calm, fast desktop mail client for Microsoft 365, Gmail and IMAP, built for Inbox Zero.
+</p>
 
-## Funktionen
+<p align="center">
+  <img src="docs/screenshots/inbox.png" alt="Inbox with reading pane" width="900">
+</p>
 
-**E-Mail**
-- Konten: **Microsoft 365** (Login im Browser inkl. MFA), **Google / Gmail** (Login im Browser,
-  kein App-Passwort nötig) und **IMAP/SMTP** mit automatischer Servererkennung
-  (Thunderbird-Datenbank, autoconfig) und Verbindungstest
-- Aktionsleiste: **Neu ▾** (E-Mail / Termin / Aufgabe), Antworten, Allen antworten, Weiterleiten,
-  Archivieren, **Auf Wiedervorlage ▾**, Löschen
-- Suche oben mit Bereich (aktueller Ordner / alle Ordner), Feld (Von, An, Betreff, Text),
-  „Nur mit Anhang“ und letzten Suchen
-- Liste mit Avatar, Vorschau und Tags; Lesebereich rechts, unten oder aus; HTML-Mails in einem
-  **abgeschotteten WebView-iframe** (keine Skripte, CSP), externe Bilder erst auf Klick
-- **Tags** (Outlook-Kategorien mit allen 25 Farben) oben rechts in der Mail – bis zu 20 direkt
-  wählbar, Taste **T**
-- Verfassen im eM-Client-Stil: Signatur ▾, Cc & Bcc, Rich-Text, Anhänge (auch > 3 MB),
-  Adressvorschläge aus Kontakten
-- **Signaturen pro Konto**: Liste mit Standard, einstellbar für Neu / Antworten / Weiterleiten
-- **Kontakte**: Outlook-Kontakte werden lokal synchronisiert, Adressen von Empfängern automatisch
-  gesammelt; eigener Kontakte-Bereich
-- Abwesenheitsnotiz, Ordnerverwaltung, Drag & Drop, Offline-Lesen dank lokalem SQLite-Cache,
-  Hintergrund-Synchronisation per Delta-Abfragen, Desktop-Benachrichtigungen
+## Why lettertask?
 
-**Inbox Zero**
-- **Auf Wiedervorlage**: Mail verschwindet in den Ordner „Wiedervorlage“ und kommt zum gewählten
-  Zeitpunkt ungelesen zurück. Zeitpunkte konfigurierbar (Standard: Morgen 8 Uhr, Übermorgen,
-  Am Wochenende, Nächste Woche, In 14 / 30 Tagen). Der Termin liegt auf dem Server
-  (M365: Nachverfolgung, IMAP: Schlagwort) und gilt damit geräteübergreifend.
-- **Aufgabe (Mail)**: Mail an sich selbst mit Fälligkeit („Sofort“ oder Wiedervorlage) – direkt
-  serverseitig angelegt, erscheint auf keinem Gerät vorzeitig; optional **wiederkehrend**
-  (täglich … jährlich, fester Rhythmus beim Archivieren)
-- **Erinnerung an mich** beim Senden: Nachfass-Mail in der Wiedervorlage; sie **erledigt sich
-  selbst**, sobald der Empfänger im selben Verlauf antwortet
-- **Regeln vor der Anzeige**: Mails an sich selbst mit `#morgen`, `#heute`, `#wochenende`,
-  `#nächstewoche`, `#14t`, `#2w` … im Betreff landen sofort auf Wiedervorlage (Aufgaben vom Handy)
-- **Kanban**-Ansicht mit Lanes pro Konto (versteckte Kategorien `[K_<Lane>]`, alte Clients bleiben
-  kompatibel), Drag & Drop, Lesebereich unten oder rechts
-- **Heute**: alles heute Fällige plus die erste Kanban-Lane
-- **Fokuszeit** (1–4 h): automatischer Abruf pausiert, manueller Abruf bleibt möglich
-- Triage per Tastatur: **E** archivieren, **S** Wiedervorlage, **1–9** Lane; schlichtes Konfetti
-  bei erledigten Aufgaben
+Most mail clients are built for reading mail. lettertask is built for **getting through it**.
+Each mail is either done, snoozed or on your board, and your inbox stays empty.
 
-**Kalender** (Microsoft 365)
-- Tag / Arbeitswoche / Woche / Monat, mehrere Kalender, Termine und Besprechungen mit Teilnehmern,
-  Teams-Besprechung, Serien; Einladungen annehmen / mit Vorbehalt / ablehnen
+- ⏰ **Snooze anything.** A mail leaves your inbox and comes back unread when you need it. Snoozes
+  are stored on the server, so they work on all your devices.
+- 🗂️ **Kanban for mail.** Drag mails into lanes such as *Doing*, *Waiting* and *Done*. The lanes are
+  stored as hidden categories, so they stay compatible with Outlook.
+- ✅ **Tasks as mail.** You can create one-off or recurring tasks that show up when they are due.
+  You can also add tags such as `#morgen` or `#2w` to the subject when you mail yourself from your phone.
+- 🔁 **Follow-up reminders.** You get a reminder if nobody answers, and it clears itself as soon as
+  someone replies.
+- 🎯 **Focus time.** Fetching new mail pauses for 1–4 hours. The **Today** view shows only what is
+  due today.
+- ⌨️ **Keyboard triage.** Press `E` to archive, `S` to snooze and `1`–`9` to move a mail to a lane.
+- 📅 **Calendar and contacts** for Microsoft 365, including meetings, Teams links and invitations.
+- 🔒 **Private by design.** HTML mails render in a sandbox and remote images load only when you
+  allow them. Tokens are kept in your OS keychain, and a local cache lets you read offline.
 
-Versteckte Kategorien, die die App verwendet: `[K_…]` Kanban-Lane, `[#monthly]` usw. Wiederholung,
-`[F_…]` Nachfass-Verknüpfung. Sie werden in der Oberfläche nicht als Tags angezeigt.
+<p align="center">
+  <img src="docs/screenshots/kanban.png" alt="Kanban board" width="49%">
+  <img src="docs/screenshots/calendar.png" alt="Calendar work week" width="49%">
+</p>
 
-## Schnellstart ohne Konto (Demo-Modus)
+lettertask is written in Rust with Tauri 2 and runs on Windows, macOS and Linux. Microsoft 365
+connects through the Graph API, and Gmail through OAuth, so you need no app password. Any other
+provider works over IMAP/SMTP with automatic server discovery.
+
+## Try it in 10 seconds (demo mode, no account)
 
 ```bash
-cargo run -p lettertask -- --demo          # Desktop-App
-cargo run -p devserver -- --demo --port 8080  # oder im Browser: http://127.0.0.1:8080
+cargo run -p lettertask -- --demo                 # desktop app
+cargo run -p devserver -- --demo --port 8080      # or in the browser: http://127.0.0.1:8080
 ```
 
-Ein eingebauter Fake-Graph-Server liefert Beispieldaten; nichts verlässt den Rechner.
+Demo mode runs a built-in fake mail server, and no data leaves your machine.
 
-## Mit Microsoft 365 verwenden
+## Install
 
-Die App-Registrierung von Symbiosika (Client-ID) ist fest eingebaut – Anmelden genügt.
-Das ist unbedenklich: Desktop-Apps sind öffentliche Clients ohne Geheimnis, die Client-ID ist
-eine öffentliche Kennung. Die Registrierung ist Multi-Tenant; als Mandant ist `organizations`
-voreingestellt, damit sich Arbeitskonten aus jedem Tenant anmelden können. Unter
-Einstellungen › Konten › Erweitert lassen sich Client-ID und Mandant ändern.
-Für eigene Builds: `LETTERTASK_CLIENT_ID=<guid> LETTERTASK_TENANT=<guid|organizations> cargo build`.
-
-**Anforderungen an die App-Registrierung** (Entra ID › App-Registrierungen):
-1. Plattform **„Mobile und Desktopanwendungen“**, Umleitungs-URI `http://localhost`
-2. Authentifizierung: **„Öffentliche Clientflows zulassen“ → Ja** (für den Gerätecode-Login)
-3. Delegierte Microsoft-Graph-Berechtigungen: `User.Read`, `Mail.ReadWrite`, `Mail.Send`,
-   `Calendars.ReadWrite`, `Contacts.ReadWrite`, `MailboxSettings.ReadWrite`, `People.Read`,
-   `offline_access`, `openid`, `profile` – danach **„Administratorzustimmung erteilen“**
-
-Login: Authorization Code Flow mit PKCE und Loopback-Redirect. Das Refresh-Token liegt im
-Schlüsselbund des Betriebssystems (Windows Anmeldeinformationsverwaltung, macOS Schlüsselbund,
-Linux Secret Service), sonst in einer nur für den Benutzer lesbaren Datei. IMAP-Passwörter ebenso.
-
-## Mit Gmail / Google Workspace verwenden
-
-„Konto hinzufügen › Google / Gmail“ öffnet die Google-Anmeldung im Browser (Authorization Code
-Flow mit PKCE, Loopback-Redirect `http://127.0.0.1:<port>`). E-Mails laufen danach über IMAP/SMTP
-(`imap.gmail.com`, `smtp.gmail.com`) mit SASL **XOAUTH2** – ein Passwort wird nicht gespeichert, nur
-das Refresh-Token im Schlüsselbund. Gmail-Eigenheiten: „Archivieren“ entfernt das Label Posteingang
-(Verschieben nach „Alle Nachrichten“), gesendete Mails legt Gmail selbst unter „Gesendet“ ab.
-
-Dafür braucht die App einen **OAuth-Client aus der Google Cloud Console** (einmalig):
-1. Projekt anlegen, **Gmail API** aktivieren
-2. OAuth-Zustimmungsbildschirm (Zielgruppe „Extern“), Bereich `https://mail.google.com/` eintragen.
-   Im Status „Testen“ dürfen nur eingetragene Testnutzer (max. 100) sich anmelden, und Google lässt
-   deren Anmeldung nach **7 Tagen** ablaufen. Für den allgemeinen Betrieb muss die App von Google
-   verifiziert werden (`mail.google.com` ist ein „eingeschränkter“ Bereich: Prüfung inkl.
-   Sicherheitsbewertung).
-3. Anmeldedaten › OAuth-Client-ID › Anwendungstyp **Desktop-App**
-4. Client-ID und Clientschlüssel unter Einstellungen › Konten › „Google-Anmeldung“ eintragen – oder
-   fest einbauen: `LETTERTASK_GOOGLE_CLIENT_ID=… LETTERTASK_GOOGLE_CLIENT_SECRET=… cargo build`.
-   Der Clientschlüssel einer Desktop-App gilt laut Google nicht als geheim.
-
-Alternativ funktioniert Gmail auch als normales IMAP-Konto mit **App-Passwort**.
-
-### Verbindung prüfen (ohne Oberfläche)
+Installers for Windows, macOS and Linux are attached to each
+[release](https://github.com/symbiosika/lettertask/releases). To build it yourself:
 
 ```bash
-cargo run -p devserver --bin live-check              # nur lesend, Login per Gerätecode
-cargo run -p devserver --bin live-check -- --write   # zusätzlich Schreibtests (räumt auf)
-
-# IMAP/SMTP: Zugangsdaten aus der Umgebung, Benutzername = Mailadresse
-export IMAP_TEST_HOST=… IMAP_TEST_IMAP_PORT=993 IMAP_TEST_SMTP=… IMAP_TEST_SMTP_PORT=465
-export IMAP_TEST_USERNAME=… IMAP_TEST_PASSWORD=…
-cargo run -p devserver --bin live-check-imap              # nur lesend
-cargo run -p devserver --bin live-check-imap -- --write   # Ordner, Aufgaben, Entwürfe, Versand an sich selbst (räumt auf)
-
-# Gmail mit Google-Anmeldung (auch remote: nach der Anmeldung die Adresse aus der Adresszeile kopieren)
-export GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=…
-cargo run -p devserver --bin live-check-imap -- --google-login          # gibt die Anmelde-URL aus
-cargo run -p devserver --bin live-check-imap -- --google-code '<URL>'   # http://127.0.0.1:53682/?code=…
-cargo run -p devserver --bin live-check-imap -- --google --write
+cargo build --release -p lettertask
+cd src-tauri && cargo tauri build   # MSI / DMG / deb / AppImage
 ```
 
-Nutzt dieselbe Service-Schicht wie die App und gibt nur Zähler aus, keine Mailinhalte. Die Schreibtests
-löschen alles, was sie anlegen, endgültig; nur die Ordner, die die App selbst nutzt (z. B. Wiedervorlage,
-Archiv), bleiben bestehen.
+On Linux you also need `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
+librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev`.
 
-## Bauen
+**Microsoft 365** works right away: just sign in. The default app registration is multi-tenant,
+and you can use your own with `LETTERTASK_CLIENT_ID` and `LETTERTASK_TENANT`.
+**Gmail** needs a Google OAuth client, which you set up once with `LETTERTASK_GOOGLE_CLIENT_ID`
+and `LETTERTASK_GOOGLE_CLIENT_SECRET` or under Settings › Accounts. You can also add Gmail as a
+plain IMAP account with an app password.
 
-Voraussetzungen: Rust ≥ 1.80, unter Linux zusätzlich
-`libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev`.
+## Development
+
+```
+ui/               HTML/CSS/ES modules with no build step, served to the WebView
+src-tauri/        Tauri shell
+crates/core/      OAuth, Graph and IMAP/SMTP, sync, SQLite cache, service API
+crates/graph-fake/  stateful Microsoft Graph fake (tests and demo)
+crates/devserver/ the same API over HTTP/SSE for browser dev and E2E tests
+docs/API.md       contract between the UI and the backend
+```
 
 ```bash
-cargo build --release -p lettertask          # Binärdatei: target/release/lettertask
-cargo install tauri-cli --version "^2"          # einmalig, für Installer
-cd src-tauri && cargo tauri build               # MSI/NSIS (Windows), DMG (macOS), deb/AppImage (Linux)
+cargo test --workspace                                       # core, fake server, IMAP (Dovecot)
+cd tests/e2e && npm ci && npx playwright test                # UI end-to-end
 ```
 
-Installer für Windows, macOS und Linux baut auch der GitHub-Workflow `release.yml`
-(manuell auslösbar oder per Tag `v*`).
+Contributions are welcome. Open an issue or a pull request.
 
-## Architektur
+## License
 
-```
-ui/                    Oberfläche (HTML/CSS/ES-Module, kein Build-Schritt), läuft im WebView
-src-tauri/             Tauri-Shell: Fenster, Dialoge, Benachrichtigungen, ein Befehl `call`
-crates/core/           mailcore: OAuth (Microsoft, Google), Graph- und IMAP/SMTP-Anbindung, Sync, SQLite-Cache, Service-API
-crates/graph-fake/     zustandsbehafteter Fake von Microsoft Graph + SMTP-Sink (Tests, Demo-Modus)
-crates/devserver/      dieselbe Service-API über HTTP/SSE (Browser-Entwicklung, E2E-Tests, live-check)
-docs/API.md            Vertrag zwischen Oberfläche und Backend
-tests/e2e/             Playwright-Tests der Oberfläche gegen den Dev-Server
-```
-
-## Tests
-
-```bash
-cargo test --workspace     # Kern, Fake-Server, IMAP gegen echtes Dovecot (übersprungen, wenn nicht installiert)
-cd tests/e2e && npm ci && npx playwright install chromium && npx playwright test   # Oberfläche Ende-zu-Ende
-```
-
-Die IMAP-Tests starten einen privaten Dovecot (`apt install dovecot-imapd`). Die E2E-Tests bauen und
-starten den Dev-Server selbst, jedes Mal mit frischen Demodaten. Der Playwright-Testrunner braucht
-Node.js; unter Bun allein läuft er nicht (er beendet sich ohne Ausgabe).
-
-### Oberfläche starten (ohne Node/Bun)
-
-Die Oberfläche in `ui/` hat keinen Build-Schritt, das Rust-Backend liefert sie aus. Weder Bun noch
-npm sind nötig (siehe Schnellstart). Änderungen an `ui/` werden im Browser-Modus mit einem Neuladen
-der Seite (F5) sichtbar.
+[MIT](LICENSE) © Symbiosika GmbH

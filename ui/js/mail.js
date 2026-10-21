@@ -17,6 +17,22 @@ import { burst, celebrateEmptyInbox } from './confetti.js';
 export const TODAY = '__today__';
 export function isToday() { return state.current.folderId === TODAY; }
 const today = { due: [], todo: [], count: 0 };
+/** Pseudo folder id of the "Delegiert" view: delegated tasks of all accounts. */
+export const DELEGATED = '__delegated__';
+export function isDelegated() { return state.current.folderId === DELEGATED; }
+/** Views built from several accounts instead of one folder. */
+export function isVirtual() { return isToday() || isDelegated(); }
+const delegations = { items: [], person: null };
+/** Assignee address of a delegated task (hidden "[D_<address>]" category). */
+export function delegateOf(m) {
+  const c = (m.categories || []).find((x) => x.startsWith('[D_') && x.endsWith(']') && x.includes('@'));
+  return c ? c.slice(3, -1) : null;
+}
+function delegateName(m) {
+  const addr = delegateOf(m);
+  const a = (m.to || []).find((x) => (x.address || '').toLowerCase() === addr);
+  return (a && a.name) || addr;
+}
 import { openCategoryManager } from './settings.js';
 
 const PAGE = 200;
@@ -48,7 +64,7 @@ let view = load('mailView', 'list'); // 'list' | 'kanban'
 let board = null;
 
 /** Kanban is shown for the folder unless server search results are displayed. */
-export function kanbanActive() { return view === 'kanban' && !list.search && !isToday(); }
+export function kanbanActive() { return view === 'kanban' && !list.search && !isVirtual(); }
 export function getView() { return view; }
 export function setView(v) {
   if (v !== 'list' && v !== 'kanban') return;
@@ -63,7 +79,7 @@ function kanbanPane() { return (state.config && state.config.kanbanReadingPane) 
 function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
 /** Mailbox the given messages belong to (the Heute view mixes accounts). */
 function mbOf(ids) {
-  if (!isToday() && !list.search) return state.current.mailboxId;
+  if (!isVirtual() && !list.search) return state.current.mailboxId;
   const m = ids && ids.length ? findItem(ids[0]) : null;
   return (m && m.mailboxId) || state.current.mailboxId;
 }
@@ -305,6 +321,11 @@ export function renderFolderTree() {
       h('span.fcount', { html: today.count ? `<span class="count" data-testid="today-count">${today.count}</span>` : '' }));
     node.addEventListener('click', () => selectFolder(state.current.mailboxId || mailboxes()[0].id, TODAY));
     favSec.appendChild(node);
+    const dsel = state.mode === 'mail' && isDelegated();
+    const dnode = h('div.tree-node.today-node' + (dsel ? '.selected' : ''), { style: { paddingLeft: '8px' }, dataset: { testid: 'delegated-node', folderId: DELEGATED }, role: 'treeitem', 'aria-selected': dsel ? 'true' : 'false', title: 'An andere Personen delegierte Aufgaben' },
+      h('span.twisty'), h('span.fic', { html: icon('people', 18) }), h('span.fname', 'Delegiert'), h('span.fcount'));
+    dnode.addEventListener('click', () => selectFolder(state.current.mailboxId || mailboxes()[0].id, DELEGATED));
+    favSec.appendChild(dnode);
   }
   if (isExpanded(favKey)) {
     for (const f of favs) {
@@ -418,11 +439,11 @@ export async function selectFolder(mailboxId, folderId) {
   renderFolderTree();
   renderListHead();
   onSelectionChanged();
-  if (folderId === TODAY) {
+  if (folderId === TODAY || folderId === DELEGATED) {
     if (!mailboxById(mailboxId)) state.current.mailboxId = mailboxes()[0] && mailboxes()[0].id;
     applyReadingPaneLayout();
     if (changed) renderList();
-    try { await reloadList(); } finally { if (isToday()) list.fetching = false; }
+    try { await reloadList(); } finally { if (isVirtual()) { list.fetching = false; renderListHead(); } }
     return;
   }
   applyReadingPaneLayout();
@@ -458,11 +479,11 @@ function renderListHead() {
   const f = currentFolder();
   const title = els.head.querySelector('.folder-name');
   const count = els.head.querySelector('.lh-count');
-  title.textContent = list.search ? 'Suchergebnisse' : isToday() ? 'Heute' : (f ? f.displayName : '');
+  title.textContent = list.search ? 'Suchergebnisse' : isToday() ? 'Heute' : isDelegated() ? 'Delegiert' : (f ? f.displayName : '');
   // The local cache of a large folder (e.g. Archiv) holds only the newest part:
   // without a filter the folder's server total is the honest number.
   const fl = list.filter;
-  const unfiltered = !list.search && !isToday() && !fl.unreadOnly && !fl.flaggedOnly && !fl.category && !list.text;
+  const unfiltered = !list.search && !isVirtual() && !fl.unreadOnly && !fl.flaggedOnly && !fl.category && !list.text;
   const serverTotal = unfiltered && f && f.totalCount > list.total ? f.totalCount : 0;
   const n = list.search ? list.search.items.length : serverTotal || list.total;
   count.textContent = n ? n.toLocaleString('de-DE') : '';
@@ -472,7 +493,7 @@ function renderListHead() {
   const busy = els.head.querySelector('.lh-busy');
   if (busy) busy.classList.toggle('on', !!listLoading());
   const mb = mailboxById(state.current.mailboxId);
-  document.title = isToday() ? 'Heute' : `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
+  document.title = isToday() ? 'Heute' : isDelegated() ? 'Delegiert' : `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
 
   const tools = els.head.querySelector('.lh-tools');
   tools.innerHTML = '';
@@ -480,6 +501,18 @@ function renderListHead() {
   if (isToday() && !list.search) {
     const d = new Date();
     tools.appendChild(h('span.today-sub', `${['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][d.getDay()]}, ${d.getDate()}.${d.getMonth() + 1}. · ${today.due.length} fällig`));
+  } else if (isDelegated() && !list.search) {
+    // Filter by assignee.
+    const people = new Map();
+    for (const m of delegations.items) { const a = delegateOf(m); if (!people.has(a)) people.set(a, { name: delegateName(m), n: 0 }); people.get(a).n++; }
+    const cur = delegations.person && people.get(delegations.person);
+    const pBtn = h('button.chip' + (cur ? '.on' : ''), { type: 'button', dataset: { testid: 'filter-person' }, title: 'Nach Person filtern', html: `${icon('user', 14)} ${esc(cur ? cur.name : 'Alle Personen')} ${icon('chevronDown', 12)}` });
+    pBtn.addEventListener('click', () => showMenuAt(pBtn, [
+      { label: 'Alle Personen', checked: !delegations.person, onClick: () => setPerson(null) },
+      { separator: true },
+      ...[...people].sort((a, b) => a[1].name.localeCompare(b[1].name, 'de')).map(([addr, p]) => ({ label: `${p.name} (${p.n})`, checked: delegations.person === addr, onClick: () => setPerson(addr) })),
+    ]));
+    tools.appendChild(pBtn);
   } else if (!list.search) {
     tools.append(
       chip('Alle', !fl.unreadOnly && !fl.flaggedOnly && !fl.category, () => setFilter({ unreadOnly: false, flaggedOnly: false, category: null }), 'filter-all'),
@@ -502,7 +535,7 @@ function renderListHead() {
   }
   const sortHost = els.head.querySelector('.lh-sort');
   sortHost.innerHTML = '';
-  if (!list.search && !isToday()) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
+  if (!list.search && !isVirtual()) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
   const sortBtn = h('button.chip.sort', { type: 'button', title: 'Sortieren', dataset: { testid: 'sort-menu' }, html: `${icon('sort', 14)}<span>${esc(SORT_LABELS[list.sortBy] || 'Datum')}</span>` });
   sortBtn.addEventListener('click', () => showMenuAt(sortBtn, [
     { header: 'Sortieren nach' },
@@ -512,7 +545,7 @@ function renderListHead() {
     { label: 'Aufsteigend', checked: !list.sortDesc, onClick: () => setSortDir(false) },
   ]));
   const dirBtn = h('button.icon-btn.sm', { type: 'button', title: list.sortDesc ? 'Absteigend' : 'Aufsteigend', html: icon(list.sortDesc ? 'down' : 'up', 15), onclick: () => setSortDir(!list.sortDesc) });
-  if (!isToday()) sortHost.append(sortBtn, dirBtn);
+  if (!isVirtual()) sortHost.append(sortBtn, dirBtn);
 
   // search bar
   if (list.search) {
@@ -559,6 +592,7 @@ async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
   if (!mailboxId || !folderId) { renderList(); return; }
   if (list.search) { renderList(); return; }
   if (folderId === TODAY) { await loadToday(); return; }
+  if (folderId === DELEGATED) { await loadDelegations(); return; }
   const kb = kanbanActive();
   // Event-driven reloads keep exactly what is shown; growing the list is loadMore's job.
   const limit = kb ? KANBAN_LIMIT : !keepCount ? PAGE : ifChanged && list.items.length ? list.items.length : Math.max(PAGE, list.items.length);
@@ -606,7 +640,7 @@ async function fetchNextPageNow(mailboxId, folderId) {
 
 /** Lazy loading at the end of the list: next cached page, else older mails from the server. */
 async function loadMore() {
-  if (list.loading || list.search || kanbanActive() || isToday()) return;
+  if (list.loading || list.search || kanbanActive() || isVirtual()) return;
   const { mailboxId, folderId } = state.current;
   if (list.items.length < list.total) {
     list.loading = true;
@@ -642,15 +676,15 @@ function rowContext() {
   const f = currentFolder();
   const snoozedView = f && f.wellKnown === 'snoozed' && !list.search;
   return {
-    toMode: f && TO_FOLDERS.has(f.wellKnown) && !list.search,
+    toMode: (f && TO_FOLDERS.has(f.wellKnown) && !list.search) || (isDelegated() && !list.search),
     snoozedView,
     accountId: accountOfMailbox(state.current.mailboxId),
-    separators: !!(state.config ? state.config.showDateSeparators ?? true : true) && list.sortBy === 'received' && !list.search && !snoozedView && !isToday(),
+    separators: !!(state.config ? state.config.showDateSeparators ?? true : true) && list.sortBy === 'received' && !list.search && !snoozedView && !isVirtual(),
   };
 }
 
 function groupOf(m, ctx) {
-  if (isToday()) return m._section;
+  if (isVirtual() && !list.search) return m._section;
   return ctx.separators ? dateGroup(m.receivedAt).key : null;
 }
 
@@ -660,7 +694,7 @@ function buildRows(items, from, ctx) {
   let lastGroup = from > 0 ? groupOf(items[from - 1], ctx) : null;
   for (let i = from; i < items.length; i++) {
     const m = items[i];
-    if (isToday() && m._section !== lastGroup) {
+    if (isVirtual() && !list.search && m._section !== lastGroup) {
       lastGroup = m._section;
       frag.appendChild(h('div.m-sep.today-sec', { dataset: { section: m._section } }, m._section));
     }
@@ -671,7 +705,7 @@ function buildRows(items, from, ctx) {
         frag.appendChild(h('div.m-sep', { dataset: { group: g.key } }, g.label));
       }
     }
-    frag.appendChild(msgRow(m, isToday() ? accountOfMailbox(m.mailboxId) : ctx.accountId, ctx.toMode, ctx.snoozedView || (isToday() && m._due)));
+    frag.appendChild(msgRow(m, isVirtual() ? accountOfMailbox(m.mailboxId) : ctx.accountId, ctx.toMode, ctx.snoozedView || (isVirtual() && m._due)));
   }
   return frag;
 }
@@ -716,9 +750,9 @@ function paintListFooter() {
   if (!items.length && listLoading()) {
     els.list.appendChild(h('div.loading-state', { dataset: { testid: 'list-loading' } }, h('span.busy'), h('div', 'Nachrichten werden geladen…')));
   } else if (!items.length) {
-    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : 'inbox', 40) }),
-      h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : 'Keine Elemente in dieser Ansicht.')));
-  } else if (!list.search && !isToday() && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
+    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : isDelegated() ? 'people' : 'inbox', 40) }),
+      h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.')));
+  } else if (!list.search && !isVirtual() && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
     const foot = h('div.load-more', { dataset: { testid: 'list-more' } });
     if (list.loading) foot.append(h('span.busy.on.inline-busy'), ' Weitere Elemente werden geladen…');
     else foot.appendChild(h('button.linkbtn', { type: 'button', onclick: () => loadMore().catch(reportError) },
@@ -747,8 +781,8 @@ function msgRow(m, accountId, toMode, snoozedView) {
   const cls = 'div.msg' + (m.isRead ? '' : '.unread') + (sel ? '.selected' : '') + (list.cursor === m.id ? '.cursor' : '') + (m.flag === 'flagged' ? '.flagged' : '');
   const el = h(cls, { draggable: 'true', dataset: { id: m.id }, role: 'option', 'aria-selected': sel ? 'true' : 'false' });
   const flagIc = snoozedView ? '' : m.flag === 'flagged' ? icon('flag', 15, 'flagged') : m.flag === 'complete' ? icon('check', 15, 'done') : icon('flag', 15, 'ghost');
-  const overdue = isToday() && m._due && m.dueAt && new Date(m.dueAt) < new Date();
-  const time = isToday() && m._due && m.dueAt
+  const overdue = isVirtual() && m._due && m.dueAt && new Date(m.dueAt) < new Date();
+  const time = isVirtual() && m._due && m.dueAt
     ? `<span class="m-due${overdue ? ' overdue' : ''}" title="Fällig ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 13)} ${overdue ? 'überfällig ' : ''}${esc(fmtDueShort(m.dueAt))}</span>`
     : snoozedView && m.dueAt
     ? `<span class="m-due" title="Auf Wiedervorlage bis ${esc(fmtSnoozeTarget(new Date(m.dueAt)))}">${icon('snooze', 13)} bis ${esc(fmtDueShort(m.dueAt))}</span>`
@@ -808,7 +842,7 @@ export async function serverSearch(text, opts = {}) {
   if (!text) { clearSearch(); return; }
   const { mailboxId, folderId } = state.current;
   if (!mailboxId) return;
-  const args = { mailboxId, text, folderId: opts.scope === 'all' || folderId === TODAY ? null : folderId };
+  const args = { mailboxId, text, folderId: opts.scope === 'all' || folderId === TODAY || folderId === DELEGATED ? null : folderId };
   if (opts.field && opts.field !== 'all') args.field = opts.field;
   if (opts.hasAttachments) args.hasAttachments = true;
   const items = await call('search_messages', args);
@@ -981,7 +1015,11 @@ async function showReading(m, text) {
     els.read.appendChild(h('div.loading-state', { dataset: { testid: 'read-loading' } }, h('span.busy'), h('div', 'Nachricht wird geladen…')));
   }, 250);
   try {
-    const detail = await call('get_message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id }, { silent: true }).finally(() => clearTimeout(slow));
+    const mbId = m.mailboxId || state.current.mailboxId;
+    // A reply to a delegated task (same thread) offers "Aufgabe erledigt & archivieren".
+    const delegationP = call('find_delegation', { mailboxId: mbId, messageId: m.id }, { silent: true }).catch(() => null);
+    const detail = await call('get_message', { mailboxId: mbId, messageId: m.id }, { silent: true }).finally(() => clearTimeout(slow));
+    const delegation = await delegationP;
     if (token !== readToken) return;
     currentDetail = detail;
     const accountId = accountOfMailbox(detail.mailboxId || state.current.mailboxId);
@@ -990,8 +1028,19 @@ async function showReading(m, text) {
       config: state.config,
       snoozed: inSnoozedFolder(),
       onChanged: () => {},
+      // An answered invitation is done: it leaves the inbox like in Outlook.
+      onResponded: () => archiveIds([m.id], { quiet: true, mailboxId: detail.mailboxId || state.current.mailboxId })
+        .then(() => toast('Antwort gesendet – Einladung archiviert.'))
+        .catch((e) => { console.warn(e); toast('Antwort gesendet.'); refreshFolders(detail.mailboxId).catch(() => {}); }),
       setCategories: (cats) => setCategoriesFor([{ m: findItem(m.id) || m, cats }]),
       setRecurrence: (rule) => setRecurrenceFor([m.id], rule),
+      delegation: delegation ? { name: delegateName(delegation), subject: delegation.subject } : null,
+      onDelegationDone: async () => {
+        const mailboxId = detail.mailboxId || mbId;
+        await archiveIds([m.id, delegation.id], { quiet: true, mailboxId });
+        toast(`Aufgabe „${delegation.subject}“ erledigt – archiviert.`);
+        if (isDelegated()) await reloadList();
+      },
       onManageCategories: () => openCategoryManager(accountId),
       onAction: (name, anchor) => {
         if (name === 'more') showMenuAt(anchor, moreItems(true));
@@ -1171,10 +1220,9 @@ export async function archiveSelected() {
   if (s) await archiveIds(s.ids);
 }
 
-async function archiveIds(ids) {
-  const mailboxId = mbOf(ids);
+async function archiveIds(ids, { quiet = false, mailboxId = mbOf(ids) } = {}) {
   const archive = wellKnown(mailboxId, 'archive');
-  if (archive && archive.id === state.current.folderId && !list.search) { toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
+  if (archive && archive.id === state.current.folderId && !list.search) { if (!quiet) toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
   burst(rowEl(ids[0]));
   await removeFromList(ids);
   try {
@@ -1183,7 +1231,7 @@ async function archiveIds(ids) {
     if (!/Unbekannter Befehl/.test(e.message) || !archive) throw e;
     await call('move_messages', { mailboxId, ids, destFolderId: archive.id });
   }
-  toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
+  if (!quiet) toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
   await refreshFolders(mailboxId);
   checkInboxZero();
 }
@@ -1350,7 +1398,7 @@ export const hooks = { snoozeItems: null, openLaneSettings: null };
 export async function onMailChanged(p) {
   const tasks = [];
   if (p && p.mailboxId) tasks.push(refreshFolders(p.mailboxId));
-  if (isToday()) tasks.push(reloadList());
+  if (isVirtual()) tasks.push(reloadList());
   else if (p && p.mailboxId === state.current.mailboxId && (!p.folderId || p.folderId === state.current.folderId)) tasks.push(reloadList({ ifChanged: !kanbanActive() }));
   refreshTodayCount();
   await Promise.all(tasks);
@@ -1384,6 +1432,38 @@ async function loadToday() {
   if (list.cursor && !ids.has(list.cursor)) list.cursor = null;
   renderList();
   onCountsChanged();
+}
+
+// ============================================================ Delegiert
+/** Loads the "Delegiert" view: open delegated tasks of all accounts, grouped by assignee. */
+async function loadDelegations() {
+  let res;
+  try { res = await call('list_delegations', {}, { silent: true }); } catch (e) { res = []; console.warn(e); }
+  if (!isDelegated()) return;
+  delegations.items = res || [];
+  if (delegations.person && !delegations.items.some((m) => delegateOf(m) === delegations.person)) delegations.person = null;
+  // Grouped by person (alphabetical); within a person the backend order (due first) stays.
+  const items = delegations.items
+    .filter((m) => !delegations.person || delegateOf(m) === delegations.person)
+    .map((m) => ({ ...m, _section: delegateName(m), _due: !!m.dueAt }))
+    .map((m, i) => [m, i])
+    .sort((a, b) => a[0]._section.localeCompare(b[0]._section, 'de') || a[1] - b[1])
+    .map(([m]) => m);
+  list.items = items;
+  list.total = items.length;
+  list.unread = items.filter((m) => !m.isRead).length;
+  list.canLoadOlder = false;
+  const ids = new Set(items.map((m) => m.id));
+  for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
+  if (list.cursor && !ids.has(list.cursor)) list.cursor = null;
+  renderList();
+  onCountsChanged();
+}
+
+function setPerson(addr) {
+  delegations.person = addr;
+  renderListHead();
+  reloadList({ keepCount: false }).catch(reportError);
 }
 
 function setTodayCount(n) {

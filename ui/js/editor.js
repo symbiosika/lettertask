@@ -22,7 +22,66 @@ function splitHtml(html) {
   return { styles, body: doc.body ? doc.body.innerHTML : '' };
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } = {}) {
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+
+/** Turns bare web addresses in the text into links (text inside <a> stays as is). */
+function linkify(root) {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement && n.parentElement.closest('a,style,script') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) if (/https?:\/\/|www\./i.test(n.data)) nodes.push(n);
+  for (const node of nodes) {
+    const text = node.data;
+    const frag = root.ownerDocument.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(URL_RE)) {
+      // Trailing punctuation usually ends the sentence, not the address.
+      const url = m[0].replace(/[.,;:!?)\]}'»“”]+$/, '');
+      if (!url || /^www\.$/i.test(url)) continue;
+      frag.append(text.slice(last, m.index));
+      const a = root.ownerDocument.createElement('a');
+      a.href = /^www\./i.test(url) ? 'https://' + url : url;
+      a.textContent = url;
+      frag.append(a);
+      last = m.index + url.length;
+    }
+    if (!last) continue;
+    frag.append(text.slice(last));
+    node.replaceWith(frag);
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+/**
+ * WebKit hands out pasted images as blob: URLs, which only live as long as the
+ * document. Replace them with data URLs so the HTML can be stored and sent.
+ */
+async function embedBlobImages(doc) {
+  const imgs = [...doc.querySelectorAll('img')].filter((i) => /^blob:/i.test(i.getAttribute('src') || ''));
+  await Promise.all(imgs.map(async (img) => {
+    try {
+      // Polled: WebKit delivers no load events from the sandboxed frame.
+      for (let i = 0; !img.complete && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
+      if (!img.naturalWidth) return;
+      const c = doc.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      img.setAttribute('src', c.toDataURL('image/png'));
+    } catch (e) { console.warn('Bild konnte nicht übernommen werden', e); }
+  }));
+}
+
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
   let pending = html;
@@ -32,14 +91,43 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
       doc = frame.contentDocument;
       doc.designMode = 'on';
       try { doc.execCommand('styleWithCSS', false, true); doc.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* ignore */ }
-      doc.addEventListener('input', () => onInput && onInput());
+      // Changes are watched with a MutationObserver, not input events: WebKit
+      // (WebKitGTK on Linux) dispatches no events at all from a frame sandboxed
+      // without allow-scripts, so typing and pasting would go unnoticed.
+      const d = doc;
+      new MutationObserver(() => {
+        if (d !== doc) return;
+        onInput && onInput();
+        // A native paste (e.g. an image in WebKit) may bring blob: images.
+        if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
+      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      if (onDropFiles) {
+        // Files dropped onto the text become attachments (the drop lands in this frame, not the window).
+        const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+        doc.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+        doc.addEventListener('drop', (e) => {
+          if (!hasFiles(e) || !e.dataTransfer.files.length) return;
+          e.preventDefault();
+          window.document.body.classList.remove('dropping');
+          onDropFiles([...e.dataTransfer.files]);
+        });
+      }
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
-        const raw = e.clipboardData && e.clipboardData.getData('text/html');
-        if (!raw) return;
+        const cd = e.clipboardData;
+        const raw = cd && cd.getData('text/html');
+        const files = cd ? [...cd.files].filter((f) => /^image\//.test(f.type)) : [];
+        if (!raw && !files.length) return;
         e.preventDefault();
-        doc.execCommand('insertHTML', false, splitHtml(raw).body);
+        const target = doc;
+        (async () => {
+          let html = raw ? splitHtml(raw).body : '';
+          // Image only (screenshot, copied picture): embed it as data URL.
+          if (!html) html = (await Promise.all(files.map(fileToDataUrl))).map((u) => `<img src="${u}">`).join('');
+          if (target !== doc) return;
+          doc.execCommand('insertHTML', false, html);
+        })().catch(console.warn);
       });
       doc.addEventListener('keydown', (e) => {
         // forward window shortcuts (Ctrl+Enter send, Ctrl+S save, Esc)
@@ -54,7 +142,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
 
   function setContent(x) {
     const { styles, body } = splitHtml(x);
-    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}</style>${styles}</head><body>${body}</body></html>`;
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}</style>${styles}</head><body>${body}</body></html>`;
   }
 
   const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
@@ -129,15 +217,18 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
     ready,
     getHtml: () => {
       if (!doc) return pending || '';
+      // Links are made on read, not while typing: rewriting text under the caret would move it.
+      const body = doc.body.cloneNode(true);
+      linkify(body);
       const styles = [...doc.head.querySelectorAll('style:not([data-oc])')].map((s) => s.outerHTML).join('');
-      return styles ? `<html><head>${styles}</head><body>${doc.body.innerHTML}</body></html>` : doc.body.innerHTML;
+      return styles ? `<html><head>${styles}</head><body>${body.innerHTML}</body></html>` : body.innerHTML;
     },
     getText: () => (doc ? doc.body.innerText : ''),
     /** The editable document (null until loaded). */
     doc: () => doc,
     /** Notifies listeners after programmatic changes. */
     changed: () => onInput && onInput(),
-    setHtml: async (x) => { pending = x; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
+    setHtml: async (x) => { pending = x; doc = null; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
     focus: async () => {
       await ready;
       frame.contentWindow.focus();

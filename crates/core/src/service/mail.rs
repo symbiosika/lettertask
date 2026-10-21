@@ -732,16 +732,34 @@ impl Service {
 
     pub(crate) async fn patch_many(&self, mb: &Mailbox, c: &Arc<GraphClient>, ids: &[String], body: Value) -> Result<()> {
         let prefix = mb.graph_prefix();
-        stream::iter(ids.to_vec())
+        let gone: Vec<Option<String>> = stream::iter(ids.to_vec())
             .map(|id| {
                 let c = c.clone();
                 let body = body.clone();
                 let p = format!("{prefix}/messages/{}", seg(&id));
-                async move { c.patch(&p, &body).await.map(|_| ()) }
+                async move {
+                    match c.patch(&p, &body).await {
+                        Ok(_) => Ok(None),
+                        Err(e) if e.is_not_found() => Ok(Some(id)),
+                        Err(e) => Err(e),
+                    }
+                }
             })
             .buffer_unordered(PARALLEL)
             .try_collect::<Vec<_>>()
             .await?;
+        // Messages deleted on the server meanwhile leave the cache instead of failing.
+        let gone: Vec<String> = gone.into_iter().flatten().collect();
+        for id in &gone {
+            if let Some(old) = self.store.get_summary(&mb.id, id)? {
+                self.store
+                    .adjust_folder_counts(&mb.id, &old.folder_id, if old.is_read { 0 } else { -1 }, -1)?;
+            }
+            self.store.delete_message(&mb.id, id)?;
+        }
+        if !gone.is_empty() {
+            self.emit_mail_changed(&mb.id, None);
+        }
         Ok(())
     }
 
@@ -834,7 +852,15 @@ impl Service {
                 let c = c.clone();
                 let p = format!("{prefix}/messages/{}/{action}", seg(&id));
                 let body = json!({"destinationId": dest});
-                async move { c.post(&p, &body).await.map(|v| (id, v)) }
+                async move {
+                    match c.post(&p, &body).await {
+                        Ok(v) => Ok((id, v)),
+                        // Gone on the server already (e.g. a meeting response the
+                        // calendar attendant processed and deleted): drop it locally.
+                        Err(e) if e.is_not_found() => Ok((id, Value::Null)),
+                        Err(e) => Err(e),
+                    }
+                }
             })
             .buffer_unordered(PARALLEL)
             .try_collect()

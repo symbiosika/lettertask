@@ -675,6 +675,22 @@ impl Store {
             .collect())
     }
 
+    /// Messages of a mailbox (any folder) with a category starting with `prefix`.
+    pub fn messages_with_category_prefix(&self, mailbox_id: &str, prefix: &str) -> Result<Vec<MessageSummary>> {
+        let quoted = serde_json::to_string(prefix)?;
+        let pattern = like_contains(quoted.trim_end_matches('"'));
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE mailbox_id=?1 AND categories_json LIKE ?2 ESCAPE '\\' ORDER BY received DESC"
+        ))?;
+        let rows = st.query_map(params![mailbox_id, pattern], message_row)?;
+        Ok(rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|m| m.categories.iter().any(|x| x.starts_with(prefix)))
+            .collect())
+    }
+
     /// Messages of a mailbox with a due time before `ts` (RFC3339 UTC).
     pub fn messages_due_before(&self, mailbox_id: &str, ts: &str) -> Result<Vec<MessageSummary>> {
         let c = self.c();

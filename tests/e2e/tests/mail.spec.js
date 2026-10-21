@@ -104,7 +104,7 @@ test('Auf Wiedervorlage und wieder aufheben', async ({ page }) => {
   const first = page.locator('[data-testid=snooze-opt-0]');
   await expect(first).toContainText('Morgen 8 Uhr');
   await expect(first).toContainText('08:00');
-  await expect(page.locator('[data-testid=snooze-opt-5]')).toContainText('In 30 Tagen');
+  await expect(page.locator('[data-testid=snooze-opt-7]')).toContainText('In 30 Tagen');
   await first.click();
   await expect(row(page, 'Reisekostenabrechnung September')).toHaveCount(0);
   await expect(page.locator('.toast')).toContainText('Wiedervorlage bis');
@@ -173,9 +173,8 @@ test('Filter Ungelesen', async ({ page }) => {
   await page.locator('[data-testid=filter-all]').click();
 });
 
-test('Neu-Menü öffnet Termin-Fenster', async ({ page }) => {
+test('Neu-Termin-Button öffnet Termin-Fenster', async ({ page }) => {
   await openApp(page);
-  await page.locator('[data-testid=tb-new-menu]').click();
   const popup = await popupFrom(page, () => page.locator('[data-testid=new-event]').click());
   await expect(popup.locator('input[name=subject]')).toBeVisible();
   expect(popup.url()).toContain('event.html');
