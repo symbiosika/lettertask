@@ -173,9 +173,8 @@ test('Filter Ungelesen', async ({ page }) => {
   await page.locator('[data-testid=filter-all]').click();
 });
 
-test('Neu-Menü öffnet Termin-Fenster', async ({ page }) => {
+test('Neu-Termin-Button öffnet Termin-Fenster', async ({ page }) => {
   await openApp(page);
-  await page.locator('[data-testid=tb-new-menu]').click();
   const popup = await popupFrom(page, () => page.locator('[data-testid=new-event]').click());
   await expect(popup.locator('input[name=subject]')).toBeVisible();
   expect(popup.url()).toContain('event.html');

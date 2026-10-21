@@ -5,7 +5,6 @@ const { openApp, row, openFolder, select, popupFrom, api } = require('./helpers'
 async function account(page) { return (await api(page, 'list_accounts'))[0]; }
 
 async function newTask(page) {
-  await page.locator('[data-testid=tb-new-menu]').click();
   const popup = await popupFrom(page, () => page.locator('[data-testid=new-task]').click());
   await expect(popup.locator('body[data-ready="1"]')).toHaveCount(1);
   return popup;

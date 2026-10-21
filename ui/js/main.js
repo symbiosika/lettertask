@@ -6,7 +6,7 @@ import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from '
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
 import { openWindow } from './api.js';
 import { onBroadcast } from './bus.js';
-import { tbBtn, splitBtn, sep } from './toolbar.js';
+import { tbBtn, newBtns, sep } from './toolbar.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
@@ -268,11 +268,11 @@ function renderToolbar() {
   const dep = (b) => { selDependent.push(b); return b; };
   const lead = h('div.ab-lead');
   if (state.mode === 'mail') {
-    lead.appendChild(splitBtn('Neu', 'plus', () => mail.newMail(), (b) => showMenuAt(b, [
-      { label: 'E-Mail', icon: 'mail', shortcut: 'Strg+N', onClick: () => mail.newMail(), testid: 'new-mail' },
-      { label: 'Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', onClick: () => newTask(), testid: 'new-task' },
-      { label: 'Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', onClick: () => calendar.newEvent(), testid: 'new-event' },
-    ]), { testid: 'tb-new', menuTestid: 'tb-new-menu', primary: true, title: 'Neue E-Mail (Strg+N)' }));
+    lead.appendChild(newBtns([
+      ['mail', 'Neue E-Mail (Strg+N)', () => mail.newMail(), 'tb-new'],
+      ['task', 'Neue Aufgabe (Strg+Umschalt+N)', () => newTask(), 'new-task'],
+      ['calendarNew', 'Neuer Termin (Strg+Umschalt+A)', () => calendar.newEvent(), 'new-event'],
+    ]));
     tb.append(lead,
       h('div.ab-group',
         dep(tbBtn('Antworten', 'reply', () => mail.respond('reply'), { testid: 'tb-reply', title: 'Antworten (Strg+R)' })),
@@ -292,10 +292,10 @@ function renderToolbar() {
     );
     updateActionState();
   } else if (state.mode === 'contacts') {
-    lead.appendChild(splitBtn('Neu', 'plus', () => contacts.newContact(), (b) => showMenuAt(b, [
-      { label: 'Kontakt', icon: 'contacts', onClick: () => contacts.newContact(), testid: 'new-contact' },
-      { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'new-mail' },
-    ]), { testid: 'tb-new-contact', menuTestid: 'tb-new-menu', primary: true, title: 'Neuer Kontakt (Strg+N)' }));
+    lead.appendChild(newBtns([
+      ['contacts', 'Neuer Kontakt (Strg+N)', () => contacts.newContact(), 'tb-new-contact'],
+      ['mail', 'Neue E-Mail', () => mail.newMail(), 'new-mail'],
+    ]));
     tb.append(lead,
       h('div.ab-group',
         dep(tbBtn('E-Mail schreiben', 'mail', () => { const c = contacts.selectedContact(); if (c) contacts.writeTo(c, c.emails[0]); }, { testid: 'tb-ct-write' })),
@@ -305,10 +305,10 @@ function renderToolbar() {
       tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Kontakte synchronisieren (F9)', iconOnly: true }));
     updateActionState();
   } else {
-    lead.appendChild(splitBtn('Neu', 'plus', () => calendar.newEvent(), (b) => showMenuAt(b, [
-      { label: 'Termin', icon: 'calendarNew', onClick: () => calendar.newEvent(), testid: 'new-event' },
-      { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'new-mail' },
-    ]), { testid: 'tb-new-event', menuTestid: 'tb-new-menu', primary: true, title: 'Neuer Termin' }));
+    lead.appendChild(newBtns([
+      ['calendarNew', 'Neuer Termin', () => calendar.newEvent(), 'tb-new-event'],
+      ['mail', 'Neue E-Mail', () => mail.newMail(), 'new-mail'],
+    ]));
     const view = calendar.getView();
     const seg = h('div.segmented', { role: 'tablist' });
     for (const [v, label] of [['day', 'Tag'], ['workweek', 'Arbeitswoche'], ['week', 'Woche'], ['month', 'Monat']]) {

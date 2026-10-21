@@ -123,6 +123,9 @@ kbd { font-family: inherit; }
 .split .tb-drop { width: 26px; padding: 0; justify-content: center; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .split.primary .tb-drop { border-left: 1px solid rgba(255, 255, 255, .28); }
 .split.primary { box-shadow: 0 1px 2px rgba(47, 111, 228, .3); border-radius: var(--radius-sm); }
+.new-btns .new-plus { display: flex; align-items: center; padding: 0 6px 0 10px; background: var(--accent); color: #fff; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.new-btns .tb-btn { border-radius: 0; border-left: 1px solid rgba(255, 255, 255, .28); }
+.new-btns .tb-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .tb-sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; flex: none; }
 .tb-group { display: flex; align-items: center; gap: 2px; }
 .tb-group + .tb-group { border-left: 1px solid var(--border); margin-left: 6px; padding-left: 6px; }
