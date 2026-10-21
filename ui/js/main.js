@@ -567,6 +567,7 @@ function setupEvents() {
   on('lanes-changed', (p) => { if (p && p.accountId) mail.onLanesChanged(p.accountId).catch(() => {}); });
   onBroadcast((m) => {
     if (m.type === 'task-created' && m.delegate) toast(`Aufgabe an ${m.delegate.name || m.delegate.address} gesendet${m.due ? ` – Wiedervorlage ${m.due}` : ''}.`);
+    else if (m.type === 'delegation-done') toast(`Aufgabe „${m.subject}“ erledigt – archiviert.`);
     else if (m.type === 'task-created') toast(m.due ? `Aufgabe angelegt – fällig ${m.due}.` : 'Aufgabe angelegt – sie liegt im Posteingang.');
   });
   on('new-mail', (p) => {
