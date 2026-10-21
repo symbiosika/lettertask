@@ -51,10 +51,19 @@ pub(crate) struct NewMail {
 
 /// Hidden category linking a reminder to the thread of the sent mail.
 pub(crate) fn followup_category(thread_id: &str) -> String {
+    format!("[F_{}]", thread_hash(thread_id))
+}
+
+/// Hidden category linking a delegated task to the thread of the mail sent to
+/// the assignee, so a reply can be recognised: "[DT_<hash>]".
+pub(crate) fn delegation_thread_category(thread_id: &str) -> String {
+    format!("[DT_{}]", thread_hash(thread_id))
+}
+
+fn thread_hash(thread_id: &str) -> String {
     use sha2::{Digest, Sha256};
     let h = Sha256::digest(thread_id.trim().as_bytes());
-    let hex: String = h.iter().take(5).map(|b| format!("{b:02x}")).collect();
-    format!("[F_{hex}]")
+    h.iter().take(5).map(|b| format!("{b:02x}")).collect()
 }
 
 /// Hidden category marking a delegated task and its assignee: "[D_<address>]".
@@ -227,7 +236,7 @@ impl Service {
         }
         let due = parse_due(due)?;
         let subject = delegated_subject(subject, todo_prefix);
-        self.send_draft(DraftInput {
+        let thread = self.send_draft_thread(DraftInput {
             id: None,
             mailbox_id: mailbox_id.to_string(),
             mode: "new".into(),
@@ -241,7 +250,7 @@ impl Service {
             new_attachments: vec![],
             removed_attachment_ids: vec![],
             remind_at: None,
-        })
+        }, true)
         .await?;
         let name = if to.name.is_empty() { to.address.clone() } else { format!("{} &lt;{}&gt;", html_escape::encode_text(&to.name), to.address) };
         let header = format!(
@@ -258,11 +267,34 @@ impl Service {
                 to: vec![to.clone()],
                 reply_to: vec![to.clone()],
                 due,
-                categories: vec![delegate_category(&to.address)],
+                categories: std::iter::once(delegate_category(&to.address))
+                    .chain(thread.as_deref().filter(|t| !t.is_empty()).map(delegation_thread_category))
+                    .collect(),
             },
         )
         .await
         .map_err(|e| Error::Other(format!("Die Aufgabe wurde an {} gesendet, die Wiedervorlage konnte aber nicht angelegt werden: {e}", to.address)))
+    }
+
+    /// The open delegated task a received mail answers (same thread), if any.
+    pub(crate) fn find_delegation(&self, mailbox_id: &str, message_id: &str) -> Result<Option<MessageSummary>> {
+        let Some(m) = self.store.get_summary(mailbox_id, message_id)? else { return Ok(None) };
+        let me = self.store.get_mailbox(mailbox_id)?.address;
+        if m.conversation_id.is_empty() || m.from.as_ref().is_some_and(|f| f.address.eq_ignore_ascii_case(&me)) {
+            return Ok(None);
+        }
+        let closed: Vec<String> = self
+            .store
+            .list_folders(mailbox_id)?
+            .into_iter()
+            .filter(|f| matches!(f.well_known.as_deref(), Some("deleteditems" | "archive" | "sentitems" | "drafts" | "junkemail")))
+            .map(|f| f.id)
+            .collect();
+        Ok(self
+            .store
+            .messages_with_category(mailbox_id, &delegation_thread_category(&m.conversation_id))?
+            .into_iter()
+            .find(|d| d.id != m.id && !closed.contains(&d.folder_id) && delegate_of(&d.categories).is_some()))
     }
 
     /// Open delegated tasks of all accounts (not archived or deleted), by due time.

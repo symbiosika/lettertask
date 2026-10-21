@@ -296,3 +296,27 @@ test('Aufgabe delegieren: Mail an die Person, Wiedervorlage und Liste „Delegie
   // the marker stays hidden
   await expect(page.locator('.cat-chip', { hasText: '[D_' })).toHaveCount(0);
 });
+
+test('Antwort auf eine Delegation: „Aufgabe erledigt & archivieren“ archiviert Antwort und Aufgabe', async ({ page }) => {
+  await openApp(page);
+  const mb = (await account(page)).mailboxes[0].id;
+  const subject = `ToDo: Messestand buchen ${Date.now()}`;
+  const due = new Date(Date.now() + 2 * 86400_000).toISOString();
+  await api(page, 'create_task', { mailboxId: mb, subject, bodyHtml: '<p>Bitte bis Ende der Woche.</p>', due, delegate: { name: 'Anna Muster', address: 'anna@fabrikam.example' } });
+  const res = await page.request.post('/api/demo/reply', { data: { subject, bodyHtml: '<p>Hallo, der Stand ist gebucht.<br>Viele Grüße, Anna</p>' } });
+  expect(res.ok()).toBeTruthy();
+  const inbox = (await api(page, 'list_folders', { mailboxId: mb })).find((f) => f.wellKnown === 'inbox');
+  await api(page, 'sync_folder', { mailboxId: mb, folderId: inbox.id });
+  await openFolder(page, 'Posteingang');
+  await select(page, `AW: ${subject}`);
+  const bar = page.locator('[data-testid=delegation-bar]');
+  await expect(bar).toContainText('Anna Muster');
+  await page.screenshot({ path: 'test-results/delegation-reply.png' });
+  await bar.locator('[data-testid=delegation-done]').click();
+  await expect(page.locator('.toast', { hasText: 'erledigt' })).toBeVisible();
+  await expect(row(page, `AW: ${subject}`)).toHaveCount(0);
+  expect((await api(page, 'list_delegations')).some((m) => m.subject === subject)).toBe(false);
+  // a normal mail has no such bar
+  await select(page, 'Freigabe erforderlich');
+  await expect(page.locator('[data-testid=delegation-bar]')).toHaveCount(0);
+});

@@ -555,6 +555,7 @@ impl Service {
                 )
                 .await?),
             "list_delegations" => ok(self.list_delegations()?),
+            "find_delegation" => ok(self.find_delegation(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)?),
             "set_recurrence" => {
                 self.set_recurrence(
                     &arg::<String>(a, "mailboxId")?,

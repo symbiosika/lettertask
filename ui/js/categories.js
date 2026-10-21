@@ -49,7 +49,7 @@ export function textOn(hex) {
 // recurrence "[#monthly]", delegations "[D_<address>]". They never show up as tags but must survive tag edits.
 export const LANE_PREFIX = '[K_';
 export const LANE_NAME_RE = /^[A-Za-z0-9ÄÖÜäöüß _-]{1,30}$/;
-const HIDDEN_PREFIXES = ['[K_', '[F_', '[#', '[D_'];
+const HIDDEN_PREFIXES = ['[K_', '[F_', '[#', '[D_', '[DT_'];
 export function isHiddenCategory(name) {
   return typeof name === 'string' && name.endsWith(']') && HIDDEN_PREFIXES.some((p) => name.startsWith(p));
 }

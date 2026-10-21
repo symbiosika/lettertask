@@ -357,7 +357,7 @@ impl Service {
         }
         let (mb, c) = self.mailbox(&d.mailbox_id)?;
         match self.write_draft(&mb, &c, &d).await {
-            Ok(id) => self.send_written(&mb, &c, &id, &d).await,
+            Ok(id) => self.send_written(&mb, &c, &id, &d, false).await.map(|_| ()),
             Err(e) => Err(match self.save_draft(d).await {
                 Ok(_) => Error::Other(format!("{e} – {KEPT}")),
                 Err(_) => e,
@@ -366,20 +366,26 @@ impl Service {
     }
 
     pub(crate) async fn send_draft(&self, d: DraftInput) -> Result<()> {
+        self.send_draft_thread(d, false).await.map(|_| ())
+    }
+
+    /// Sends `d`; with `want_thread` returns the thread id of the sent mail.
+    pub(crate) async fn send_draft_thread(&self, d: DraftInput, want_thread: bool) -> Result<Option<String>> {
         if crate::imap::is_imap_id(&d.mailbox_id) {
             return self.imap_send_draft(d).await;
         }
         self.check_send(&d)?;
         let (mb, c) = self.mailbox(&d.mailbox_id)?;
         let id = self.write_draft(&mb, &c, &d).await?;
-        self.send_written(&mb, &c, &id, &d).await
+        self.send_written(&mb, &c, &id, &d, want_thread).await
     }
 
-    /// Sends the draft `id` already written from `d`.
-    async fn send_written(&self, mb: &Mailbox, c: &Arc<GraphClient>, id: &str, d: &DraftInput) -> Result<()> {
+    /// Sends the draft `id` already written from `d`; returns the thread id
+    /// when it was looked up (reminder or `want_thread`).
+    async fn send_written(&self, mb: &Mailbox, c: &Arc<GraphClient>, id: &str, d: &DraftInput, want_thread: bool) -> Result<Option<String>> {
         let remind_at = d.remind_at.as_deref().filter(|a| !a.trim().is_empty());
-        // Thread id of the mail, for "Nachfassen erledigt sich selbst".
-        let thread = if d.remind_at.as_deref().is_some_and(|a| !a.is_empty()) {
+        // Thread id of the mail, for "Nachfassen erledigt sich selbst" and delegations.
+        let thread = if want_thread || remind_at.is_some() {
             c.get(&format!("{}/messages/{}?$select=conversationId", mb.graph_prefix(), seg(id)))
                 .await
                 .ok()
@@ -422,7 +428,7 @@ impl Service {
                 self.emit_mail_changed(&mb.id, Some(&f.id));
             }
         }
-        Ok(())
+        Ok(thread)
     }
 
     pub(crate) async fn discard_draft(&self, mailbox_id: &str, draft_id: Option<&str>) -> Result<()> {

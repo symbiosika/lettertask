@@ -1037,6 +1037,22 @@ async fn delegated_task_is_sent_and_followed_up() {
     ctx.sync(&sent.id).await;
     let out = ctx.list(&sent.id).await.items.into_iter().find(|m| m.subject == "ToDo: Angebot prüfen").expect("sent");
     assert_eq!(out.to[0].address, "Anna@Fabrikam.example");
+    assert!(t.categories.iter().any(|c| c.starts_with("[DT_")), "{:?}", t.categories);
+    // Anna answers in the thread: the reply is recognised as answer to the delegation.
+    let fake = ctx.fake.as_ref().unwrap();
+    let sent_raw = fake.state.sent_messages("me").into_iter().find(|m| m["subject"] == "ToDo: Angebot prüfen").unwrap();
+    fake.state.inject_incoming("me", "inbox", json!({
+        "subject": "AW: ToDo: Angebot prüfen", "conversationId": sent_raw["conversationId"], "isRead": false,
+        "from": {"emailAddress": {"name": "Anna Muster", "address": "anna@fabrikam.example"}},
+    }));
+    let inbox = ctx.folder("inbox").await;
+    ctx.sync(&inbox.id).await;
+    let reply = ctx.list(&inbox.id).await.items.into_iter().find(|m| m.subject == "AW: ToDo: Angebot prüfen").unwrap();
+    let found: Option<MessageSummary> = call(&ctx.svc, "find_delegation", json!({"mailboxId": ctx.account, "messageId": reply.id})).await;
+    assert_eq!(found.map(|m| m.id), Some(t.id.clone()), "not auto-resolved, but found");
+    let other = ctx.list(&inbox.id).await.items.into_iter().find(|m| m.id != reply.id).unwrap();
+    let none: Option<MessageSummary> = call(&ctx.svc, "find_delegation", json!({"mailboxId": ctx.account, "messageId": other.id})).await;
+    assert!(none.is_none());
     // Without prefix and without due time: copy in the inbox.
     let t2: MessageSummary = call(
         &ctx.svc,

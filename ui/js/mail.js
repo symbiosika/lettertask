@@ -443,7 +443,7 @@ export async function selectFolder(mailboxId, folderId) {
     if (!mailboxById(mailboxId)) state.current.mailboxId = mailboxes()[0] && mailboxes()[0].id;
     applyReadingPaneLayout();
     if (changed) renderList();
-    try { await reloadList(); } finally { if (isVirtual()) list.fetching = false; }
+    try { await reloadList(); } finally { if (isVirtual()) { list.fetching = false; renderListHead(); } }
     return;
   }
   applyReadingPaneLayout();
@@ -1015,7 +1015,11 @@ async function showReading(m, text) {
     els.read.appendChild(h('div.loading-state', { dataset: { testid: 'read-loading' } }, h('span.busy'), h('div', 'Nachricht wird geladen…')));
   }, 250);
   try {
-    const detail = await call('get_message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id }, { silent: true }).finally(() => clearTimeout(slow));
+    const mbId = m.mailboxId || state.current.mailboxId;
+    // A reply to a delegated task (same thread) offers "Aufgabe erledigt & archivieren".
+    const delegationP = call('find_delegation', { mailboxId: mbId, messageId: m.id }, { silent: true }).catch(() => null);
+    const detail = await call('get_message', { mailboxId: mbId, messageId: m.id }, { silent: true }).finally(() => clearTimeout(slow));
+    const delegation = await delegationP;
     if (token !== readToken) return;
     currentDetail = detail;
     const accountId = accountOfMailbox(detail.mailboxId || state.current.mailboxId);
@@ -1030,6 +1034,13 @@ async function showReading(m, text) {
         .catch((e) => { console.warn(e); toast('Antwort gesendet.'); refreshFolders(detail.mailboxId).catch(() => {}); }),
       setCategories: (cats) => setCategoriesFor([{ m: findItem(m.id) || m, cats }]),
       setRecurrence: (rule) => setRecurrenceFor([m.id], rule),
+      delegation: delegation ? { name: delegateName(delegation), subject: delegation.subject } : null,
+      onDelegationDone: async () => {
+        const mailboxId = detail.mailboxId || mbId;
+        await archiveIds([m.id, delegation.id], { quiet: true, mailboxId });
+        toast(`Aufgabe „${delegation.subject}“ erledigt – archiviert.`);
+        if (isDelegated()) await reloadList();
+      },
       onManageCategories: () => openCategoryManager(accountId),
       onAction: (name, anchor) => {
         if (name === 'more') showMenuAt(anchor, moreItems(true));
