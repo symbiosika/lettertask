@@ -27,6 +27,9 @@
     "active": true,
     "targets": "all",
     "category": "Productivity",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "shortDescription": "E-Mail und Kalender für Microsoft 365",
     "icon": [
       "icons/32x32.png",

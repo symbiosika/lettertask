@@ -140,6 +140,27 @@ async fn call(state: tauri::State<'_, Arc<Service>>, cmd: String, args: Option<V
         .map_err(|e| e.to_string())
 }
 
+/// Keeps every webview on the app's own pages. A web link that would navigate
+/// a window or the mail iframe (WebKitGTK dispatches no click events from the
+/// sandboxed frame, so the JS handler never sees it) opens in the browser.
+fn navigation_guard() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("navigation-guard")
+        .on_navigation(|webview, url| {
+            if !matches!(url.scheme(), "http" | "https") {
+                return true;
+            }
+            let host = url.host_str().unwrap_or_default();
+            if host.ends_with("localhost") || host == "127.0.0.1" {
+                return true;
+            }
+            if let Err(e) = webview.app_handle().opener().open_url(url.as_str(), None::<&str>) {
+                tracing::warn!("Link konnte nicht geöffnet werden: {e}");
+            }
+            false
+        })
+        .build()
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -152,6 +173,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(navigation_guard())
         .invoke_handler(tauri::generate_handler![call])
         .on_window_event(on_window_event)
         .setup(move |app| {
