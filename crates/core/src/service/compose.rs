@@ -283,24 +283,104 @@ impl Service {
         Ok(())
     }
 
-    pub(crate) async fn send_draft(&self, d: DraftInput) -> Result<()> {
-        if crate::imap::is_imap_id(&d.mailbox_id) {
-            return self.imap_send_draft(d).await;
-        }
+    /// Checks what can be checked before anything is sent: a failure
+    /// afterwards would make the user send the mail a second time.
+    fn check_send(&self, d: &DraftInput) -> Result<()> {
         if d.to.iter().chain(&d.cc).chain(&d.bcc).all(|a| a.address.trim().is_empty()) {
             return Err(Error::invalid("Bitte mindestens einen Empfänger angeben."));
         }
-        // Check the reminder before anything is sent: a failure afterwards
-        // would make the user send the mail a second time.
+        if let Some(a) = d.to.iter().chain(&d.cc).chain(&d.bcc).find(|a| !valid_address(&a.address)) {
+            return Err(Error::invalid(format!("Ungültige Adresse: {}", a.address)));
+        }
         let remind_at = d.remind_at.as_deref().filter(|a| !a.trim().is_empty());
         if remind_at.is_some() {
             super::tasks::parse_due(remind_at)?;
         }
+        Ok(())
+    }
+
+    /// Sends in the background: checks the mail, then returns at once. The
+    /// mails go out one after another; a failure is reported through the
+    /// event "send-failed" and a notification, the mail is kept as a draft.
+    pub(crate) fn queue_send(self: &Arc<Self>, d: DraftInput) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        self.check_send(&d)?;
+        let mut q = self.send_queue.lock().unwrap();
+        let tx = q.get_or_insert_with(|| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(Self::send_worker(Arc::downgrade(self), rx));
+            tx
+        });
+        self.pending_sends.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = tx.send(d) {
+            self.pending_sends.fetch_sub(1, Ordering::SeqCst);
+            *q = None;
+            return Err(Error::Other(format!("Senden nicht möglich: {e}")));
+        }
+        Ok(())
+    }
+
+    async fn send_worker(svc: std::sync::Weak<Self>, mut rx: tokio::sync::mpsc::UnboundedReceiver<DraftInput>) {
+        while let Some(d) = rx.recv().await {
+            let Some(svc) = svc.upgrade() else { return };
+            let subject = d.subject.clone();
+            let mailbox_id = d.mailbox_id.clone();
+            let r = svc.send_queued(d).await;
+            svc.pending_sends.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            match r {
+                Ok(()) => svc.emit("send-done", json!({"mailboxId": mailbox_id, "subject": subject})),
+                Err(e) => {
+                    tracing::warn!("Senden fehlgeschlagen: {e}");
+                    let title = if subject.trim().is_empty() { "(Kein Betreff)" } else { subject.trim() };
+                    svc.host.notify("Nachricht nicht gesendet", &format!("{title}: {e}"));
+                    svc.emit("send-failed", json!({"mailboxId": mailbox_id, "subject": subject, "message": e.to_string()}));
+                }
+            }
+        }
+    }
+
+    /// Mails still waiting in the background queue (incl. the one being sent).
+    pub fn pending_sends(&self) -> usize {
+        self.pending_sends.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// One mail of the queue. When it could not be sent before it was stored
+    /// on the server, it is saved as a draft so nothing gets lost.
+    async fn send_queued(&self, d: DraftInput) -> Result<()> {
+        const KEPT: &str = "Die Nachricht wurde nicht gesendet und liegt im Ordner Entwürfe.";
+        if crate::imap::is_imap_id(&d.mailbox_id) {
+            let Err(e) = self.imap_send_draft(d.clone()).await else { return Ok(()) };
+            return Err(match self.save_draft(d).await {
+                Ok(_) => Error::Other(format!("{e} – {KEPT}")),
+                Err(_) => e,
+            });
+        }
+        let (mb, c) = self.mailbox(&d.mailbox_id)?;
+        match self.write_draft(&mb, &c, &d).await {
+            Ok(id) => self.send_written(&mb, &c, &id, &d).await,
+            Err(e) => Err(match self.save_draft(d).await {
+                Ok(_) => Error::Other(format!("{e} – {KEPT}")),
+                Err(_) => e,
+            }),
+        }
+    }
+
+    pub(crate) async fn send_draft(&self, d: DraftInput) -> Result<()> {
+        if crate::imap::is_imap_id(&d.mailbox_id) {
+            return self.imap_send_draft(d).await;
+        }
+        self.check_send(&d)?;
         let (mb, c) = self.mailbox(&d.mailbox_id)?;
         let id = self.write_draft(&mb, &c, &d).await?;
+        self.send_written(&mb, &c, &id, &d).await
+    }
+
+    /// Sends the draft `id` already written from `d`.
+    async fn send_written(&self, mb: &Mailbox, c: &Arc<GraphClient>, id: &str, d: &DraftInput) -> Result<()> {
+        let remind_at = d.remind_at.as_deref().filter(|a| !a.trim().is_empty());
         // Thread id of the mail, for "Nachfassen erledigt sich selbst".
         let thread = if d.remind_at.as_deref().is_some_and(|a| !a.is_empty()) {
-            c.get(&format!("{}/messages/{}?$select=conversationId", mb.graph_prefix(), seg(&id)))
+            c.get(&format!("{}/messages/{}?$select=conversationId", mb.graph_prefix(), seg(id)))
                 .await
                 .ok()
                 .and_then(|v| v["conversationId"].as_str().map(str::to_string))
@@ -308,7 +388,7 @@ impl Service {
             None
         };
         if let Err(e) = c
-            .post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(&id)))
+            .post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(id)))
             .await
         {
             // The draft (incl. attachments) stays on the server; show it.
@@ -329,13 +409,13 @@ impl Service {
         }
         if let Some(at) = remind_at {
             // The mail is out; a failing reminder must not report the send as failed.
-            if let Err(e) = self.create_send_reminder(&d, at, thread.as_deref()).await {
+            if let Err(e) = self.create_send_reminder(d, at, thread.as_deref()).await {
                 tracing::warn!("Erinnerung konnte nicht angelegt werden: {e}");
                 self.host.notify("Erinnerung konnte nicht angelegt werden", &format!("{}: {e}", d.subject));
                 self.emit("reminder-failed", json!({"mailboxId": mb.id, "subject": d.subject, "message": e.to_string()}));
             }
         }
-        self.store.delete_message(&mb.id, &id)?;
+        self.store.delete_message(&mb.id, id)?;
         for wk in ["drafts", "sentitems", "inbox"] {
             if let Some(f) = self.store.folder_by_well_known(&mb.id, wk)? {
                 let _ = self.sync_folder(&mb.id, &f.id, true).await;

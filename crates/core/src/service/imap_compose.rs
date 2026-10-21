@@ -3,6 +3,7 @@
 //! copy is stored in Sent.
 
 use base64::Engine;
+use serde_json::json;
 
 use super::compose::{cid_to_data, data_to_cid, prepend_to_body};
 use super::imap_mail::{expunge_uids, uid_search};
@@ -432,9 +433,16 @@ impl Service {
                 address: a.address.trim().to_string(),
             })
             .collect();
-        self.collect_addresses(&mb, &all)?;
+        // The mail is out; failures from here on must not report it as unsent.
+        if let Err(e) = self.collect_addresses(&mb, &all) {
+            tracing::warn!("Adressen konnten nicht gemerkt werden: {e}");
+        }
         if let Some(at) = d.remind_at.as_deref().filter(|a| !a.is_empty()) {
-            self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await?;
+            if let Err(e) = self.create_send_reminder(&d, at, Some(o.message_id.trim_matches(['<', '>']))).await {
+                tracing::warn!("Erinnerung konnte nicht angelegt werden: {e}");
+                self.host.notify("Erinnerung konnte nicht angelegt werden", &format!("{}: {e}", d.subject));
+                self.emit("reminder-failed", json!({"mailboxId": mb, "subject": d.subject, "message": e.to_string()}));
+            }
         }
         Ok(())
     }

@@ -54,6 +54,10 @@ pub struct Service {
     pub(crate) imap: crate::imap::conn::Pool,
     /// Access tokens of accounts signed in with Google.
     google_tokens: std::sync::Mutex<HashMap<String, TokenSet>>,
+    /// Mails sent in the background, in order, to one worker (started on demand).
+    send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
+    /// Mails queued or being sent in the background.
+    pending_sends: std::sync::atomic::AtomicUsize,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -200,6 +204,8 @@ impl Service {
             last_sync: RwLock::new(None),
             imap: Default::default(),
             google_tokens: Default::default(),
+            send_queue: Default::default(),
+            pending_sends: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -517,7 +523,12 @@ impl Service {
                 .await?),
             "save_draft" => ok(self.save_draft(arg(a, "draft")?).await?),
             "send_draft" => {
-                self.send_draft(arg(a, "draft")?).await?;
+                let d = arg(a, "draft")?;
+                if arg::<Option<bool>>(a, "background")?.unwrap_or(false) {
+                    self.queue_send(d)?;
+                } else {
+                    self.send_draft(d).await?;
+                }
                 ok(Value::Null)
             }
             "discard_draft" => {

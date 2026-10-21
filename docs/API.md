@@ -181,7 +181,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `create_draft` | `{ mailboxId, mode, sourceMessageId: string\|null }` | `Draft` (`new` → id null, body = signature; reply/replyAll/forward → server draft with quoted original + signature on top) |
 | `get_draft` | `{ mailboxId, messageId }` | `Draft` (open an existing draft from the Drafts folder) |
 | `save_draft` | `{ draft: DraftInput }` | `Draft` (creates server draft when id is null) |
-| `send_draft` | `{ draft: DraftInput }` | `null` |
+| `send_draft` | `{ draft: DraftInput, background?: bool }` | `null` (`background: true`: recipients/reminder are checked, then it returns at once; the mail goes out in a queue, one after another — result via `send-done` / `send-failed`, a failed mail stays in Drafts) |
 | `discard_draft` | `{ mailboxId, draftId: string\|null }` | `null` |
 | `suggest_recipients` | `{ mailboxId, query }` | `Address[]` (max 10; local contacts first, then O365 People API, then known senders) |
 
@@ -270,6 +270,8 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 | `categories-changed` | `{ accountId: string }` |
 | `contacts-changed` | `{}` |
 | `new-mail` | `{ mailboxId, count, from: string, subject: string }` |
+| `send-done` | `{ mailboxId, subject }` — a mail from the background queue was sent |
+| `send-failed` | `{ mailboxId, subject, message }` — a mail from the background queue was not sent (kept in Drafts) |
 
 Windows opened with `open_window` are separate pages that use the same API; changes they make are
 broadcast through the events above so the main window refreshes.

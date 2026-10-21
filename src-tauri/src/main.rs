@@ -83,6 +83,54 @@ impl Host for TauriHost {
     }
 }
 
+/// Largest file taken from a drop (the compose window checks the same).
+const DROP_MAX: u64 = 150 * 1024 * 1024;
+
+/// Files dropped onto a compose window. Tauri takes file drops over natively,
+/// so the page never sees them (and the editor frame delivers no events in
+/// WebKitGTK at all): the files are read here and handed to that window as
+/// "files-dropped" `{ label, files: [{ name, contentBase64, size }], skipped: [name] }`.
+fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    use tauri::{DragDropEvent, WindowEvent};
+    let WindowEvent::DragDrop(dd) = event else { return };
+    let label = window.label().to_string();
+    if !label.starts_with("compose-") {
+        return;
+    }
+    let app = window.app_handle().clone();
+    match dd {
+        DragDropEvent::Enter { .. } | DragDropEvent::Over { .. } => {
+            let _ = app.emit_to(&label, "files-drag", serde_json::json!({ "label": label, "over": true }));
+        }
+        DragDropEvent::Leave => {
+            let _ = app.emit_to(&label, "files-drag", serde_json::json!({ "label": label, "over": false }));
+        }
+        DragDropEvent::Drop { paths, .. } => {
+            let paths = paths.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                use base64::Engine;
+                let _ = app.emit_to(&label, "files-drag", serde_json::json!({ "label": label, "over": false }));
+                let mut files = Vec::new();
+                let mut skipped = Vec::new();
+                for p in paths {
+                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let size = std::fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| m.len());
+                    match size.filter(|s| *s <= DROP_MAX).and_then(|_| std::fs::read(&p).ok()) {
+                        Some(bytes) => files.push(serde_json::json!({
+                            "name": name,
+                            "size": bytes.len(),
+                            "contentBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                        })),
+                        None => skipped.push(name),
+                    }
+                }
+                let _ = app.emit_to(&label, "files-dropped", serde_json::json!({ "label": label, "files": files, "skipped": skipped }));
+            });
+        }
+        _ => {}
+    }
+}
+
 /// The only command: forwards to the service layer (see docs/API.md).
 #[tauri::command]
 async fn call(state: tauri::State<'_, Arc<Service>>, cmd: String, args: Option<Value>) -> Result<Value, String> {
@@ -105,6 +153,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![call])
+        .on_window_event(on_window_event)
         .setup(move |app| {
             let handle = app.handle().clone();
             let host = Arc::new(TauriHost { app: handle.clone() });
@@ -154,6 +203,22 @@ fn main() {
             app.manage(svc);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Fehler beim Starten der Anwendung");
+        .build(tauri::generate_context!())
+        .expect("Fehler beim Starten der Anwendung")
+        .run(|app, event| {
+            // Mails still in the send queue go out before the app quits.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let svc = app.state::<Arc<Service>>().inner().clone();
+                if svc.pending_sends() > 0 {
+                    api.prevent_exit();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        while svc.pending_sends() > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                        app.exit(0);
+                    });
+                }
+            }
+        });
 }

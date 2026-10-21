@@ -85,5 +85,10 @@ test('Besprechungsanfrage: Antwort lässt sich nicht doppelt senden', async ({ p
   await bar.locator('.btn', { hasText: 'Ablehnen' }).click();
   expect(hold.calls).toBe(1);
   hold.release();
-  await expect(accept).not.toHaveClass(/pending/);
+  // Answered once is answered: no buttons any more, the invitation is archived.
+  await expect(page.locator('.msg', { hasText: 'Einladung: Präsentation Angebot Northwind' })).toHaveCount(0);
+  await expect(page.locator('.toast', { hasText: 'Einladung archiviert' })).toBeVisible();
+  expect(hold.calls).toBe(1);
+  await folder(page, 'Archiv').click();
+  await expect(page.locator('.msg', { hasText: 'Einladung: Präsentation Angebot Northwind' })).toHaveCount(1);
 });

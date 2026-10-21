@@ -14,6 +14,11 @@ async function load() {
   const accountId = accountOfMailbox(P.mailboxId);
   renderMessage($('#msg'), msg, {
     accountId, config: state.config, onChanged: () => load().catch(reportError),
+    // An answered invitation is done: archive it and close the window.
+    onResponded: async () => {
+      try { await call('archive_messages', { mailboxId: P.mailboxId, ids: [msg.id] }); } catch (e) { console.warn(e); }
+      await closeWindow();
+    },
     setCategories: (cats) => call('set_categories', { mailboxId: P.mailboxId, ids: [msg.id], categories: cats }, { silent: true }).then(() => { msg.categories = cats; }),
     onManageCategories: () => import('./settings.js').then((m) => m.openCategoryManager(accountId)),
   });

@@ -555,6 +555,14 @@ function setupEvents() {
     const d = p.due ? new Date(p.due) : null;
     toast(d && !isNaN(d) ? `Nächste Wiederholung: ${fmtSnoozeTarget(d)}` : 'Nächste Wiederholung eingeplant.', 'info', 6000, { title: p.subject || '' });
   });
+  // Mails go out in the background once the compose window has closed.
+  on('send-failed', (p) => {
+    if (!p) return;
+    const drafts = p.mailboxId && wellKnown(p.mailboxId, 'drafts');
+    toast(`Nicht gesendet: „${p.subject || '(Kein Betreff)'}“ – ${p.message}`, 'error', 15000, drafts ? {
+      action: { label: 'Entwürfe öffnen', onClick: () => { setMode('mail'); return mail.selectFolder(p.mailboxId, drafts.id); } },
+    } : {});
+  });
   on('lanes-changed', (p) => { if (p && p.accountId) mail.onLanesChanged(p.accountId).catch(() => {}); });
   onBroadcast((m) => {
     if (m.type === 'task-created') toast(m.due ? `Aufgabe angelegt – fällig ${m.due}.` : 'Aufgabe angelegt – sie liegt im Posteingang.');
