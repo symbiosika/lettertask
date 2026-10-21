@@ -561,6 +561,14 @@ impl Service {
                 ok(Value::Null)
             }
             "list_today" => ok(self.list_today()?),
+            "list_due" => {
+                let end = arg::<String>(a, "end")?;
+                let end = chrono::DateTime::parse_from_rfc3339(&end)
+                    .map_err(|_| Error::invalid(format!("Ungültiges Datum: {end}")))?
+                    .with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                ok(self.due_before(&end)?)
+            }
             "get_focus" => ok(json!({"until": self.focus_until().map(|u| u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))})),
             "set_focus" => ok(self.set_focus(arg::<Option<i64>>(a, "minutes")?.unwrap_or(0))?),
             "get_lanes" => ok(self.get_lanes(&arg::<String>(a, "accountId")?)?),

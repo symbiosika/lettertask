@@ -312,7 +312,7 @@ function renderToolbar() {
     ]), { testid: 'tb-new-event', menuTestid: 'tb-new-menu', primary: true, title: 'Neuer Termin' }));
     const view = calendar.getView();
     const seg = h('div.segmented', { role: 'tablist' });
-    for (const [v, label] of [['day', 'Tag'], ['workweek', 'Arbeitswoche'], ['week', 'Woche'], ['month', 'Monat']]) {
+    for (const [v, label] of [['day', 'Tag'], ['workweek', 'Arbeitswoche'], ['week', 'Woche'], ['sprint', '14 Tage'], ['month', 'Monat']]) {
       const b = h('button.seg' + (view === v ? '.on' : ''), { type: 'button', role: 'tab', 'aria-selected': view === v ? 'true' : 'false', dataset: { testid: 'tb-view-' + v } }, label);
       b.addEventListener('click', () => { calendar.setView(v); renderToolbar(); });
       seg.appendChild(b);

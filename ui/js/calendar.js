@@ -1,4 +1,5 @@
-// Calendar module of the main window: date navigator, calendar list, day/week/month views.
+// Calendar module of the main window: date navigator, calendar list, day/week/month views
+// and the "14 Tage" overview (appointments and due tasks/Wiedervorlagen per day).
 import { call, openWindow } from './api.js';
 import {
   h, esc, load, store, startOfDay, addDays, addMinutes, sameDay, startOfWeek, startOfMonth, fmtTime, fmtDateLong,
@@ -9,6 +10,7 @@ import { modal, reportError, toast, confirmDialog, showMenu, busyClick } from '.
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
 import { isImap, accountLabel } from './accounts.js';
+import { fmtSnoozeTarget } from './snooze.js';
 
 /** Accounts with a calendar (IMAP accounts have none). */
 function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
@@ -26,7 +28,10 @@ const cal = {
   selectedId: null,
   slot: null, // {start: Date, end: Date}
   loadToken: 0,
+  tasks: [], // "14 Tage": due mails (MessageSummary) in range, overdue ones included
+  sprint: { events: load('sprintEvents', true), tasks: load('sprintTasks', true) },
 };
+const SPRINT_DAYS = 14;
 const els = {};
 let onStatus = () => {};
 
@@ -65,6 +70,7 @@ function range() {
   if (cal.view === 'day') return { start: d, end: addDays(d, 1), days: 1 };
   if (cal.view === 'workweek') { const s = startOfWeek(d); return { start: s, end: addDays(s, 5), days: 5 }; }
   if (cal.view === 'week') { const s = startOfWeek(d); return { start: s, end: addDays(s, 7), days: 7 }; }
+  if (cal.view === 'sprint') return { start: d, end: addDays(d, SPRINT_DAYS), days: SPRINT_DAYS };
   const first = startOfMonth(d);
   const s = startOfWeek(first);
   return { start: s, end: addDays(s, 42), days: 42 };
@@ -83,15 +89,23 @@ export async function refresh() {
 async function loadRange(token) {
   if (!cal.calendars.size) await loadCalendars();
   const { start, end } = range();
+  const sprint = cal.view === 'sprint';
+  const wantEvents = !sprint || cal.sprint.events;
+  const tasksP = sprint && cal.sprint.tasks
+    ? call('list_due', { end: end.toISOString() }, { silent: true }).catch((e) => { console.warn(e); return []; })
+    : Promise.resolve([]);
   const results = await Promise.all(calAccounts().map(async (a) => {
+    if (!wantEvents) return [];
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
     if (!ids.length) return [];
     try {
       return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString() }, { silent: true })) || [];
     } catch (e) { reportError(e); return []; }
   }));
+  const tasks = await tasksP;
   if (token !== cal.loadToken) return;
   cal.events = results.flat();
+  cal.tasks = tasks || [];
   render();
   renderNav();
 }
@@ -111,6 +125,7 @@ export function goToday() { cal.date = startOfDay(new Date()); cal.navMonth = st
 export function step(dir) {
   const v = cal.view;
   if (v === 'day') cal.date = addDays(cal.date, dir);
+  else if (v === 'sprint') cal.date = addDays(cal.date, SPRINT_DAYS * dir);
   else if (v === 'month') cal.date = new Date(cal.date.getFullYear(), cal.date.getMonth() + dir, 1);
   else cal.date = addDays(cal.date, 7 * dir);
   cal.navMonth = startOfMonth(cal.date);
@@ -220,6 +235,7 @@ function headerTitle() {
 // ------------------------------------------------------------- render
 function render() {
   closePeek();
+  if (cal.view === 'sprint') { renderSprint(); onStatus(); return; }
   if (!calAccounts().length) {
     els.body.innerHTML = '';
     els.body.appendChild(h('div.empty.cal-empty', h('span.empty-ic', { html: icon('calendar', 48) }),
@@ -444,6 +460,90 @@ function renderMonth() {
     grid.appendChild(cell);
   }
   els.body.appendChild(grid);
+}
+
+// ------------------------------------------------------------- "14 Tage"
+export function sprintFilter() { return { ...cal.sprint }; }
+export function setSprintFilter(key, on) {
+  cal.sprint[key] = on;
+  store(key === 'events' ? 'sprintEvents' : 'sprintTasks', on);
+  refresh().catch(reportError);
+}
+
+function eventsOn(d) {
+  return cal.events.filter((ev) => {
+    if (ev.isAllDay) { const r = allDayRange(ev); return r.start <= d && r.end > d; }
+    const s = new Date(ev.start), e = new Date(ev.end);
+    return s < addDays(d, 1) && (e > d || s >= d);
+  });
+}
+
+function taskItem(m, overdue) {
+  const due = new Date(m.dueAt);
+  const el = h('div.sp-item.sp-task' + (overdue ? '.overdue' : ''), {
+    dataset: { id: m.id, testid: 'sprint-task' },
+    title: `${m.subject || '(Kein Betreff)'}\n${overdue ? 'Überfällig seit' : 'Fällig'} ${fmtSnoozeTarget(due)}`,
+  });
+  el.innerHTML = `<span class="sp-time">${icon('snooze', 11)}${overdue ? 'überfällig' : fmtTime(due)}</span> <span class="sp-subj">${esc(m.subject || '(Kein Betreff)')}</span>`;
+  el.addEventListener('dblclick', () => openWindow('message', { mailboxId: m.mailboxId, messageId: m.id, folderId: m.folderId }).catch(reportError));
+  el.addEventListener('click', (x) => { x.stopPropagation(); els.body.querySelectorAll('.sp-item.selected').forEach((y) => y.classList.remove('selected')); el.classList.add('selected'); });
+  return el;
+}
+
+function sprintEvent(ev, day) {
+  const el = eventBlock(ev, 'sprint');
+  const s = new Date(ev.start);
+  if (!isAllDayLike(ev)) el.innerHTML = `<span class="sp-time">${sameDay(s, day) ? fmtTime(s) : '…'}</span> <span class="sp-subj">${esc(eventTitle(ev))}</span>`;
+  return el;
+}
+
+function renderSprint() {
+  const { start } = range();
+  els.body.innerHTML = '';
+  const today = startOfDay(new Date());
+  const toggle = (key, label, testid) => {
+    const on = cal.sprint[key];
+    const b = h('button.chip.sp-filter' + (on ? '.on' : ''), { type: 'button', role: 'switch', 'aria-checked': on ? 'true' : 'false', dataset: { testid } },
+      h('span.sp-check', { html: on ? icon('check', 12) : '' }), label);
+    b.addEventListener('click', () => setSprintFilter(key, !on));
+    return b;
+  };
+  const counts = h('span.dim.sp-count');
+  const bar = h('div.sp-bar', h('span.sp-title', `${SPRINT_DAYS} Tage`), toggle('events', 'Termine', 'sprint-show-events'), toggle('tasks', 'Aufgaben & Wiedervorlagen', 'sprint-show-tasks'), h('span.spacer'), counts);
+  const grid = h('div.sprintgrid', { dataset: { testid: 'sprint-grid' } });
+  let nEv = 0, nTask = 0;
+  for (let i = 0; i < SPRINT_DAYS; i++) {
+    const d = addDays(start, i);
+    const wd = d.getDay();
+    const isToday = sameDay(d, today);
+    const col = h('div.sp-day' + (wd === 0 || wd === 6 ? '.weekend' : '') + (isToday ? '.today' : '') + (d < today ? '.past' : ''), { dataset: { date: toLocalIso(d).slice(0, 10), testid: 'sprint-day' } });
+    col.appendChild(h('div.sp-head', { onclick: () => { cal.date = d; setView('day'); } }, h('span.sp-wd', WEEKDAYS_SHORT[wd].toUpperCase()), h('span.sp-date', `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.`)));
+    const evs = cal.sprint.events ? eventsOn(d) : [];
+    const allDay = evs.filter(isAllDayLike);
+    // Timed appointments and tasks interleaved by time; overdue tasks lead today's column.
+    const timed = evs.filter((ev) => !isAllDayLike(ev)).map((ev) => ({ t: Math.max(new Date(ev.start), d), el: () => sprintEvent(ev, d) }));
+    const tasks = cal.sprint.tasks ? cal.tasks.filter((m) => {
+      const due = new Date(m.dueAt);
+      return sameDay(due, d) || (isToday && due < today);
+    }) : [];
+    for (const m of tasks) {
+      const due = new Date(m.dueAt);
+      const overdue = due < new Date();
+      timed.push({ t: overdue ? new Date(0) : due, el: () => taskItem(m, overdue) });
+    }
+    timed.sort((a, b) => a.t - b.t);
+    for (const ev of allDay) col.appendChild(sprintEvent(ev, d));
+    for (const x of timed) col.appendChild(x.el());
+    nEv += evs.length; nTask += tasks.length;
+    col.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.ev,.sp-item,.sp-head')) return;
+      const st = new Date(d); st.setHours(9);
+      newEvent({ start: st, end: addMinutes(st, 30) });
+    });
+    grid.appendChild(col);
+  }
+  counts.textContent = [cal.sprint.events ? `${nEv} Termine` : '', cal.sprint.tasks ? `${nTask} Aufgaben` : ''].filter(Boolean).join(' · ');
+  els.body.append(bar, grid);
 }
 
 // ------------------------------------------------------------- selection / peek

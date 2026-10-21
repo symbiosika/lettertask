@@ -222,6 +222,7 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 
 ### Heute (Today)
 | `list_today` | `{}` | `{ due: MessageSummary[], todo: { accountId, lane: string, items: MessageSummary[] }[] }` — all mails of all accounts whose dueAt is before the end of today (local time; snoozed and returned ones), plus per account the mails in its FIRST Kanban lane |
+| `list_due` | `{ end: ISO }` | `MessageSummary[]` — open mails of all accounts (not in trash/archive/sent/drafts/junk) with dueAt before `end`, oldest first; used by the "14 Tage" calendar view |
 
 ### Fokuszeit (Focus time)
 | `get_focus` | `{}` | `{ until: ISO\|null }` |
