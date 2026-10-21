@@ -1,6 +1,6 @@
 // Main window shell: top bar with search, action bar, sidebar, events, shortcuts.
 import { call, on, onBusy } from './api.js';
-import { h, $, load, store, fmtTime, esc, toLocalIso, addDays, startOfDay } from './util.js';
+import { h, $, load, store, fmtTime, esc, addDays, startOfDay } from './util.js';
 import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
@@ -12,6 +12,7 @@ import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
 import { isImap, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
+import { dateTimeField } from './due.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
 const els = {
@@ -219,7 +220,7 @@ function snoozeItems() {
   const now = new Date();
   snoozeOptions(state.config).forEach((o, i) => {
     const d = computeSnooze(o.rule, now);
-    if (!d) return;
+    if (!d || d <= now) return; // e.g. "Heute 18 Uhr" in the evening
     items.push({ label: o.label, shortcut: fmtSnoozeTarget(d), icon: i === 0 ? 'snooze' : null, onClick: () => mail.snoozeSelected(d), testid: 'snooze-opt-' + i });
   });
   items.push({ separator: true },
@@ -246,14 +247,14 @@ async function quickSnooze() {
 async function customSnooze() {
   if (!mail.getSelection().ids.length) { toast('Bitte wählen Sie zuerst ein Element aus.'); return; }
   const def = addDays(startOfDay(new Date()), 1); def.setHours(8);
-  const input = h('input.input', { type: 'datetime-local', value: toLocalIso(def).slice(0, 16), name: 'snoozeAt', style: { width: '100%' } });
+  const input = dateTimeField(def, 'snoozeAt');
   const res = await modal({
     title: 'Auf Wiedervorlage', width: 360,
-    body: h('div', h('label.lbl', 'Wieder im Posteingang am:'), input),
+    body: h('div', h('label.lbl', 'Wieder im Posteingang am:'), input.el),
     buttons: [{ label: 'Wiedervorlage', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: () => {
-      const d = new Date(input.value);
-      if (isNaN(d) || d <= new Date()) { input.classList.add('invalid'); toast('Bitte einen Zeitpunkt in der Zukunft wählen.', 'error'); return false; }
+      const d = input.value();
+      if (!d || d <= new Date()) { input.el.classList.add('invalid'); toast('Bitte einen Zeitpunkt in der Zukunft wählen.', 'error'); return false; }
       return d;
     },
   });

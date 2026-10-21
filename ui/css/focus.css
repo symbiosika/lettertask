@@ -57,7 +57,11 @@
 .due-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
 .due-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .due-chip { height: 28px; }
-.due-custom { width: 210px; height: 30px; }
+.due-custom { display: inline-flex; gap: 6px; }
+.dt-field { display: inline-flex; gap: 6px; }
+.dt-field .input { height: 30px; }
+.dt-field .dt-date { width: 140px; }
+.dt-field .dt-time { width: 90px; }
 .due-preview { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
 .due-select { height: 30px; min-width: 190px; }
 

@@ -117,9 +117,10 @@ SnoozeOption { label: string, rule: string }
 // The UI hides them everywhere except the Kanban board. Lane names: letters, digits,
 // space, "-" and "_", 1–30 chars, unique per account.
 // Config also has: kanbanReadingPane: "bottom"|"right" (default "bottom").
-// rule grammar (evaluated in the UI, local time):  "<base>@HH:MM"
-//   base = "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
-// defaults: Morgen 8 Uhr (tomorrow 8 am) = tomorrow@08:00, Übermorgen 8 Uhr (day after tomorrow 8 am) = days:2@08:00,
+// rule grammar (evaluated in the UI, local time):  "<base>@HH:MM" or "hours:N" (now + N hours)
+//   base = "today" | "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
+// defaults: Morgen 8 Uhr (tomorrow 8 am) = tomorrow@08:00, In 4 Stunden = hours:4, Heute 18 Uhr = today@18:00,
+//           Übermorgen 8 Uhr (day after tomorrow 8 am) = days:2@08:00,
 //           Am Wochenende (at the weekend) = weekend@08:00, Nächste Woche (next week) = nextWeek@08:00,
 //           In 14 Tagen (in 14 days) = days:14@08:00, In 30 Tagen (in 30 days) = days:30@08:00
 AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage: string,

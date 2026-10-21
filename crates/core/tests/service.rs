@@ -668,7 +668,7 @@ async fn meeting_invitation_links_to_event() {
 async fn config_has_snooze_defaults() {
     let ctx = setup().await;
     let c: Config = call(&ctx.svc, "get_config", json!({})).await;
-    assert_eq!(c.snooze_options.len(), 6);
+    assert_eq!(c.snooze_options.len(), 8);
     assert_eq!(c.snooze_options[0].rule, "tomorrow@08:00");
     assert!(c.show_date_separators);
     // Saving an empty list restores the defaults; custom lists persist.
@@ -679,7 +679,7 @@ async fn config_has_snooze_defaults() {
     let mut c3 = saved.clone();
     c3.snooze_options.clear();
     let saved: Config = call(&ctx.svc, "save_config", json!({"config": c3})).await;
-    assert_eq!(saved.snooze_options.len(), 6);
+    assert_eq!(saved.snooze_options.len(), 8);
 }
 
 #[tokio::test]

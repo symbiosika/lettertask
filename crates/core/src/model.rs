@@ -419,7 +419,8 @@ pub struct Config {
 #[serde(rename_all = "camelCase")]
 pub struct SnoozeOption {
     pub label: String,
-    /// `<base>@HH:MM`, base = tomorrow | days:N | weekend | nextWeek (evaluated by the UI).
+    /// `<base>@HH:MM`, base = today | tomorrow | days:N | weekend | nextWeek,
+    /// or `hours:N` (now + N hours). Evaluated by the UI.
     pub rule: String,
 }
 
@@ -457,6 +458,8 @@ pub fn builtin_google_client() -> (&'static str, &'static str) {
 pub fn default_snooze_options() -> Vec<SnoozeOption> {
     [
         ("Morgen 8 Uhr", "tomorrow@08:00"),
+        ("In 4 Stunden", "hours:4"),
+        ("Heute 18 Uhr", "today@18:00"),
         ("Übermorgen 8 Uhr", "days:2@08:00"),
         ("Am Wochenende 8 Uhr", "weekend@08:00"),
         ("Nächste Woche", "nextWeek@08:00"),
