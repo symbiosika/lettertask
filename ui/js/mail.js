@@ -19,6 +19,8 @@ export function isToday() { return state.current.folderId === TODAY; }
 const today = { due: [], todo: [], count: 0 };
 /** Pseudo folder id of the "Delegiert" view: delegated tasks of all accounts. */
 export const DELEGATED = '__delegated__';
+/** Max. time (ms) the empty list waits for the first sync before showing "empty". */
+const SYNC_TIMEOUT = 30000;
 export function isDelegated() { return state.current.folderId === DELEGATED; }
 /** Views built from several accounts instead of one folder. */
 export function isVirtual() { return isToday() || isDelegated(); }
@@ -453,15 +455,19 @@ export async function selectFolder(mailboxId, folderId) {
   try { await reloadList(); } finally { if (state.current.folderId === folderId) list.fetching = false; }
   // An empty local cache (folder never opened) is not "no items" until the sync is done.
   if (state.current.folderId === folderId) paintLoadingState();
+  const endSync = () => {
+    if (list.syncing !== folderId) return;
+    list.syncing = null;
+    if (state.current.folderId === folderId) paintLoadingState();
+  };
+  // A sync that never answers must not keep the spinner forever: after SYNC_TIMEOUT the
+  // list shows what it has (or "empty"); a late sync result still refreshes it.
+  const giveUp = setTimeout(endSync, SYNC_TIMEOUT);
   // pull fresh data in the background
   call('sync_folder', { mailboxId, folderId }, { silent: true })
     .then(() => (state.current.folderId === folderId ? reloadList({ ifChanged: true }) : null))
     .catch(() => {})
-    .finally(() => {
-      if (list.syncing !== folderId) return;
-      list.syncing = null;
-      if (state.current.folderId === folderId) paintLoadingState();
-    });
+    .finally(() => { clearTimeout(giveUp); endSync(); });
 }
 
 /** True while the list of the current folder is still being filled (first load or sync). */
