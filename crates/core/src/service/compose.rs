@@ -380,7 +380,7 @@ impl Service {
         let remind_at = d.remind_at.as_deref().filter(|a| !a.trim().is_empty());
         // Thread id of the mail, for "Nachfassen erledigt sich selbst".
         let thread = if d.remind_at.as_deref().is_some_and(|a| !a.is_empty()) {
-            c.get(&format!("{}/messages/{}?$select=conversationId", mb.graph_prefix(), seg(&id)))
+            c.get(&format!("{}/messages/{}?$select=conversationId", mb.graph_prefix(), seg(id)))
                 .await
                 .ok()
                 .and_then(|v| v["conversationId"].as_str().map(str::to_string))
@@ -388,7 +388,7 @@ impl Service {
             None
         };
         if let Err(e) = c
-            .post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(&id)))
+            .post_empty(&format!("{}/messages/{}/send", mb.graph_prefix(), seg(id)))
             .await
         {
             // The draft (incl. attachments) stays on the server; show it.
@@ -409,13 +409,13 @@ impl Service {
         }
         if let Some(at) = remind_at {
             // The mail is out; a failing reminder must not report the send as failed.
-            if let Err(e) = self.create_send_reminder(&d, at, thread.as_deref()).await {
+            if let Err(e) = self.create_send_reminder(d, at, thread.as_deref()).await {
                 tracing::warn!("Erinnerung konnte nicht angelegt werden: {e}");
                 self.host.notify("Erinnerung konnte nicht angelegt werden", &format!("{}: {e}", d.subject));
                 self.emit("reminder-failed", json!({"mailboxId": mb.id, "subject": d.subject, "message": e.to_string()}));
             }
         }
-        self.store.delete_message(&mb.id, &id)?;
+        self.store.delete_message(&mb.id, id)?;
         for wk in ["drafts", "sentitems", "inbox"] {
             if let Some(f) = self.store.folder_by_well_known(&mb.id, wk)? {
                 let _ = self.sync_folder(&mb.id, &f.id, true).await;
