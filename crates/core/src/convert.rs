@@ -12,7 +12,7 @@ pub const MESSAGE_DETAIL_SELECT: &str = "id,conversationId,subject,from,toRecipi
 
 pub const EVENT_SELECT: &str = "id,subject,start,end,isAllDay,location,organizer,attendees,showAs,categories,isOrganizer,responseStatus,bodyPreview,isOnlineMeeting,onlineMeeting,recurrence,seriesMasterId,type,isReminderOn,reminderMinutesBeforeStart,importance,sensitivity,isCancelled,webLink";
 
-fn s(v: &Value, key: &str) -> String {
+pub fn s(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
@@ -424,6 +424,13 @@ pub fn calendar(v: &Value, account_id: &str) -> Calendar {
         color: hex.or_else(|| calendar_color_hex(&s(v, "color")).map(str::to_string)),
         can_edit: v["canEdit"].as_bool().unwrap_or(true),
         is_default: v["isDefaultCalendar"].as_bool().unwrap_or(false),
+        group: None,
+        group_id: None,
+        owner: Some(Address {
+            name: s(&v["owner"], "name").trim().to_string(),
+            address: s(&v["owner"], "address").trim().to_string(),
+        })
+        .filter(|a| !a.address.is_empty()),
     }
 }
 

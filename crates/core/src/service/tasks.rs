@@ -400,24 +400,12 @@ impl Service {
     pub(crate) fn list_today(&self) -> Result<Value> {
         let tomorrow = Local::now().date_naive() + Duration::days(1);
         let end = at(tomorrow, NaiveTime::MIN).unwrap_or_else(Utc::now).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let mut due = Vec::new();
+        let due = self.due_before(&end)?;
         let mut todo = Vec::new();
         for acc in self.store.list_accounts()? {
             let lanes = self.get_lanes(&acc.id)?;
             for mb in &acc.mailboxes {
-                let excluded: Vec<String> = self
-                    .store
-                    .list_folders(&mb.id)?
-                    .into_iter()
-                    .filter(|f| matches!(f.well_known.as_deref(), Some("deleteditems" | "archive" | "sentitems" | "drafts" | "junkemail")))
-                    .map(|f| f.id)
-                    .collect();
-                due.extend(
-                    self.store
-                        .messages_due_before(&mb.id, &end)?
-                        .into_iter()
-                        .filter(|m| !excluded.contains(&m.folder_id)),
-                );
+                let excluded = self.closed_folders(&mb.id)?;
                 if let Some(first) = lanes.first() {
                     let items: Vec<MessageSummary> = self
                         .store
@@ -429,8 +417,36 @@ impl Service {
                 }
             }
         }
-        due.sort_by(|a, b| a.due_at.cmp(&b.due_at));
         Ok(json!({"due": due, "todo": todo}))
+    }
+
+    /// Folders whose mails are done or not tasks (trash, archive, sent, drafts, junk).
+    fn closed_folders(&self, mailbox_id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .store
+            .list_folders(mailbox_id)?
+            .into_iter()
+            .filter(|f| matches!(f.well_known.as_deref(), Some("deleteditems" | "archive" | "sentitems" | "drafts" | "junkemail")))
+            .map(|f| f.id)
+            .collect())
+    }
+
+    /// Open mails of all accounts with a due time before `end` (RFC 3339), oldest first.
+    pub(crate) fn due_before(&self, end: &str) -> Result<Vec<MessageSummary>> {
+        let mut due = Vec::new();
+        for acc in self.store.list_accounts()? {
+            for mb in &acc.mailboxes {
+                let excluded = self.closed_folders(&mb.id)?;
+                due.extend(
+                    self.store
+                        .messages_due_before(&mb.id, end)?
+                        .into_iter()
+                        .filter(|m| !excluded.contains(&m.folder_id)),
+                );
+            }
+        }
+        due.sort_by(|a, b| a.due_at.cmp(&b.due_at));
+        Ok(due)
     }
 
     // ---- Fokuszeit ----

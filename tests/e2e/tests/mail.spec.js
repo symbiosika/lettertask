@@ -104,7 +104,7 @@ test('Auf Wiedervorlage und wieder aufheben', async ({ page }) => {
   const first = page.locator('[data-testid=snooze-opt-0]');
   await expect(first).toContainText('Morgen 8 Uhr');
   await expect(first).toContainText('08:00');
-  await expect(page.locator('[data-testid=snooze-opt-5]')).toContainText('In 30 Tagen');
+  await expect(page.locator('[data-testid=snooze-opt-7]')).toContainText('In 30 Tagen');
   await first.click();
   await expect(row(page, 'Reisekostenabrechnung September')).toHaveCount(0);
   await expect(page.locator('.toast')).toContainText('Wiedervorlage bis');

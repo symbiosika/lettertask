@@ -8,7 +8,7 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekda
 use chrono_tz::Tz;
 use serde_json::{json, Value};
 
-use crate::state::{Ev, Mailbox, Occ};
+use crate::state::{cal_group_id, Ev, Mailbox, Occ, DEFAULT_CAL_GROUP};
 use crate::util::{apply_select, created, graph_dt, iso, new_id, no_content, ok, paged, parse_naive, parse_utc, preview, GErr, GResult, Req};
 
 const OCC_SEP: &str = "_OCC_";
@@ -18,9 +18,33 @@ pub fn handle(mb: &mut Mailbox, rest: &[&str], req: &Req) -> GResult {
     let default_cal = mb.default_calendar_id();
     match rest {
         ["calendars"] if m == Method::GET => {
-            let vals: Vec<Value> = mb.calendars.iter().map(|c| c.render(&mb.display_name, &mb.addr)).collect();
+            let vals: Vec<Value> = mb.calendars.iter().filter(|c| c.group.is_empty()).map(|c| c.render(&mb.display_name, &mb.addr)).collect();
             ok(paged(req, vals, 10))
         }
+        ["calendarGroups"] if m == Method::GET => {
+            let mut names = vec![String::new()];
+            for c in &mb.calendars {
+                if !names.contains(&c.group) {
+                    names.push(c.group.clone());
+                }
+            }
+            let vals: Vec<Value> = names
+                .iter()
+                .map(|n| json!({ "id": cal_group_id(n), "name": if n.is_empty() { DEFAULT_CAL_GROUP } else { n.as_str() }, "classId": "0006f0b7-0000-0000-c000-000000000046" }))
+                .collect();
+            ok(paged(req, vals, 10))
+        }
+        ["calendarGroups", gid, "calendars"] if m == Method::GET => {
+            let vals: Vec<Value> = mb
+                .calendars
+                .iter()
+                .filter(|c| cal_group_id(&c.group) == *gid)
+                .map(|c| c.render(&mb.display_name, &mb.addr))
+                .collect();
+            ok(paged(req, vals, 10))
+        }
+        ["calendarGroups", _gid, "calendars", cid, "calendarView"] if m == Method::GET => calendar_view(mb, &cal(mb, cid)?, req),
+        ["calendarGroups", _gid, "calendars", _cid, "events", id] if m == Method::GET => event_item(mb, id, req),
         ["calendars", cid] if m == Method::GET => {
             let c = mb.calendars.iter().find(|c| c.id == *cid).ok_or_else(|| GErr::not_found("calendar"))?;
             ok(c.render(&mb.display_name, &mb.addr))

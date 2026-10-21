@@ -1,7 +1,27 @@
 // "Fällig" / "Erinnerung" time picker shared by the task window and the compose window.
 // Offers "Sofort" (optional), the configured Wiedervorlage options and a custom date/time.
-import { h, toLocalIso, addDays, startOfDay } from './util.js';
+import { h, toDateInput, toTimeInput, parseLocal, addDays, startOfDay } from './util.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
+
+/**
+ * Separate date and time inputs: a combined datetime-local opens the native
+ * picker on every click, so the time could not be typed.
+ * Returns { el, value(): Date|undefined, focus() }.
+ */
+export function dateTimeField(def, name, testid = null, onInput = null) {
+  const date = h('input.input.dt-date', { type: 'date', value: toDateInput(def), name, 'aria-label': 'Datum', dataset: testid ? { testid } : {} });
+  const time = h('input.input.dt-time', { type: 'time', value: toTimeInput(def), name: name + 'Time', 'aria-label': 'Uhrzeit', dataset: testid ? { testid: testid + '-time' } : {} });
+  if (onInput) { date.addEventListener('input', onInput); time.addEventListener('input', onInput); }
+  return {
+    el: h('span.dt-field', date, time),
+    value() {
+      if (!date.value || !time.value) return undefined;
+      const d = parseLocal(date.value, time.value);
+      return isNaN(d) ? undefined : d;
+    },
+    focus() { date.focus(); },
+  };
+}
 
 /**
  * opts: { config, allowNow, variant: 'chips'|'select', testid, onChange }
@@ -11,21 +31,26 @@ import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 export function duePicker({ config, allowNow = false, variant = 'chips', testid = 'due', onChange } = {}) {
   const opts = [];
   if (allowNow) opts.push({ key: 'now', label: 'Sofort' });
-  snoozeOptions(config).forEach((o, i) => opts.push({ key: 'opt' + i, label: o.label, rule: o.rule }));
+  const now = new Date();
+  snoozeOptions(config).forEach((o, i) => {
+    const d = computeSnooze(o.rule, now);
+    if (d && d > now) opts.push({ key: 'opt' + i, label: o.label, rule: o.rule });
+  });
   opts.push({ key: 'custom', label: 'Datum und Uhrzeit…' });
   let key = opts[0].key;
 
   const def = addDays(startOfDay(new Date()), 1); def.setHours(8);
-  const custom = h('input.input.due-custom.hidden', { type: 'datetime-local', value: toLocalIso(def).slice(0, 16), name: testid + 'At', dataset: { testid: testid + '-at' } });
+  const custom = dateTimeField(def, testid + 'At', testid + '-at', () => paint());
+  custom.el.classList.add('due-custom', 'hidden');
   const preview = h('span.due-preview', { dataset: { testid: testid + '-preview' } });
   const target = () => {
     const o = opts.find((x) => x.key === key);
     if (!o || o.key === 'now') return null;
-    if (o.key === 'custom') { const d = new Date(custom.value); return isNaN(d) ? undefined : d; }
+    if (o.key === 'custom') { return custom.value(); }
     return computeSnooze(o.rule, new Date());
   };
   const paint = () => {
-    custom.classList.toggle('hidden', key !== 'custom');
+    custom.el.classList.toggle('hidden', key !== 'custom');
     const d = target();
     preview.textContent = key === 'now' ? 'erscheint gleich im Posteingang' : d ? '→ ' + fmtSnoozeTarget(d) : '';
     if (variant === 'chips') chips.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c.dataset.key === key));
@@ -51,8 +76,7 @@ export function duePicker({ config, allowNow = false, variant = 'chips', testid 
     sel.addEventListener('change', () => { key = sel.value; paint(); if (key === 'custom') custom.focus(); });
     control = sel;
   }
-  custom.addEventListener('input', paint);
-  const el = h('div.due-picker.' + variant, control, custom, preview);
+  const el = h('div.due-picker.' + variant, control, custom.el, preview);
   paint();
   return {
     el,

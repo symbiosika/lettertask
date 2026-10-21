@@ -62,7 +62,10 @@ MessageDetail = MessageSummary & {
   isMeetingRequest: bool, eventId: string|null   // set for meeting invitations
 }
 Category     { id: string, displayName: string, color: string /* "preset0".."preset24" or "none" */ }
-Calendar     { id, accountId, name: string, color: string|null /* hex like "#4a90d9" */, canEdit: bool, isDefault: bool }
+Calendar     { id, accountId, name: string, color: string|null /* hex like "#4a90d9" */, canEdit: bool, isDefault: bool,
+               group: string|null /* Outlook calendar group, e.g. "Kalender von Personen"; null = default group */,
+               groupId: string|null /* set for calendars outside the default group */,
+               owner: Address|null /* owner of a calendar shared by someone else */ }
 Attendee     { name, address, type: "required"|"optional"|"resource",
                response: "none"|"organizer"|"tentativelyAccepted"|"accepted"|"declined"|"notResponded" }
 Recurrence   { pattern: "daily"|"weekly"|"absoluteMonthly"|"absoluteYearly", interval: number,
@@ -117,9 +120,10 @@ SnoozeOption { label: string, rule: string }
 // The UI hides them everywhere except the Kanban board. Lane names: letters, digits,
 // space, "-" and "_", 1–30 chars, unique per account.
 // Config also has: kanbanReadingPane: "bottom"|"right" (default "bottom").
-// rule grammar (evaluated in the UI, local time):  "<base>@HH:MM"
-//   base = "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
-// defaults: Morgen 8 Uhr (tomorrow 8 am) = tomorrow@08:00, Übermorgen 8 Uhr (day after tomorrow 8 am) = days:2@08:00,
+// rule grammar (evaluated in the UI, local time):  "<base>@HH:MM" or "hours:N" (now + N hours)
+//   base = "today" | "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
+// defaults: Morgen 8 Uhr (tomorrow 8 am) = tomorrow@08:00, In 4 Stunden = hours:4, Heute 18 Uhr = today@18:00,
+//           Übermorgen 8 Uhr (day after tomorrow 8 am) = days:2@08:00,
 //           Am Wochenende (at the weekend) = weekend@08:00, Nächste Woche (next week) = nextWeek@08:00,
 //           In 14 Tagen (in 14 days) = days:14@08:00, In 30 Tagen (in 30 days) = days:30@08:00
 AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage: string,
@@ -221,6 +225,7 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 
 ### Heute (Today)
 | `list_today` | `{}` | `{ due: MessageSummary[], todo: { accountId, lane: string, items: MessageSummary[] }[] }` — all mails of all accounts whose dueAt is before the end of today (local time; snoozed and returned ones), plus per account the mails in its FIRST Kanban lane |
+| `list_due` | `{ end: ISO }` | `MessageSummary[]` — open mails of all accounts (not in trash/archive/sent/drafts/junk) with dueAt before `end`, oldest first; used by the "14 Tage" calendar view |
 
 ### Fokuszeit (Focus time)
 | `get_focus` | `{}` | `{ until: ISO\|null }` |
@@ -245,7 +250,7 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 | `delete_category` | `{ accountId, id }` | `null` |
 
 ### Calendar
-| `list_calendars` | `{ accountId }` | `Calendar[]` |
+| `list_calendars` | `{ accountId }` | `Calendar[]` — default group (`/me/calendars`) plus the calendars of all other calendar groups (`/me/calendarGroups/{id}/calendars`), e.g. colleagues' calendars added in Outlook |
 | `list_events` | `{ accountId, calendarIds: string[], start: ISO, end: ISO }` | `Event[]` (expanded occurrences in range) |
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |

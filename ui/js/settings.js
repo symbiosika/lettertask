@@ -43,12 +43,23 @@ function snoozeEditor(initial) {
       base.classList.add('sn-base');
       base.name = `snoozeBase${i}`;
       const days = h('input.input.sn-days', { type: 'number', min: '1', max: '365', value: String(r.days || 1), name: `snoozeDays${i}`, 'aria-label': 'Tage' });
-      const daysWrap = h('span.sn-dayswrap' + (r.base === 'days' ? '' : '.hidden'), days, h('span.dim', 'Tage'));
-      base.addEventListener('change', () => { r.base = base.value; daysWrap.classList.toggle('hidden', r.base !== 'days'); preview(); });
+      const unit = h('span.dim');
+      const daysWrap = h('span.sn-dayswrap', days, unit);
+      const atLbl = h('span.dim', 'um');
+      // "hours:N" is relative to now and has no time of day.
+      const sync = () => {
+        daysWrap.classList.toggle('hidden', r.base !== 'days' && r.base !== 'hours');
+        unit.textContent = r.base === 'hours' ? 'Stunden' : 'Tage';
+        days.setAttribute('aria-label', unit.textContent);
+        atLbl.classList.toggle('hidden', r.base === 'hours');
+        time.classList.toggle('hidden', r.base === 'hours');
+      };
+      base.addEventListener('change', () => { r.base = base.value; sync(); preview(); });
       days.addEventListener('input', () => { r.days = Math.max(1, parseInt(days.value, 10) || 1); preview(); });
       const time = h('input.input.sn-time', { type: 'time', value: `${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`, name: `snoozeTime${i}`, 'aria-label': 'Uhrzeit' });
       time.addEventListener('change', () => { const [hh, mm] = (time.value || '08:00').split(':').map(Number); r.hour = hh || 0; r.minute = mm || 0; preview(); });
       const pv = h('span.sn-preview.dim');
+      sync();
       const preview = () => { const d = computeSnooze(formatRule(r)); pv.textContent = d ? '→ ' + fmtSnoozeTarget(d) : ''; };
       preview();
       const mv = (d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; render(); };
@@ -57,7 +68,7 @@ function snoozeEditor(initial) {
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', html: icon('up', 14), disabled: i === 0, onclick: () => mv(-1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', html: icon('down', 14), disabled: i === rows.length - 1, onclick: () => mv(1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 14), onclick: () => { rows.splice(i, 1); render(); } })),
-        h('div.sn-rule', base, daysWrap, h('span.dim', 'um'), time)));
+        h('div.sn-rule', base, daysWrap, atLbl, time)));
     });
     host.appendChild(h('div.sn-actions',
       h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); render(); } }),

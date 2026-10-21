@@ -225,7 +225,7 @@ fn dispatch(st: &SharedState, req: &Req) -> util::GResult {
             }
         }
         "mailFolders" | "messages" | "sendMail" => mail::handle(&mut s, idx, rest, req),
-        "calendars" | "calendar" | "events" | "calendarView" => calendar::handle(&mut s.mailboxes[idx], rest, req),
+        "calendars" | "calendarGroups" | "calendar" | "events" | "calendarView" => calendar::handle(&mut s.mailboxes[idx], rest, req),
         "people" | "outlook" | "mailboxSettings" => misc::handle(&mut s.mailboxes[idx], rest, req),
         "contacts" => contacts::handle(&mut s.mailboxes[idx], rest, req),
         other => Err(GErr::new(

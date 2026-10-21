@@ -61,7 +61,8 @@ test('Aufgabe ohne Betreff wird nicht angelegt', async ({ page }) => {
   await popup.locator('[data-testid=task-due-custom]').click();
   const at = popup.locator('[data-testid=task-due-at]');
   await expect(at).toBeVisible();
-  await at.fill('2020-01-01T08:00');
+  await at.fill('2020-01-01');
+  await popup.locator('[data-testid=task-due-at-time]').fill('08:00');
   await popup.locator('[data-testid=task-create]').click();
   await expect(popup.locator('.toast', { hasText: 'Zukunft' })).toBeVisible();
   await expect(popup.locator('#subject')).toBeVisible();
@@ -80,7 +81,7 @@ test('Erinnerung an mich: nach dem Senden liegt „Nachfassen“ auf Wiedervorla
   await popup.locator('#subject').fill(subject);
   await popup.locator('[data-testid=remind-on]').click();
   await expect(popup.locator('[data-testid=remind-when]')).toBeVisible();
-  await popup.locator('[data-testid=remind-when]').selectOption('opt1');
+  await popup.locator('[data-testid=remind-when]').selectOption('opt3');
   await expect(popup.locator('[data-testid=remind-when-preview]')).toContainText('08:00');
   const closed = popup.waitForEvent('close');
   await popup.locator('[data-testid=compose-send]').click();
