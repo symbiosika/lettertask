@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn category_keywords_roundtrip() {
-        for name in ["Wichtig", "Business & Pitch", "Rechnung 2026", "Grüße 😀", "a.b", "[K_In Arbeit]", "[K_Done]"] {
+        for name in ["Wichtig", "Business & Pitch", "Rechnung 2026", "Grüße 😀", "a.b", "[K_In Arbeit]", "[K_Done]", "[D_anna@fabrikam.example]"] {
             let k = category_keyword(name);
             assert!(k.chars().all(|c| c.is_ascii_alphanumeric() || "$_-.".contains(c)), "{k}");
             assert_eq!(keyword_category(&k).as_deref(), Some(name));

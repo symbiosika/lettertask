@@ -46,10 +46,10 @@ export function textOn(hex) {
 }
 
 // ---- Hidden marker categories: Kanban lanes "[K_<name>]", follow-ups "[F_<hash>]",
-// recurrence "[#monthly]". They never show up as tags but must survive tag edits.
+// recurrence "[#monthly]", delegations "[D_<address>]". They never show up as tags but must survive tag edits.
 export const LANE_PREFIX = '[K_';
 export const LANE_NAME_RE = /^[A-Za-z0-9ÄÖÜäöüß _-]{1,30}$/;
-const HIDDEN_PREFIXES = ['[K_', '[F_', '[#'];
+const HIDDEN_PREFIXES = ['[K_', '[F_', '[#', '[D_'];
 export function isHiddenCategory(name) {
   return typeof name === 'string' && name.endsWith(']') && HIDDEN_PREFIXES.some((p) => name.startsWith(p));
 }

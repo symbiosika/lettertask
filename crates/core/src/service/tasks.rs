@@ -57,6 +57,21 @@ pub(crate) fn followup_category(thread_id: &str) -> String {
     format!("[F_{hex}]")
 }
 
+/// Hidden category marking a delegated task and its assignee: "[D_<address>]".
+pub(crate) fn delegate_category(address: &str) -> String {
+    format!("[D_{}]", address.trim().to_lowercase())
+}
+
+/// Subject of a delegated task: "ToDo: " unless switched off or already there.
+pub(crate) fn delegated_subject(subject: &str, todo_prefix: bool) -> String {
+    let s = subject.trim();
+    if !todo_prefix || s.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("todo:")) {
+        s.to_string()
+    } else {
+        format!("ToDo: {s}")
+    }
+}
+
 pub(crate) fn recurrence_category(rule: &str) -> String {
     format!("[#{rule}]")
 }
@@ -151,7 +166,15 @@ impl Service {
         body_html: &str,
         due: Option<&str>,
         recurrence: Option<&str>,
+        // Assignee of a delegated task and whether "ToDo: " goes in front of the subject.
+        delegate: Option<(&Address, bool)>,
     ) -> Result<MessageSummary> {
+        if let Some((d, todo_prefix)) = delegate {
+            if recurrence.is_some_and(|r| !r.is_empty()) {
+                return Err(Error::invalid("Delegierte Aufgaben können nicht wiederholt werden."));
+            }
+            return self.delegate_task(mailbox_id, subject, body_html, due, d, todo_prefix).await;
+        }
         let subject = subject.trim();
         let mut categories = Vec::new();
         if let Some(r) = recurrence.filter(|r| !r.is_empty()) {
@@ -181,6 +204,95 @@ impl Service {
             },
         )
         .await
+    }
+
+    /// Delegation: the task goes out as a mail to `to`; a copy for yourself
+    /// marked "[D_<address>]" waits in "Wiedervorlage" (or the inbox without
+    /// due time) like a normal task, so it can be followed up.
+    async fn delegate_task(
+        &self,
+        mailbox_id: &str,
+        subject: &str,
+        body_html: &str,
+        due: Option<&str>,
+        to: &Address,
+        todo_prefix: bool,
+    ) -> Result<MessageSummary> {
+        if subject.trim().is_empty() {
+            return Err(Error::invalid("Bitte einen Betreff für die Aufgabe angeben."));
+        }
+        let to = Address { name: to.name.trim().to_string(), address: to.address.trim().to_string() };
+        if !super::compose::valid_address(&to.address) {
+            return Err(Error::invalid(format!("Ungültige Adresse: {}", to.address)));
+        }
+        let due = parse_due(due)?;
+        let subject = delegated_subject(subject, todo_prefix);
+        self.send_draft(DraftInput {
+            id: None,
+            mailbox_id: mailbox_id.to_string(),
+            mode: "new".into(),
+            to: vec![to.clone()],
+            cc: vec![],
+            bcc: vec![],
+            subject: subject.clone(),
+            body_html: body_html.to_string(),
+            importance: "normal".into(),
+            request_read_receipt: false,
+            new_attachments: vec![],
+            removed_attachment_ids: vec![],
+            remind_at: None,
+        })
+        .await?;
+        let name = if to.name.is_empty() { to.address.clone() } else { format!("{} &lt;{}&gt;", html_escape::encode_text(&to.name), to.address) };
+        let header = format!(
+            "<div style=\"padding:8px 12px;margin-bottom:12px;background:#f3f6fc;border-left:3px solid #2f6fe4;font-family:sans-serif;font-size:13px\">\
+             <b>Delegiert an:</b> {name}<br>Gesendet: {}</div>",
+            Local::now().format("%d.%m.%Y %H:%M")
+        );
+        // The mail is out; a failing copy must say so instead of inviting a resend.
+        self.place_mail(
+            mailbox_id,
+            NewMail {
+                subject,
+                body_html: format!("{header}{body_html}"),
+                to: vec![to.clone()],
+                reply_to: vec![to.clone()],
+                due,
+                categories: vec![delegate_category(&to.address)],
+            },
+        )
+        .await
+        .map_err(|e| Error::Other(format!("Die Aufgabe wurde an {} gesendet, die Wiedervorlage konnte aber nicht angelegt werden: {e}", to.address)))
+    }
+
+    /// Open delegated tasks of all accounts (not archived or deleted), by due time.
+    pub(crate) fn list_delegations(&self) -> Result<Vec<MessageSummary>> {
+        let mut out = Vec::new();
+        for acc in self.store.list_accounts()? {
+            for mb in &acc.mailboxes {
+                let excluded: Vec<String> = self
+                    .store
+                    .list_folders(&mb.id)?
+                    .into_iter()
+                    .filter(|f| matches!(f.well_known.as_deref(), Some("deleteditems" | "archive" | "sentitems" | "drafts" | "junkemail")))
+                    .map(|f| f.id)
+                    .collect();
+                out.extend(
+                    self.store
+                        .messages_with_category_prefix(&mb.id, "[D_")?
+                        .into_iter()
+                        .filter(|m| !excluded.contains(&m.folder_id) && delegate_of(&m.categories).is_some()),
+                );
+            }
+        }
+        // Due ones first (earliest on top), then the rest newest first.
+        out.sort_by(|a, b| match (&a.due_at, &b.due_at) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => b.received_at.cmp(&a.received_at),
+        });
+        Ok(out)
     }
 
     /// Creates a non-draft mail from yourself: due → "Wiedervorlage" (read),
@@ -586,6 +698,16 @@ mod recurrence_tests {
         assert_eq!(next_occurrence("yearly", local(2028, 2, 29, 8), local(2028, 2, 29, 8)), Some(local(2029, 2, 28, 8)));
         assert_eq!(next_occurrence("daily", local(2026, 10, 20, 7), local(2026, 10, 20, 7)), Some(local(2026, 10, 21, 7)));
         assert!(next_occurrence("hourly", anchor, anchor).is_none());
+    }
+
+    #[test]
+    fn delegation_markers() {
+        assert_eq!(delegate_category(" Anna@Example.com "), "[D_anna@example.com]");
+        assert_eq!(delegate_of(&["X".into(), "[D_anna@example.com]".into()]).as_deref(), Some("anna@example.com"));
+        assert_eq!(delegate_of(&["[D_kein-mail]".into()]), None);
+        assert_eq!(delegated_subject(" Bericht ", true), "ToDo: Bericht");
+        assert_eq!(delegated_subject("todo: Bericht", true), "todo: Bericht");
+        assert_eq!(delegated_subject("Bericht", false), "Bericht");
     }
 
     #[test]

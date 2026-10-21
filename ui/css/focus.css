@@ -77,6 +77,9 @@ body.task .cw-head .ico { color: var(--accent); }
 .task-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .task-lbl { flex: none; width: 64px; color: var(--text-dim); display: inline-flex; align-items: center; gap: 5px; }
 .task-hint { color: var(--text-dim); font-size: 12px; }
+.task-row.hidden { display: none; }
+.task-delegate .rcpt-box { flex: 1; min-width: 0; }
+.task-check { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12.5px; white-space: nowrap; }
 .task-subject { flex: 1; min-width: 0; height: 44px; padding: 0 14px; font-size: 17px; font-weight: 600; border: 1px solid var(--border-strong); border-radius: var(--radius); outline: none; background: var(--bg); }
 .task-subject:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 111, 228, .15); }
 .task-subject::placeholder { font-weight: 400; color: #9aa1ab; }

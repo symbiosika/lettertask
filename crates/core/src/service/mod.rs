@@ -549,8 +549,12 @@ impl Service {
                     &arg::<Option<String>>(a, "bodyHtml")?.unwrap_or_default(),
                     arg::<Option<String>>(a, "due")?.as_deref(),
                     arg::<Option<String>>(a, "recurrence")?.as_deref(),
+                    arg::<Option<crate::model::Address>>(a, "delegate")?
+                        .as_ref()
+                        .map(|d| (d, arg::<Option<bool>>(a, "todoPrefix").ok().flatten().unwrap_or(true))),
                 )
                 .await?),
+            "list_delegations" => ok(self.list_delegations()?),
             "set_recurrence" => {
                 self.set_recurrence(
                     &arg::<String>(a, "mailboxId")?,
