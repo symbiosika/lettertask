@@ -990,6 +990,10 @@ async function showReading(m, text) {
       config: state.config,
       snoozed: inSnoozedFolder(),
       onChanged: () => {},
+      // An answered invitation is done: it leaves the inbox like in Outlook.
+      onResponded: () => archiveIds([m.id], { quiet: true, mailboxId: detail.mailboxId || state.current.mailboxId })
+        .then(() => toast('Antwort gesendet – Einladung archiviert.'))
+        .catch((e) => { console.warn(e); toast('Antwort gesendet.'); refreshFolders(detail.mailboxId).catch(() => {}); }),
       setCategories: (cats) => setCategoriesFor([{ m: findItem(m.id) || m, cats }]),
       setRecurrence: (rule) => setRecurrenceFor([m.id], rule),
       onManageCategories: () => openCategoryManager(accountId),
@@ -1171,10 +1175,9 @@ export async function archiveSelected() {
   if (s) await archiveIds(s.ids);
 }
 
-async function archiveIds(ids) {
-  const mailboxId = mbOf(ids);
+async function archiveIds(ids, { quiet = false, mailboxId = mbOf(ids) } = {}) {
   const archive = wellKnown(mailboxId, 'archive');
-  if (archive && archive.id === state.current.folderId && !list.search) { toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
+  if (archive && archive.id === state.current.folderId && !list.search) { if (!quiet) toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
   burst(rowEl(ids[0]));
   await removeFromList(ids);
   try {
@@ -1183,7 +1186,7 @@ async function archiveIds(ids) {
     if (!/Unbekannter Befehl/.test(e.message) || !archive) throw e;
     await call('move_messages', { mailboxId, ids, destFolderId: archive.id });
   }
-  toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
+  if (!quiet) toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
   await refreshFolders(mailboxId);
   checkInboxZero();
 }

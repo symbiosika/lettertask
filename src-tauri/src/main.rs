@@ -154,6 +154,22 @@ fn main() {
             app.manage(svc);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Fehler beim Starten der Anwendung");
+        .build(tauri::generate_context!())
+        .expect("Fehler beim Starten der Anwendung")
+        .run(|app, event| {
+            // Mails still in the send queue go out before the app quits.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let svc = app.state::<Arc<Service>>().inner().clone();
+                if svc.pending_sends() > 0 {
+                    api.prevent_exit();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        while svc.pending_sends() > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                        app.exit(0);
+                    });
+                }
+            }
+        });
 }

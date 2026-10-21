@@ -308,7 +308,8 @@ async function send_() {
   try {
     const draft = buildInput();
     if (remindAt) draft.remindAt = remindAt.toISOString();
-    await call('send_draft', { draft });
+    // Checked right away, sent in the background: the window closes at once.
+    await call('send_draft', { draft, background: true });
     st.dirty = false; st.serverCreated = false;
     await finish();
   } catch (e) {

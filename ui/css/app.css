@@ -343,6 +343,7 @@ kbd { font-family: inherit; }
 .infobar.remote:hover { background: var(--accent-weak); }
 .infobar.meeting { background: var(--accent-weak); }
 .infobar.meeting .btn { height: 28px; }
+.infobar.meeting .ib-done { font-weight: 600; }
 .infobar.flag { background: #fdf0ef; color: #8f2a20; }
 .infobar.flag .ico.flagged { color: var(--flag); }
 .infobar.flag .ico.flagged .flag-fill { fill: currentColor; }
