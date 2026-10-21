@@ -1,38 +1,38 @@
 # Logo
 
-Das App-Logo ist **„Check-Kuvert“**: ein Briefumschlag mit einem Häkchen, das über den Rand
-hinausgreift (Mail = erledigte Aufgabe). Farbe: `--accent` `#2f6fe4`, Verlauf `#4a8bf5` → `#1d4fb8`.
+The app logo is **„Check-Kuvert“** (check envelope): an envelope with a check mark that reaches
+beyond its edge (mail = completed task). Colour: `--accent` `#2f6fe4`, gradient `#4a8bf5` → `#1d4fb8`.
 
-| Datei | Inhalt |
+| File | Contents |
 | --- | --- |
-| `src-tauri/icons/icon.svg` | **Vektor-Vorlage** des App-Icons (1024 × 1024) |
-| `docs/logo/1-check-kuvert.svg` | dieselbe Datei, neben den übrigen Entwürfen |
-| `docs/logo/2-…5-*.svg` | verworfene Alternativen |
-| `docs/logo/vorschau.html` | alle Entwürfe in 192 / 96 / 48 / 32 / 16 px, hell und dunkel |
+| `src-tauri/icons/icon.svg` | **Vector master** of the app icon (1024 × 1024) |
+| `docs/logo/1-check-kuvert.svg` | the same file, alongside the other drafts |
+| `docs/logo/2-…5-*.svg` | rejected alternatives |
+| `docs/logo/vorschau.html` | all drafts at 192 / 96 / 48 / 32 / 16 px, light and dark |
 
-## Programmsymbole neu erzeugen
+## Regenerating the app icons
 
-Nach einer Änderung an `src-tauri/icons/icon.svg`:
+After changing `src-tauri/icons/icon.svg`:
 
-1. SVG als 1024 × 1024-PNG mit transparentem Hintergrund rendern. Der Schatten ist ein
-   SVG-Filter, deshalb einen Browser-Renderer nehmen, z. B. Chromium. Das Fenster ist bewusst
-   höher als 1024 px, weil Headless-Chromium sonst den unteren Rand abschneidet; das Skript
-   schneidet das Quadrat oben links wieder aus:
+1. Render the SVG as a 1024 × 1024 PNG with a transparent background. The shadow is an
+   SVG filter, so use a browser renderer, e.g. Chromium. The window is deliberately
+   taller than 1024 px because headless Chromium otherwise cuts off the bottom edge; the script
+   crops the square from the top left again:
 
    ```bash
    chromium --headless --disable-gpu --default-background-color=00000000 \
      --hide-scrollbars --window-size=1024,1200 --screenshot=logo-1024.png src-tauri/icons/icon.svg
    ```
 
-2. Daraus die Größen und Formate erzeugen (benötigt Pillow, `pip install pillow`):
+2. Generate the sizes and formats from it (requires Pillow, `pip install pillow`):
 
    ```bash
    python3 docs/logo/make-icons.py logo-1024.png
    ```
 
-   Das schreibt `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.png`, `icon.ico`
-   (16–256 px) und `icon.icns` nach `src-tauri/icons/` – genau die Dateien aus
+   This writes `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.png`, `icon.ico`
+   (16–256 px) and `icon.icns` to `src-tauri/icons/` – exactly the files listed in
    `tauri.conf.json`.
 
-Alternativ geht `cargo tauri icon logo-1024.png`; das legt aber zusätzlich Icons für Android,
-iOS und den Windows Store an, die das Projekt nicht verwendet.
+Alternatively, `cargo tauri icon logo-1024.png` works; however, it also creates icons for Android,
+iOS and the Windows Store, which the project does not use.

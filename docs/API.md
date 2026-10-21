@@ -8,7 +8,7 @@ service layer (`crates/core`, module `service`) through one generic entry point:
 | Tauri app | `window.__TAURI__.core.invoke('call', { cmd, args })` | `window.__TAURI__.event.listen(name, e => e.payload)` |
 | Dev/test server (`crates/devserver`) | `POST /api/call/<cmd>` with JSON body `args` → `200` JSON result, or `4xx/5xx` `{ "error": "message" }` | Server-Sent Events at `GET /api/events`, each `data:` line is `{ "event": name, "payload": {...} }` |
 
-`ui/js/api.js` hides the difference. Errors are human readable German strings.
+`ui/js/api.js` hides the difference. Errors are human-readable German strings.
 
 All JSON keys are **camelCase**. Timestamps are ISO-8601 UTC strings with `Z`
 (e.g. `"2026-10-15T14:40:00Z"`) unless noted. Optional values are `null`.
@@ -21,9 +21,9 @@ Account      { id: string, email: string, displayName: string, kind: "o365"|"ima
                auth?: "google" /* IMAP account signed in with Google (Gmail / Workspace) */ }
 AccountBadge { color: "#rrggbb"|null, text: string|null }   // text: up to 2 lines ("\n") of up to 8 characters
                // kind "imap": no calendar, no mailbox settings (auto reply); categories are local
-               // (stored as IMAP keywords on messages), "Wiedervorlage" times are kept locally.
+               // (stored as IMAP keywords on messages), "Wiedervorlage" (follow-up/snoozed folder) times are kept locally.
                // auth "google": IMAP/SMTP at imap.gmail.com / smtp.gmail.com with SASL XOAUTH2;
-               // "Archiv" is Gmail's "All Mail" (\All), sent copies are filed by Gmail itself.
+               // "Archiv" (Archive) is Gmail's "All Mail" (\All), sent copies are filed by Gmail itself.
 ServerSettings { host: string, port: number, security: "ssl"|"starttls"|"none", username: string }
 ImapAccountInput { email: string, displayName: string, imap: ServerSettings, smtp: ServerSettings,
                    password: string, smtpPassword: string|null /* null = same as IMAP */,
@@ -97,18 +97,18 @@ Draft {
 }
 DraftInput = Draft (without attachments) & {
   newAttachments: { name, contentType, contentBase64 }[], removedAttachmentIds: string[],
-  remindAt?: string|null   // "Erinnerung an mich": ISO UTC. After sending, a reminder mail
-                           // ("Nachfassen: <subject>", to = original recipients, replyTo = them,
+  remindAt?: string|null   // "Erinnerung an mich" (remind me): ISO UTC. After sending, a reminder mail
+                           // ("Nachfassen: <subject>" (follow up), to = original recipients, replyTo = them,
                            // body = sent text) is created directly in "Wiedervorlage", due at remindAt.
 }
 Config {
   clientId: string, tenant: string /* empty → built-in default "organizations" (multi-tenant) */, syncIntervalSecs: number,
   loadRemoteImages: bool, readingPane: "right"|"bottom"|"off",
   markReadDelaySecs: number /* -1 = never automatically */, listMode: "comfortable"|"compact",
-  showDateSeparators: bool /* thin "Heute / Gestern / Älter" separators in the list */,
+  showDateSeparators: bool /* thin "Heute / Gestern / Älter" (Today / Yesterday / Older) separators in the list */,
   snoozeOptions: SnoozeOption[] /* entries of the "Wiedervorlage" dropdown, editable in settings */,
   demo: bool /* read-only: running against the built-in demo server */,
-  builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" */,
+  builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" (Sign in) */,
   googleClientId: string, googleClientSecret: string /* OAuth client ("Desktop app") for Gmail; empty → built-in, if any */,
   builtinGoogleClient: bool /* read-only: a Google client is compiled in */
 }
@@ -119,8 +119,9 @@ SnoozeOption { label: string, rule: string }
 // Config also has: kanbanReadingPane: "bottom"|"right" (default "bottom").
 // rule grammar (evaluated in the UI, local time):  "<base>@HH:MM"
 //   base = "tomorrow" | "days:N" (today + N days) | "weekend" (next Saturday) | "nextWeek" (next Monday)
-// defaults: Morgen 8 Uhr = tomorrow@08:00, Übermorgen 8 Uhr = days:2@08:00, Am Wochenende = weekend@08:00,
-//           Nächste Woche = nextWeek@08:00, In 14 Tagen = days:14@08:00, In 30 Tagen = days:30@08:00
+// defaults: Morgen 8 Uhr (tomorrow 8 am) = tomorrow@08:00, Übermorgen 8 Uhr (day after tomorrow 8 am) = days:2@08:00,
+//           Am Wochenende (at the weekend) = weekend@08:00, Nächste Woche (next week) = nextWeek@08:00,
+//           In 14 Tagen (in 14 days) = days:14@08:00, In 30 Tagen (in 30 days) = days:30@08:00
 AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage: string,
             externalReplyMessage: string, scheduledStart: string|null, scheduledEnd: string|null,
             externalAudience: "none"|"contactsOnly"|"all" }
@@ -139,15 +140,15 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `discover_imap` | `{ email }` | `{ imap: ServerSettings, smtp: ServerSettings, source: "ispdb"\|"autoconfig"\|"guess" }` — Thunderbird ISPDB / autoconfig lookup, else guesses (imap./smtp.<domain>) |
 | `test_imap_account` | `{ input: ImapAccountInput }` | `{ imapOk: bool, smtpOk: bool, imapError: string\|null, smtpError: string\|null }` |
 | `add_imap_account` | `{ input: ImapAccountInput }` | `Account` — verifies IMAP+SMTP login first, password goes to the OS keychain |
-| `add_google_account` | `{ loginHint: string\|null }` | `Account` — "Mit Google anmelden": opens the system browser (Google OAuth, PKCE, loopback redirect), waits up to 5 min, verifies IMAP+SMTP via XOAUTH2; the refresh token goes to the OS keychain. Signing in to an existing account renews its login. |
+| `add_google_account` | `{ loginHint: string\|null }` | `Account` — "Mit Google anmelden" (Sign in with Google): opens the system browser (Google OAuth, PKCE, loopback redirect), waits up to 5 min, verifies IMAP+SMTP via XOAUTH2; the refresh token goes to the OS keychain. Signing in to an existing account renews its login. |
 | `update_imap_account` | `{ accountId, input: ImapAccountInput }` | `Account` (password "" = keep the stored one; Google accounts: only `displayName` changes) |
 | `get_imap_account` | `{ accountId }` | `ImapAccountInput` with password "" |
 | `remove_account` | `{ accountId }` | `null` |
-| `set_account_order` | `{ accountIds: string[] }` | `null` — display order from top to bottom (folder pane, menus, „Von“); emits `accounts-changed` |
+| `set_account_order` | `{ accountIds: string[] }` | `null` — display order from top to bottom (folder pane, menus, „Von“ (From)); emits `accounts-changed` |
 | `set_account_avatar` | `{ accountId, avatar: string\|null }` | `null` — own picture as `data:image/png\|jpeg\|webp;base64,…` (max. 300 KB; the UI crops it to 128 px), `null` = initials again; emits `accounts-changed` |
 | `set_account_look` | `{ accountId, label: string\|null, badge: { color, text }\|null }` | `null` — name in the views instead of the address (max. 60 characters) and the round badge without a picture: colour `#rrggbb` and up to 2 lines of up to 8 characters; empty/`null` = address, derived colour, initials; emits `accounts-changed` |
 | `set_active_folder` | `{ mailboxId, folderId }` | `null` — background sync also syncs this folder |
-| `sync_all` | `{}` | `null` — "Senden/Empfangen": folders + inbox + active folder of every mailbox |
+| `sync_all` | `{}` | `null` — "Senden/Empfangen" (Send/Receive): folders + inbox + active folder of every mailbox |
 
 ### Folders
 | `list_folders` | `{ mailboxId }` | `Folder[]` (from cache; flat list, build tree via parentId; sorted: well-known first in Outlook order, then alphabetical) |
@@ -156,7 +157,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `rename_folder` | `{ mailboxId, folderId, name }` | `Folder` |
 | `delete_folder` | `{ mailboxId, folderId }` | `null` |
 | `mark_folder_read` | `{ mailboxId, folderId }` | `null` |
-| `empty_folder` | `{ mailboxId, folderId }` | `null` (permanently deletes all items; used for "Gelöschte Elemente leeren") |
+| `empty_folder` | `{ mailboxId, folderId }` | `null` (permanently deletes all items; used for "Gelöschte Elemente leeren" (Empty Deleted Items)) |
 
 ### Messages
 | `list_messages` | `{ mailboxId, folderId, sortBy: "received"\|"from"\|"subject"\|"importance"\|"flag"\|"attachments"\|"categories", sortDesc: bool, unreadOnly: bool, flaggedOnly: bool, category: string\|null, text: string\|null, offset: number, limit: number }` | `{ items: MessageSummary[], total: number, unread: number, canLoadOlder: bool }` — from local cache; `text` filters subject/from/preview locally |
@@ -164,7 +165,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `load_older` | `{ mailboxId, folderId }` | `number` loaded (0 = nothing older) |
 | `search_messages` | `{ mailboxId, text, folderId: string\|null, field?: "all"\|"from"\|"to"\|"subject"\|"body", hasAttachments?: bool }` | `MessageSummary[]` (server side search, max 100; folderId null = all folders) |
 | `archive_messages` | `{ mailboxId, ids }` | `null` — move to the Archive folder (created if missing) |
-| `snooze_messages` | `{ mailboxId, ids, until: ISO UTC }` | `null` — "Auf Wiedervorlage": moves to folder "Wiedervorlage" (Folder.wellKnown = "snoozed"), stores the time as follow-up due date; the background sync moves it back to the inbox (unread) when due and emits `new-mail` |
+| `snooze_messages` | `{ mailboxId, ids, until: ISO UTC }` | `null` — "Auf Wiedervorlage" (snooze): moves to folder "Wiedervorlage" (Folder.wellKnown = "snoozed"), stores the time as follow-up due date; the background sync moves it back to the inbox (unread) when due and emits `new-mail` |
 | `unsnooze_messages` | `{ mailboxId, ids }` | `null` — back to the inbox now |
 | `get_message` | `{ mailboxId, messageId }` | `MessageDetail` |
 | `set_read` | `{ mailboxId, ids: string[], isRead: bool }` | `null` |
@@ -172,10 +173,10 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `set_categories` | `{ mailboxId, ids, categories: string[] }` | `null` (replaces the list) |
 | `move_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `copy_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
-| `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)": a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" → Posteingang (unread); otherwise → "Wiedervorlage" with dueAt |
+| `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)" (task as mail): a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" (immediately) → Posteingang (inbox, unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
-| `get_message_source` | `{ mailboxId, messageId }` | `string` (MIME source, for "Quelltext anzeigen") |
+| `get_message_source` | `{ mailboxId, messageId }` | `string` (MIME source, for "Quelltext anzeigen" (View source)) |
 
 ### Compose
 | `create_draft` | `{ mailboxId, mode, sourceMessageId: string\|null }` | `Draft` (`new` → id null, body = signature; reply/replyAll/forward → server draft with quoted original + signature on top) |
@@ -202,13 +203,13 @@ Event `rules-applied` `{ mailboxId, count, subjects: string[] }` after mails wer
 | `save_lanes` | `{ accountId, lanes: string[] }` | `string[]` — validates names, creates missing "[K_…]" categories (O365 master categories / IMAP local), deletes categories of removed lanes and strips them from cached messages; renaming = remove + add |
 | `set_lane` | `{ mailboxId, ids, lane: string\|null }` | `null` — replaces any "[K_…]" category on the messages, keeps all other categories; null = no lane |
 
-### Follow-ups resolve themselves ("Nachfassen erledigt sich selbst")
+### Follow-ups resolve themselves ("Nachfassen erledigt sich selbst", follow-ups close themselves)
 Reminder mails from `remindAt` carry a hidden category `"[F_<10 hex>]"` (hash of the sent mail's
 thread id). When a reply from someone else arrives in that thread, the inbox rule chain archives the
 reminder (wherever it is: Wiedervorlage or inbox) and emits `followup-resolved`
 `{ mailboxId, subject, from }`. "[F_…]" categories are hidden in the UI like lane categories.
 
-### Recurring tasks ("Wiederkehrend")
+### Recurring tasks ("Wiederkehrend", recurring)
 Hidden category on the mail: `"[#daily]"`, `"[#weekdays]"`, `"[#weekly]"`, `"[#biweekly]"`, `"[#monthly]"`,
 `"[#quarterly]"`, `"[#yearly]"`. Fixed rhythm: when such a mail is **archived**, a copy (same subject,
 body, categories) is placed in "Wiedervorlage" due at the next occurrence after its due time (missed
@@ -218,10 +219,10 @@ occurrences are skipped; without due time the anchor is "now"); the event `recur
 | `set_recurrence` | `{ mailboxId, ids, recurrence: string\|null }` | `null` |
 MessageSummary gains `recurrence: string|null` (derived from the hidden category).
 
-### Heute
+### Heute (Today)
 | `list_today` | `{}` | `{ due: MessageSummary[], todo: { accountId, lane: string, items: MessageSummary[] }[] }` — all mails of all accounts whose dueAt is before the end of today (local time; snoozed and returned ones), plus per account the mails in its FIRST Kanban lane |
 
-### Fokuszeit
+### Fokuszeit (Focus time)
 | `get_focus` | `{}` | `{ until: ISO\|null }` |
 | `set_focus` | `{ minutes: number }` | `{ until: ISO\|null }` — 0 ends focus time. While active the background sync is paused (no auto fetch, no notifications, due snoozes are not returned); `sync_all` (manual "Senden/Empfangen") still works. Event `focus-changed` `{ until }`; when it expires the backend emits `focus-changed` `{ until: null }` and syncs once. |
 
