@@ -41,6 +41,8 @@ jobs:
           # (tag v<version> is created when the draft is published).
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: "lettertask v__VERSION__"
+          # Stays a draft until all platforms are built; the publish job below
+          # then makes it public (drafts are not shown on the repository page).
           releaseDraft: true
       # Each installer as its own artifact, downloadable as the file itself
       # (no ZIP): upload-artifact v7 with archive: false takes exactly one file.
@@ -81,3 +83,24 @@ jobs:
         with:
           path: ${{ steps.files.outputs.dmg }}
           archive: false
+
+  # When every platform is built: publish the draft as the latest release.
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v$(jq -r .version src-tauri/tauri.conf.json)"
+          fi
+          ID=$(gh api "repos/$REPO/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\") | .id" | sort -n | tail -n 1)
+          if [ -z "$ID" ]; then echo "Kein Release für $TAG gefunden" >&2; exit 1; fi
+          gh api -X PATCH "repos/$REPO/releases/$ID" -F draft=false -f make_latest=true --silent
+          echo "Veröffentlicht: $TAG"
