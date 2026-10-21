@@ -3,7 +3,7 @@ import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fm
 import { icon } from './icons.js';
 import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
 import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
-import { call, openUrl, openWindow } from './api.js';
+import { call, openUrl, openWindow, suppressNativeMenu } from './api.js';
 import { showMenu, showMenuAt, reportError, toast, busyClick } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
 import { fmtSnoozeTarget } from './snooze.js';
@@ -133,6 +133,7 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
         if (t) t.scrollIntoView();
       }
     });
+    suppressNativeMenu(doc);
     // Middle click / other buttons never follow a link.
     doc.addEventListener('auxclick', (e) => { if (linkOf(e.target)) e.preventDefault(); });
     // Forward keyboard shortcuts typed while the iframe has focus.

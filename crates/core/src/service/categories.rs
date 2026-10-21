@@ -9,6 +9,14 @@ use crate::model::Category;
 const CACHE_KEY: &str = "categories";
 
 impl Service {
+    /// Last known categories without a server round trip (None = never loaded).
+    pub(crate) fn cached_categories(&self, account_id: &str) -> Result<Option<Vec<Category>>> {
+        if crate::imap::is_imap_id(account_id) {
+            return self.imap_categories(account_id).map(Some);
+        }
+        self.store.get_account_json(account_id, CACHE_KEY)
+    }
+
     pub(crate) async fn list_categories(&self, account_id: &str) -> Result<Vec<Category>> {
         if crate::imap::is_imap_id(account_id) {
             return self.imap_categories(account_id);

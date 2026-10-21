@@ -611,12 +611,26 @@ async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
   }, { silent: true });
   if (state.current.folderId !== folderId) return;
   const items = res.items || [];
+  // The Wiedervorlage view also lists mails with a due date outside the
+  // Wiedervorlage folder (e.g. follow-up flags set in Outlook), as the calendar does.
+  let extra = [];
+  const folder = currentFolder();
+  if (folder && folder.wellKnown === 'snoozed' && !kb && !list.text && !list.filter.unreadOnly && !list.filter.flaggedOnly && !list.filter.category && items.length >= (res.total || 0)) {
+    const due = await call('list_due', { end: new Date(Date.now() + 5 * 365 * 864e5).toISOString() }, { silent: true }).catch((e) => { console.warn(e); return []; });
+    if (state.current.folderId !== folderId) return;
+    const have = new Set(items.map((m) => m.id));
+    extra = (due || []).filter((m) => m.mailboxId === mailboxId && m.folderId !== folderId && !have.has(m.id));
+    if (extra.length) {
+      for (const m of items) m._section = 'Auf Wiedervorlage';
+      for (const m of extra) { m._section = 'Fällig in anderen Ordnern'; items.push(m); }
+    }
+  }
   // Large folders (e.g. an archive with thousands of loaded rows) get many
   // "mail-changed" events; nothing changed → keep the DOM as it is.
   const same = ifChanged && list.items.length === items.length && JSON.stringify(list.items) === JSON.stringify(items);
   list.items = items;
-  list.total = res.total || 0;
-  list.unread = res.unread || 0;
+  list.total = (res.total || 0) + extra.length;
+  list.unread = (res.unread || 0) + extra.filter((m) => !m.isRead).length;
   list.canLoadOlder = !!res.canLoadOlder;
   const ids = new Set(list.items.map((m) => m.id));
   for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
@@ -690,7 +704,7 @@ function rowContext() {
 }
 
 function groupOf(m, ctx) {
-  if (isVirtual() && !list.search) return m._section;
+  if ((isVirtual() || ctx.snoozedView) && !list.search && m._section) return m._section;
   return ctx.separators ? dateGroup(m.receivedAt).key : null;
 }
 
@@ -700,7 +714,7 @@ function buildRows(items, from, ctx) {
   let lastGroup = from > 0 ? groupOf(items[from - 1], ctx) : null;
   for (let i = from; i < items.length; i++) {
     const m = items[i];
-    if (isVirtual() && !list.search && m._section !== lastGroup) {
+    if ((isVirtual() || ctx.snoozedView) && !list.search && m._section && m._section !== lastGroup) {
       lastGroup = m._section;
       frag.appendChild(h('div.m-sep.today-sec', { dataset: { section: m._section } }, m._section));
     }
@@ -1104,7 +1118,7 @@ function requireSelection() {
 export function openMessage(m) {
   if (!m) return;
   if (m.isDraft) openWindow('compose', { mailboxId: m.mailboxId || state.current.mailboxId, draftId: m.id }).catch(reportError);
-  else openWindow('message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id, folderId: state.current.folderId }).catch(reportError);
+  else openWindow('message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id, folderId: m.folderId || state.current.folderId }).catch(reportError);
 }
 
 export function newMail() {
@@ -1384,7 +1398,7 @@ function messageContextMenu(x, y) {
       : { label: 'Als ungelesen markieren', icon: 'mail', shortcut: 'Strg+U', onClick: () => markSelected(false) },
     { label: 'Kategorisieren', icon: 'tag', shortcut: 'T', submenu: categoryMenuItems },
     { label: 'Kennzeichnung', icon: 'flag', submenu: flagMenuItems },
-    { label: 'Auf Wiedervorlage', icon: 'snooze', shortcut: 'S', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
+    { label: s.items.some((m) => m.dueAt) ? 'Wiedervorlage verschieben' : 'Auf Wiedervorlage', icon: 'snooze', shortcut: 'S', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
     { label: 'Kanban-Lane', icon: 'kanban', submenu: laneMenuItems, testid: 'ctx-lane' },
     { label: 'Wiederholung', icon: 'repeat', submenu: recurrenceSubmenu, testid: 'ctx-recurrence' },
     { separator: true },

@@ -436,9 +436,14 @@ async function syncAll() {
 async function loadAll() {
   await loadAccounts();
   const failed = [];
+  // Categories come from the server (Graph); the window must not wait for them.
+  // The cache-backed rest is local and fast.
+  Promise.all(state.accounts.map((a) => loadCategories(a.id).catch(() => [])))
+    .then(() => { mail.reloadList().catch(() => {}); })
+    .catch(() => {});
   await Promise.all([
+    ...state.accounts.map((a) => loadCategories(a.id, { cached: true }).catch(() => [])),
     ...mailboxes().map((m) => loadFolders(m.id).catch((e) => { failed.push(`${m.address}: ${e.message || e}`); return []; })),
-    ...state.accounts.map((a) => loadCategories(a.id).catch(() => [])),
     ...state.accounts.map((a) => loadLanes(a.id)),
   ]);
   await Promise.all(mailboxes().filter((m) => !(state.folders.get(m.id) || []).length).map(async (m) => {

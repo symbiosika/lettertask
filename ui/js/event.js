@@ -398,12 +398,12 @@ async function init() {
   try { await bootstrapSecondary(); } catch (e) { reportError(e); }
   if (!st.accountId) { const o = state.accounts.find((a) => a.kind !== 'imap') || state.accounts[0]; st.accountId = o && o.id; }
   renderForm();
-  let calendars = [];
-  try { calendars = (await call('list_calendars', { accountId: st.accountId }, { silent: true })) || []; } catch (e) { reportError(e); }
+  // Calendar list and event load in parallel; the form is already on screen.
+  const calendarsP = call('list_calendars', { accountId: st.accountId, cached: true }, { silent: true }).catch((e) => { reportError(e); return []; });
   if (P.eventId) {
     const stop = loadingPill('Termin wird geladen…', 150);
-    let ev;
-    try { ev = await call('get_event', { accountId: st.accountId, eventId: P.eventId }); } finally { stop(); }
+    let ev, calendars;
+    try { [ev, calendars] = await Promise.all([call('get_event', { accountId: st.accountId, eventId: P.eventId }), calendarsP]); } finally { stop(); }
     if (ev.type === 'occurrence' && ev.seriesMasterId && ev.isOrganizer) {
       const choice = await modal({
         title: 'Serienelement öffnen', width: 400,
@@ -418,7 +418,7 @@ async function init() {
     }
     st.event = ev;
     st.readOnly = !ev.isOrganizer;
-    fillCalendars(calendars, ev.calendarId);
+    fillCalendars(calendars || [], ev.calendarId);
     fillFromEvent(ev);
     await editor.setHtml(ev.bodyHtml || '');
     if (st.readOnly) renderReadOnly(ev);
@@ -430,6 +430,7 @@ async function init() {
     f.allDay.checked = P.allDay === '1';
     if (f.allDay.checked) { f.endDate.value = toDateInput(addDays(e, -1) < s ? s : addDays(e, -1)); f.endTime.value = toTimeInput(s); st.showAs = 'free'; }
     else { f.endDate.value = toDateInput(e); f.endTime.value = toTimeInput(e); }
+    const calendars = (await calendarsP) || [];
     const def = calendars.find((c) => c.id === P.calendarId) || calendars.find((c) => c.isDefault) || calendars[0];
     fillCalendars(calendars, def && def.id);
     syncAllDay();
