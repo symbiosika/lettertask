@@ -5,18 +5,29 @@ import { modal, reportError, toast, showMenuAt, confirmDialog } from './dialogs.
 import { renderMessage } from './mailview.js';
 import { tbBtn, sep } from './toolbar.js';
 import { state, bootstrapSecondary, accountOfMailbox } from './state.js';
+import { broadcast } from './bus.js';
 
 const P = params();
 let msg = null;
 
 async function load() {
+  // A reply to a delegated task (same thread) offers "Aufgabe erledigt & archivieren".
+  const delegationP = call('find_delegation', { mailboxId: P.mailboxId, messageId: P.messageId }, { silent: true }).catch(() => null);
   msg = await call('get_message', { mailboxId: P.mailboxId, messageId: P.messageId });
+  const delegation = await delegationP;
+  const assignee = delegation && (delegation.to || [])[0];
   const accountId = accountOfMailbox(P.mailboxId);
   renderMessage($('#msg'), msg, {
     accountId, config: state.config, onChanged: () => load().catch(reportError),
     // An answered invitation is done: archive it and close the window.
     onResponded: async () => {
       try { await call('archive_messages', { mailboxId: P.mailboxId, ids: [msg.id] }); } catch (e) { console.warn(e); }
+      await closeWindow();
+    },
+    delegation: delegation ? { name: (assignee && (assignee.name || assignee.address)) || '', subject: delegation.subject } : null,
+    onDelegationDone: async () => {
+      await call('archive_messages', { mailboxId: P.mailboxId, ids: [msg.id, delegation.id] });
+      broadcast({ type: 'delegation-done', subject: delegation.subject });
       await closeWindow();
     },
     setCategories: (cats) => call('set_categories', { mailboxId: P.mailboxId, ids: [msg.id], categories: cats }, { silent: true }).then(() => { msg.categories = cats; }),

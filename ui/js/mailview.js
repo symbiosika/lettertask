@@ -296,6 +296,19 @@ export function renderMessage(container, msg, opts) {
     bar.append(mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline'));
     bars.appendChild(bar);
   }
+  if (opts.delegation && opts.onDelegationDone) {
+    const d = opts.delegation;
+    const bar = h('div.infobar.delegation', { dataset: { testid: 'delegation-bar' } },
+      h('span.ib-text', { html: icon('people', 16) + `<span>Antwort auf die an <b>${esc(d.name)}</b> delegierte Aufgabe „${esc(d.subject)}“</span>` }),
+      h('span.spacer'));
+    bar.appendChild(h('button.btn.small.success', {
+      type: 'button', dataset: { testid: 'delegation-done' },
+      title: 'Delegierte Aufgabe und diese Antwort archivieren',
+      onclick: busyClick(() => opts.onDelegationDone(), bar),
+      html: icon('check', 15) + ' Aufgabe erledigt &amp; archivieren',
+    }));
+    bars.appendChild(bar);
+  }
   let remoteBar = null;
   if (remote && !allowRemote) {
     remoteBar = h('div.infobar.remote', { role: 'button', title: 'Bilder herunterladen' },

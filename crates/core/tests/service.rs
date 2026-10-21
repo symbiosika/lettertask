@@ -1017,6 +1017,63 @@ async fn send_with_reminder_creates_follow_up() {
 }
 
 #[tokio::test]
+async fn delegated_task_is_sent_and_followed_up() {
+    let ctx = setup().await;
+    let due = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+    let anna = json!({"name": "Anna Muster", "address": "Anna@Fabrikam.example"});
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Angebot prüfen", "bodyHtml": "<p>bis Freitag</p>", "due": due, "delegate": anna}),
+    )
+    .await;
+    // Copy for me: in "Wiedervorlage", due like a task, marked with the assignee.
+    assert_eq!(t.folder_id, ctx.folder("snoozed").await.id);
+    assert_eq!(t.subject, "ToDo: Angebot prüfen");
+    assert!(t.due_at.is_some());
+    assert!(t.categories.contains(&"[D_anna@fabrikam.example]".to_string()), "{:?}", t.categories);
+    // The task went out to the assignee.
+    let sent = ctx.folder("sentitems").await;
+    ctx.sync(&sent.id).await;
+    let out = ctx.list(&sent.id).await.items.into_iter().find(|m| m.subject == "ToDo: Angebot prüfen").expect("sent");
+    assert_eq!(out.to[0].address, "Anna@Fabrikam.example");
+    assert!(t.categories.iter().any(|c| c.starts_with("[DT_")), "{:?}", t.categories);
+    // Anna answers in the thread: the reply is recognised as answer to the delegation.
+    let fake = ctx.fake.as_ref().unwrap();
+    let sent_raw = fake.state.sent_messages("me").into_iter().find(|m| m["subject"] == "ToDo: Angebot prüfen").unwrap();
+    fake.state.inject_incoming("me", "inbox", json!({
+        "subject": "AW: ToDo: Angebot prüfen", "conversationId": sent_raw["conversationId"], "isRead": false,
+        "from": {"emailAddress": {"name": "Anna Muster", "address": "anna@fabrikam.example"}},
+    }));
+    let inbox = ctx.folder("inbox").await;
+    ctx.sync(&inbox.id).await;
+    let reply = ctx.list(&inbox.id).await.items.into_iter().find(|m| m.subject == "AW: ToDo: Angebot prüfen").unwrap();
+    let found: Option<MessageSummary> = call(&ctx.svc, "find_delegation", json!({"mailboxId": ctx.account, "messageId": reply.id})).await;
+    assert_eq!(found.map(|m| m.id), Some(t.id.clone()), "not auto-resolved, but found");
+    let other = ctx.list(&inbox.id).await.items.into_iter().find(|m| m.id != reply.id).unwrap();
+    let none: Option<MessageSummary> = call(&ctx.svc, "find_delegation", json!({"mailboxId": ctx.account, "messageId": other.id})).await;
+    assert!(none.is_none());
+    // Without prefix and without due time: copy in the inbox.
+    let t2: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Reisekosten", "due": null, "delegate": {"name": "", "address": "bob@fabrikam.example"}, "todoPrefix": false}),
+    )
+    .await;
+    assert_eq!(t2.subject, "Reisekosten");
+    let list: Vec<MessageSummary> = call(&ctx.svc, "list_delegations", json!({})).await;
+    assert_eq!(list.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), [t.id.as_str(), t2.id.as_str()]);
+    // Archived = done: leaves the list.
+    let _: Value = call(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [t2.id]})).await;
+    let list: Vec<MessageSummary> = call(&ctx.svc, "list_delegations", json!({})).await;
+    assert_eq!(list.len(), 1);
+    let bad = json!({"mailboxId": ctx.account, "subject": "x", "due": null, "delegate": {"name": "", "address": "kein-mail"}});
+    assert!(call_err(&ctx.svc, "create_task", bad).await.contains("Ungültige Adresse"));
+    let rec = json!({"mailboxId": ctx.account, "subject": "x", "due": null, "recurrence": "weekly", "delegate": anna});
+    assert!(call_err(&ctx.svc, "create_task", rec).await.contains("wiederholt"));
+}
+
+#[tokio::test]
 async fn inbox_rules_snooze_self_mails_before_display() {
     let ctx = setup().await;
     let inbox = ctx.folder("inbox").await;

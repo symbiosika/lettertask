@@ -392,7 +392,8 @@ impl Service {
         self.imap_load_draft(&mb, &id, &d.mode).await
     }
 
-    pub(crate) async fn imap_send_draft(&self, d: DraftInput) -> Result<()> {
+    /// Returns the thread id (root Message-ID) of the sent mail.
+    pub(crate) async fn imap_send_draft(&self, d: DraftInput) -> Result<Option<String>> {
         if d.to.is_empty() && d.cc.is_empty() && d.bcc.is_empty() {
             return Err(Error::invalid("Bitte mindestens einen Empfänger angeben."));
         }
@@ -444,7 +445,7 @@ impl Service {
                 self.emit("reminder-failed", json!({"mailboxId": mb, "subject": d.subject, "message": e.to_string()}));
             }
         }
-        Ok(())
+        Ok(Some(o.message_id.trim_matches(['<', '>']).to_string()))
     }
 
     /// Tasks/reminders: a normal (non-draft) mail from yourself, unread in

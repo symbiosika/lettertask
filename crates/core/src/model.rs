@@ -120,6 +120,14 @@ pub fn recurrence_of(categories: &[String]) -> Option<String> {
     })
 }
 
+/// Assignee of a delegated task, from the hidden category "[D_<address>]".
+pub fn delegate_of(categories: &[String]) -> Option<String> {
+    categories.iter().find_map(|c| {
+        let a = c.strip_prefix("[D_")?.strip_suffix(']')?;
+        a.contains('@').then(|| a.to_string())
+    })
+}
+
 pub const RECURRENCES: &[&str] = &["daily", "weekdays", "weekly", "biweekly", "monthly", "quarterly", "yearly"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

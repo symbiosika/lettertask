@@ -64,6 +64,23 @@ impl Host for HttpHost {
 struct AppState {
     svc: Arc<Service>,
     tx: broadcast::Sender<Value>,
+    /// Demo mode only: the fake Graph state, for simulating incoming mail.
+    fake: Option<graph_fake::SharedState>,
+}
+
+/// Demo mode: the recipient of the sent mail `subject` answers in its thread.
+async fn demo_reply(State(st): State<AppState>, Json(args): Json<Value>) -> Response {
+    let Some(fake) = &st.fake else { return StatusCode::NOT_FOUND.into_response() };
+    let subject = args["subject"].as_str().unwrap_or_default();
+    let Some(sent) = fake.sent_messages("me").into_iter().find(|m| m["subject"] == subject) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let from = sent["toRecipients"][0].clone();
+    let id = fake.inject_incoming("me", "inbox", json!({
+        "subject": format!("AW: {subject}"), "conversationId": sent["conversationId"], "isRead": false,
+        "from": from, "body": {"contentType": "html", "content": args["bodyHtml"].as_str().unwrap_or("<p>Erledigt.</p>")},
+    }));
+    Json(json!({"id": id})).into_response()
 }
 
 async fn call(State(st): State<AppState>, AxPath(cmd): AxPath<String>, body: Option<Json<Value>>) -> Response {
@@ -221,7 +238,8 @@ async fn main() -> anyhow::Result<()> {
     }
     svc.start_background_sync();
 
-    let state = AppState { svc, tx };
+    let fake_state = _fake.as_ref().map(|f| f.state.clone());
+    let state = AppState { svc, tx, fake: fake_state };
     let g = Guard {
         port: args.port,
         csp: HeaderValue::from_str(&app_csp())?,
@@ -229,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/call/{cmd}", post(call))
         .route("/api/events", get(events))
+        .route("/api/demo/reply", post(demo_reply))
         .fallback_service(ServeDir::new(&args.ui_dir))
         .layer(axum::middleware::from_fn_with_state(g, guard))
         .with_state(state);
