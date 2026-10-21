@@ -443,7 +443,7 @@ export async function selectFolder(mailboxId, folderId) {
     if (!mailboxById(mailboxId)) state.current.mailboxId = mailboxes()[0] && mailboxes()[0].id;
     applyReadingPaneLayout();
     if (changed) renderList();
-    try { await reloadList(); } finally { if (isVirtual()) { list.fetching = false; renderListHead(); } }
+    try { await reloadList(); } finally { if (isVirtual()) { list.fetching = false; paintLoadingState(); } }
     return;
   }
   applyReadingPaneLayout();
