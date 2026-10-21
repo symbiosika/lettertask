@@ -1,5 +1,5 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
-import { call, params, closeWindow, isTauri } from './api.js';
+import { call, params, closeWindow, isTauri, on } from './api.js';
 import { h, $, esc, fmtSize, fileToBase64 } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
@@ -126,7 +126,7 @@ function renderForm() {
   sigBtn = h('button.ed-btn.ed-sig', { type: 'button', title: 'Signatur', 'aria-label': 'Signatur', dataset: { testid: 'compose-signature' }, html: icon('signature', 18) + `<span class="ed-sig-label">Signatur</span>` + icon('chevronDown', 12) });
   sigBtn.addEventListener('mousedown', (e) => e.preventDefault());
   sigBtn.addEventListener('click', () => openSignatureMenu().catch(reportError));
-  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn] });
+  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles });
   $('#editor').append(editor.toolbar, editor.area);
 
   // drag & drop files onto the window
@@ -136,8 +136,19 @@ function renderForm() {
     document.body.classList.remove('dropping');
     if (!e.dataTransfer || !e.dataTransfer.files.length) return;
     e.preventDefault();
-    for (const f of e.dataTransfer.files) await addFile(f).catch(reportError);
+    await addFiles(e.dataTransfer.files);
   });
+  // In the app, file drops arrive from the backend (Tauri takes them over natively).
+  if (isTauri) {
+    const w = window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow();
+    const mine = (p) => p && w && p.label === w.label;
+    on('files-drag', (p) => { if (mine(p)) document.body.classList.toggle('dropping', !!p.over); });
+    on('files-dropped', (p) => {
+      if (!mine(p)) return;
+      for (const f of p.files || []) addAttachment({ name: f.name, contentType: contentTypeOf(f.name), contentBase64: f.contentBase64, size: f.size });
+      if ((p.skipped || []).length) toast(`Nicht angefügt (Ordner oder größer als 150 MB): ${p.skipped.join(', ')}`, 'error');
+    });
+  }
 }
 
 // ------------------------------------------------------------------ signatures
@@ -182,9 +193,33 @@ function showCcBcc(focus) {
 async function addFile(file) {
   if (file.size > 150 * 1024 * 1024) { toast(`„${file.name}" ist größer als 150 MB und kann nicht angefügt werden.`, 'error'); return; }
   const contentBase64 = await fileToBase64(file);
-  st.newAttachments.push({ name: file.name, contentType: file.type || 'application/octet-stream', contentBase64, size: file.size, tmpId: Math.random().toString(36).slice(2) });
+  addAttachment({ name: file.name, contentType: file.type || contentTypeOf(file.name), contentBase64, size: file.size });
+}
+
+async function addFiles(files) {
+  for (const f of files) await addFile(f).catch(reportError);
+}
+
+function addAttachment({ name, contentType, contentBase64, size }) {
+  st.newAttachments.push({ name, contentType, contentBase64, size, tmpId: Math.random().toString(36).slice(2) });
   markDirty();
   renderAttachments();
+}
+
+const TYPES = {
+  pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv', html: 'text/html', htm: 'text/html', ics: 'text/calendar', eml: 'message/rfc822',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', heic: 'image/heic',
+  zip: 'application/zip', json: 'application/json', xml: 'application/xml', mp3: 'audio/mpeg', mp4: 'video/mp4',
+  doc: 'application/msword', xls: 'application/vnd.ms-excel', ppt: 'application/vnd.ms-powerpoint',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+/** Content type from the file extension (files dropped in the app come without one). */
+function contentTypeOf(name) {
+  const ext = (String(name).match(/\.([^.]+)$/) || [])[1];
+  return (ext && TYPES[ext.toLowerCase()]) || 'application/octet-stream';
 }
 
 function renderAttachments() {

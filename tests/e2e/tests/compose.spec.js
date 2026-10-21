@@ -82,3 +82,29 @@ test('Langsames Laden zieht den Cursor nicht aus dem Betreff', async ({ page }) 
   await page.context().unroute('**/api/call/create_draft');
   await popup.close({ runBeforeUnload: false });
 });
+
+test('Dateien per Drag & Drop anfügen – auf das Fenster und in den Text', async ({ page }) => {
+  await openApp(page);
+  const popup = await popupFrom(page, () => page.locator('[data-testid=tb-new]').click());
+  await expect(popup.locator('#subject')).toBeVisible();
+  const editorBody = popup.frameLocator('iframe.editor-frame').locator('body');
+  await expect(editorBody).toBeVisible();
+  // Drops a file on the element: on the window (header) and on the text (editor frame).
+  const frame = await (await popup.locator('iframe.editor-frame').elementHandle()).contentFrame();
+  const drop = async (locator, name, text, ctx = popup) => {
+    const dt = await ctx.evaluateHandle(([n, t]) => {
+      const d = new DataTransfer();
+      d.items.add(new File([t], n, { type: '' }));
+      return d;
+    }, [name, text]);
+    await locator.dispatchEvent('dragover', { dataTransfer: dt });
+    await locator.dispatchEvent('drop', { dataTransfer: dt });
+  };
+  await drop(popup.locator('#subject'), 'Angebot.pdf', '%PDF-1.4');
+  await drop(frame.locator('body'), 'notizen.txt', 'Hallo', frame);
+  await expect(popup.locator('#atts .attachment')).toHaveCount(2);
+  await expect(popup.locator('#atts')).toContainText('Angebot.pdf');
+  await expect(popup.locator('#atts')).toContainText('notizen.txt');
+  // Nothing of the file ends up in the text itself.
+  await expect(editorBody).not.toContainText('Hallo');
+});

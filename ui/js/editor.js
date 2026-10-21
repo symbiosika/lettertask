@@ -51,7 +51,7 @@ async function embedBlobImages(doc) {
   }));
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } = {}) {
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
   let pending = html;
@@ -71,6 +71,17 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [] } 
         // A native paste (e.g. an image in WebKit) may bring blob: images.
         if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
       }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      if (onDropFiles) {
+        // Files dropped onto the text become attachments (the drop lands in this frame, not the window).
+        const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+        doc.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+        doc.addEventListener('drop', (e) => {
+          if (!hasFiles(e) || !e.dataTransfer.files.length) return;
+          e.preventDefault();
+          window.document.body.classList.remove('dropping');
+          onDropFiles([...e.dataTransfer.files]);
+        });
+      }
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
