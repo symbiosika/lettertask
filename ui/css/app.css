@@ -685,3 +685,40 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .cal-none { padding-left: 14px; }
 .cal-empty { margin: auto; max-width: 360px; line-height: 1.5; }
 .sig-editor-box .ed-btn[aria-label^="Einzug"], .sig-editor-box .ed-sep:nth-of-type(2) { display: none; }
+
+/* Week calendar below list + reading pane ("hast du da Zeit?") */
+.mailcol { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.mailcol.hidden { display: none; }
+.mailcol > .mailview { min-height: 0; }
+.calpanel { flex: none; display: flex; flex-direction: column; min-height: 160px; border-top: 1px solid var(--border); background: var(--bg); overflow: hidden; }
+.calpanel.hidden, .cp-split.hidden { display: none; }
+.cp-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.cp-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin-right: 6px; }
+.cp-range { font-weight: 500; margin-left: 4px; }
+.cp-busy { display: none; }
+.calpanel.loading .cp-busy { display: inline-block; }
+.cp-head, .cp-allday { display: grid; grid-template-columns: 44px repeat(7, minmax(0, 1fr)); flex: none; padding-right: 10px; }
+.cp-dayhead { padding: 4px 6px; font-size: 12px; font-weight: 600; border-left: 1px solid var(--border); }
+.cp-dayhead .cp-wd { color: var(--text-dim); font-weight: 500; }
+.cp-dayhead.today { color: var(--accent); }
+.cp-dayhead.weekend, .cp-adcell.weekend, .cp-col.weekend { background: #f6f7f9; }
+.cp-allday { border-bottom: 1px solid var(--border); }
+.cp-allday.empty { display: none; }
+.cp-adlabel { font-size: 10.5px; color: var(--text-dim); padding: 3px 4px; text-align: right; }
+.cp-adcell { border-left: 1px solid var(--border); padding: 2px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cp-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.cp-grid { display: grid; grid-template-columns: 44px repeat(7, minmax(0, 1fr)); min-height: 100%; }
+.cp-hours, .cp-col { display: grid; grid-template-rows: repeat(13, minmax(24px, 1fr)); }
+.cp-hour { font-size: 10.5px; color: var(--text-dim); text-align: right; padding: 1px 6px 0 0; border-top: 1px solid transparent; }
+.cp-col { position: relative; border-left: 1px solid var(--border); }
+.cp-col.today { background: var(--accent-weak); }
+.cp-slot { border-top: 1px solid var(--border); }
+.cp-ev { position: absolute; overflow: hidden; border-radius: 4px; font-size: 11px; line-height: 1.25; padding: 1px 4px 1px 7px; cursor: pointer; box-shadow: 0 0 0 1px rgba(255,255,255,.9); color: #1f2328; z-index: 2; }
+.cp-ev::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--bar); }
+.cp-ev.allday { position: relative; white-space: nowrap; text-overflow: ellipsis; }
+.cp-ev.free { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.cp-ev.tentative::before { background: repeating-linear-gradient(45deg, var(--bar) 0 3px, transparent 3px 6px); }
+.cp-ev:hover { filter: brightness(.97); }
+.cp-time { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cp-subj { font-weight: 500; }
+.cp-now { position: absolute; left: 0; right: 0; height: 2px; background: var(--danger); z-index: 3; pointer-events: none; }

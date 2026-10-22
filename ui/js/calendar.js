@@ -292,6 +292,25 @@ function isAllDayLike(ev) {
 
 function eventTitle(ev) { return ev.subject || '(Kein Betreff)'; }
 
+// ------------------------------------------------------------- shared with the mail panel
+/** Events of all visible calendars in [start, end) (same calendars as the calendar view). */
+export async function eventsBetween(start, end) {
+  if (!cal.calendars.size) await loadCalendars();
+  const res = await Promise.all(calAccounts().map(async (a) => {
+    const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
+    if (!ids.length) return [];
+    try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString() }, { silent: true })) || []; }
+    catch (e) { console.warn(e); return []; }
+  }));
+  return res.flat();
+}
+/** Card colours of an event, as in the calendar view. */
+export function eventColors(ev) {
+  const color = evColor(ev);
+  return { background: ev.showAs === 'free' ? '#fff' : lighten(color, 0.55), bar: shade(color, 0.78) };
+}
+export { isAllDayLike, eventTitle };
+
 function headerTitle() {
   const { start, end } = range();
   if (cal.view === 'day') return fmtDateLong(cal.date);
