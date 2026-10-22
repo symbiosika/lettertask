@@ -886,8 +886,7 @@ impl Service {
 
     pub(crate) async fn imap_download_attachment(&self, mb: &str, id: &str, att: &str, action: &str) -> Result<Option<String>> {
         let (raw, _, _) = self.imap_raw(mb, id).await?;
-        let idx: usize = att.parse().map_err(|_| Error::invalid("Ungültige Anhang-ID"))?;
-        let (name, _, bytes) = mime::attachment(&raw, idx)?;
+        let (name, _, bytes) = mime::attachment_by_id(&raw, att)?;
         let name = super::mail::sanitize_filename(&name);
         let path = if action == "save" {
             match self.host.save_dialog(&name).await {

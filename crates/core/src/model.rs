@@ -156,6 +156,9 @@ pub struct MessageDetail {
     pub web_link: Option<String>,
     pub is_meeting_request: bool,
     pub event_id: Option<String>,
+    /// S/MIME-signed (shown unwrapped; the signature is not verified).
+    #[serde(default)]
+    pub signed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

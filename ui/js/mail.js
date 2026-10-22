@@ -6,6 +6,7 @@ import { isImap, isGoogle, kindLabel, kindClass, accountAvatar, accountLabel } f
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
 import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
+import { addrAttrs } from './contactcard.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
 import { state, mailboxes, mailboxById, accountOfMailbox, foldersOf, folderById, wellKnown, loadFolders, lanesOf, loadLanes } from './state.js';
@@ -812,7 +813,7 @@ function msgRow(m, accountId, toMode, snoozedView) {
     `<span class="m-dot readcell" title="${m.isRead ? 'Als ungelesen markieren' : 'Als gelesen markieren'}"></span>` +
     `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
     `<div class="m-main">` +
-      `<div class="m-l1"><span class="m-from" title="${esc(who)}">${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
+      `<div class="m-l1"><span class="m-from" title="${esc(who)}"${(toMode ? (m.to || []).length === 1 : true) ? addrAttrs(avatarSrc) : ''}>${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
       `<div class="m-l2"><span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
         `<span class="m-icons">${recurrenceBadgeHtml(recurrenceOf(m), { short: true })}${m.importance === 'high' ? icon('important', 14, 'imp') : ''}${m.hasAttachments ? icon('attach', 14) : ''}<span class="flagcell" title="Kennzeichnung umschalten">${flagIc}</span></span></div>` +
       `<div class="m-l3"><span class="m-prev">${esc(m.preview || '')}</span>${cats ? `<span class="m-cats">${cats}</span>` : ''}</div>` +

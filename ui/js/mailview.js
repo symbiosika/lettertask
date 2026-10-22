@@ -4,6 +4,7 @@ import { icon } from './icons.js';
 import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
 import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
 import { call, openUrl, openWindow, suppressNativeMenu } from './api.js';
+import { bindContactCards, addrAttrs } from './contactcard.js';
 import { showMenu, showMenuAt, reportError, toast, busyClick } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
 import { fmtSnoozeTarget } from './snooze.js';
@@ -71,6 +72,45 @@ function keepAspect(im) {
   im.style.removeProperty('height');
 }
 
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"']+[^\s<>"'.,;:!?)\]}]/gi;
+
+/** Web address of a link; "www.…" without a scheme becomes https. */
+export function webHref(href) {
+  const v = String(href || '').trim();
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/^www\.[^\s]+$/i.test(v)) return 'https://' + v;
+  return null;
+}
+
+/** Plain-text URLs (and "www." addresses) become clickable links, as in Outlook. */
+function linkify(doc) {
+  const walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (URL_RE.test(n.data) && !n.parentElement.closest('a, style, title, textarea')) nodes.push(n);
+    URL_RE.lastIndex = 0;
+  }
+  for (const n of nodes) {
+    const frag = doc.createDocumentFragment();
+    let last = 0;
+    for (const m of n.data.matchAll(URL_RE)) {
+      frag.append(n.data.slice(last, m.index));
+      const a = doc.createElement('a');
+      a.href = webHref(m[0]);
+      a.textContent = m[0];
+      frag.append(a);
+      last = m.index + m[0].length;
+    }
+    frag.append(n.data.slice(last));
+    n.replaceWith(frag);
+  }
+  // href="www.example.com" would be a relative link without a scheme.
+  for (const a of doc.querySelectorAll('a[href]')) {
+    const w = webHref(a.getAttribute('href'));
+    if (w && w !== a.getAttribute('href').trim()) a.setAttribute('href', w);
+  }
+}
+
 /** Builds the iframe srcdoc for a mail body. */
 export function buildSrcdoc(bodyHtml, allowRemote) {
   const img = allowRemote ? "data: cid: https: http:" : "data: cid:";
@@ -87,6 +127,7 @@ export function buildSrcdoc(bodyHtml, allowRemote) {
     }
   }
   for (const im of doc.querySelectorAll('img')) keepAspect(im);
+  linkify(doc);
   const head = doc.head;
   head.insertAdjacentHTML('afterbegin',
     `<meta charset="utf-8">` +
@@ -126,8 +167,8 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
         let to = href.slice(7).split('?')[0];
         try { to = decodeURIComponent(to); } catch { /* keep raw */ }
         openWindow('compose', { mailboxId, mode: 'new', to }).catch(reportError);
-      } else if (/^https?:\/\//i.test(href)) {
-        openUrl(href).catch(reportError);
+      } else if (webHref(href)) {
+        openUrl(webHref(href)).catch(reportError);
       } else if (href.startsWith('#')) {
         const t = doc.getElementById(href.slice(1)) || doc.getElementsByName(href.slice(1))[0];
         if (t) t.scrollIntoView();
@@ -145,8 +186,11 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
   return frame;
 }
 
+// Hover card with copy buttons on every address in reading pane and list.
+bindContactCards(document.body, { onMail: (a) => openWindow('compose', { mode: 'new', to: a.address }).catch(reportError) });
+
 function addrList(list) {
-  return (list || []).map((a) => `<span class="addr" title="${esc(a.address)}">${esc(displayName(a))}</span>`).join(', ');
+  return (list || []).map((a) => `<span class="addr"${addrAttrs(a)}>${esc(displayName(a))}</span>`).join(', ');
 }
 
 function fileIcon(a) {
@@ -263,7 +307,7 @@ export function renderMessage(container, msg, opts) {
   const fromRow = h('div.rp-fromrow',
     h('div.avatar.lg', { style: { background: avatarColor(from.address || from.name) } }, initials(from.name, from.address)),
     h('div.rp-fromblock',
-      h('div.rp-from', h('span.rp-fromname', { title: from.address || '' }, from.name || from.address), from.address && from.name && from.name !== from.address ? h('span.rp-fromaddr', from.address) : null),
+      h('div.rp-from', h('span.rp-fromname', { dataset: from.address ? { addr: from.address, name: from.name || '' } : {} }, from.name || from.address), from.address && from.name && from.name !== from.address ? h('span.rp-fromaddr', from.address) : null),
       recip),
     h('div.rp-meta',
       h('div.rp-date', fmtDateTime(new Date(msg.receivedAt || msg.sentAt))),
@@ -278,6 +322,7 @@ export function renderMessage(container, msg, opts) {
   } else if (msg.flag && msg.flag !== 'notFlagged') {
     bars.appendChild(h('div.infobar.flag', { html: icon('flag', 16, msg.flag === 'flagged' ? 'flagged' : '') + ' ' + esc(FLAG_TEXT[msg.flag]) + (msg.flag === 'flagged' && msg.dueAt ? ' – fällig ' + esc(fmtSnoozeTarget(new Date(msg.dueAt))) : '') }));
   }
+  if (msg.signed) bars.appendChild(h('div.infobar.signed', { dataset: { testid: 'rp-signed' }, title: 'Die Signatur selbst wird von lettertask nicht geprüft.', html: icon('lock', 16) + ` Diese Nachricht wurde${from.address ? ' von ' + esc(from.address) : ''} digital signiert.` }));
   if (msg.importance === 'high') bars.appendChild(h('div.infobar.important', { html: icon('important', 16) + ' Diese Nachricht wurde mit hoher Wichtigkeit gesendet.' }));
   if (msg.isMeetingRequest && msg.eventId) {
     const bar = h('div.infobar.meeting', h('span.ib-text', { html: icon('calendar', 16) + ' Besprechungsanfrage' }), h('span.spacer'));

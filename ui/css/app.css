@@ -345,6 +345,20 @@ kbd { font-family: inherit; }
 .infobar.remote { cursor: pointer; background: #f4f6f9; }
 .infobar.remote:hover { background: var(--accent-weak); }
 .infobar.meeting { background: var(--accent-weak); }
+.infobar.signed { background: #eef6ef; color: #2d6a3e; }
+
+/* Address hover card */
+[data-addr] { cursor: default; }
+.rp-val .addr[data-addr]:hover, .rp-fromname[data-addr]:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.contact-card { position: fixed; z-index: 1000; width: 300px; padding: 12px; background: var(--bg); border-radius: 10px; box-shadow: 0 12px 32px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .06); animation: cc-in .12s ease-out; }
+@keyframes cc-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.cc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cc-who { min-width: 0; }
+.cc-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-addr { color: var(--text-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.cc-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-btn { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.cc-btn:hover { background: var(--hover); border-color: var(--border-strong); }
 .infobar.meeting .btn { height: 28px; }
 .infobar.meeting .ib-done { font-weight: 600; }
 .infobar.delegation { background: #eaf6ec; color: #1e5b2a; }
