@@ -10,7 +10,9 @@ import { modal, reportError, toast, confirmDialog, showMenu, busyClick } from '.
 import { categoryHex, textOn } from './categories.js';
 import { state } from './state.js';
 import { isImap, accountLabel } from './accounts.js';
-import { fmtSnoozeTarget } from './snooze.js';
+import { fmtSnoozeTarget, snoozeOptions, computeSnooze } from './snooze.js';
+import { dateTimeField } from './due.js';
+import { recipientField } from './recipients.js';
 
 /** Accounts with a calendar (IMAP accounts have none). */
 function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
@@ -56,11 +58,27 @@ export function periodTitle() { return headerTitle(); }
 
 // ------------------------------------------------------------- data
 export async function loadCalendars() {
+  // Last known list first (instant); the server list follows in the background.
   await Promise.all(calAccounts().map(async (a) => {
-    try { cal.calendars.set(a.id, (await call('list_calendars', { accountId: a.id }, { silent: true })) || []); }
+    try { cal.calendars.set(a.id, (await call('list_calendars', { accountId: a.id, cached: true }, { silent: true })) || []); }
     catch (e) { cal.calendars.set(a.id, []); console.warn(e); }
   }));
   for (const id of [...cal.calendars.keys()]) if (!calAccounts().some((a) => a.id === id)) cal.calendars.delete(id);
+  refreshCalendarList();
+}
+
+let calListRefresh = null;
+function refreshCalendarList() {
+  if (calListRefresh) return;
+  const before = JSON.stringify([...cal.calendars.entries()]);
+  calListRefresh = Promise.all(calAccounts().map(async (a) => {
+    try { cal.calendars.set(a.id, (await call('list_calendars', { accountId: a.id }, { silent: true })) || []); }
+    catch (e) { console.warn(e); }
+  })).then(() => {
+    if (JSON.stringify([...cal.calendars.entries()]) === before) return;
+    renderNav();
+    if (!els.view.classList.contains('hidden')) refresh().catch(reportError);
+  }).finally(() => { calListRefresh = null; });
 }
 
 function calendarById(accountId, id) { return (cal.calendars.get(accountId) || []).find((c) => c.id === id) || null; }
@@ -161,10 +179,54 @@ export function renderNav() {
         refresh().catch(reportError);
       });
       const who = c.owner && c.owner.address ? `${c.name}\n${c.owner.address}` : c.name;
-      sec.appendChild(h('label.cal-item', { title: who, dataset: { testid: 'cal-item' } }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' })));
+      const item = h('label.cal-item', { title: who, dataset: { testid: 'cal-item' } }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' }));
+      if (c.id.startsWith('user:')) {
+        item.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          showMenu([{ label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id) }], e.clientX, e.clientY);
+        });
+      }
+      sec.appendChild(item);
     }
+    sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
+      h('span', { html: icon('plus', 13) }), 'Kalender einer Person hinzufügen…'));
     els.nav.appendChild(sec);
   }
+}
+
+/** Adds a colleague's calendar (read via their mailbox, else free/busy). */
+async function addPeopleCalendar(acc) {
+  const mb = (acc.mailboxes || [])[0];
+  const field = recipientField({ mailboxId: () => (mb ? mb.id : null), name: 'Person', placeholder: 'Name oder E-Mail-Adresse' });
+  const res = await modal({
+    title: 'Kalender einer Person hinzufügen', width: 420,
+    body: h('div', h('label.lbl', 'Person aus Ihrer Organisation:'), field.el,
+      h('p.note', 'Ohne Freigabe sehen Sie nur, wann die Person gebucht ist.')),
+    buttons: [{ label: 'Hinzufügen', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
+    onBeforeClose: (v) => {
+      if (v !== 'ok') return v;
+      field.commit();
+      const list = field.get().filter((x) => !x.invalid);
+      if (!list.length) { toast('Bitte eine Person auswählen.', 'error'); return false; }
+      return list;
+    },
+  });
+  if (!Array.isArray(res)) return;
+  try {
+    let cals = null;
+    for (const p of res) cals = await call('add_people_calendar', { accountId: acc.id, address: p.address, name: p.name || '' });
+    if (cals) cal.calendars.set(acc.id, cals);
+    renderNav();
+    await refresh();
+  } catch (e) { reportError(e); }
+}
+
+async function removePeopleCalendar(accountId, calendarId) {
+  try {
+    cal.calendars.set(accountId, await call('remove_people_calendar', { accountId, calendarId }));
+    renderNav();
+    await refresh();
+  } catch (e) { reportError(e); }
 }
 
 function miniCalendar() {
@@ -229,6 +291,25 @@ function isAllDayLike(ev) {
 }
 
 function eventTitle(ev) { return ev.subject || '(Kein Betreff)'; }
+
+// ------------------------------------------------------------- shared with the mail panel
+/** Events of all visible calendars in [start, end) (same calendars as the calendar view). */
+export async function eventsBetween(start, end) {
+  if (!cal.calendars.size) await loadCalendars();
+  const res = await Promise.all(calAccounts().map(async (a) => {
+    const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
+    if (!ids.length) return [];
+    try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString() }, { silent: true })) || []; }
+    catch (e) { console.warn(e); return []; }
+  }));
+  return res.flat();
+}
+/** Card colours of an event, as in the calendar view. */
+export function eventColors(ev) {
+  const color = evColor(ev);
+  return { background: ev.showAs === 'free' ? '#fff' : lighten(color, 0.55), bar: shade(color, 0.78) };
+}
+export { isAllDayLike, eventTitle };
 
 function headerTitle() {
   const { start, end } = range();
@@ -495,7 +576,49 @@ function taskItem(m, overdue) {
   el.innerHTML = `<span class="sp-time">${icon('snooze', 11)}${overdue ? 'überfällig' : fmtTime(due)}</span> <span class="sp-subj">${esc(m.subject || '(Kein Betreff)')}</span>`;
   el.addEventListener('dblclick', () => openWindow('message', { mailboxId: m.mailboxId, messageId: m.id, folderId: m.folderId }).catch(reportError));
   el.addEventListener('click', (x) => { x.stopPropagation(); els.body.querySelectorAll('.sp-item.selected').forEach((y) => y.classList.remove('selected')); el.classList.add('selected'); });
+  el.addEventListener('contextmenu', (x) => { x.preventDefault(); x.stopPropagation(); el.click(); taskMenu(m, x.clientX, x.clientY); });
   return el;
+}
+
+/** Right-click on a due task: open it or move its due time (Wiedervorlage). */
+function taskMenu(m, x, y) {
+  const now = new Date();
+  const moves = [];
+  snoozeOptions(state.config).forEach((o, i) => {
+    const d = computeSnooze(o.rule, now);
+    if (d && d > now) moves.push({ label: o.label, shortcut: fmtSnoozeTarget(d), icon: i === 0 ? 'snooze' : null, onClick: () => moveTask(m, d) });
+  });
+  moves.push({ separator: true }, { label: 'Datum und Uhrzeit wählen…', icon: 'calendar', onClick: () => moveTaskCustom(m) });
+  showMenu([
+    { label: 'Öffnen', icon: 'open', onClick: () => openWindow('message', { mailboxId: m.mailboxId, messageId: m.id, folderId: m.folderId }).catch(reportError) },
+    { separator: true },
+    { label: 'Verschieben', icon: 'snooze', submenu: () => moves, testid: 'sprint-task-move' },
+  ], x, y);
+}
+
+async function moveTask(m, until) {
+  try {
+    await call('snooze_messages', { mailboxId: m.mailboxId, ids: [m.id], until: until.toISOString() });
+    toast(`Verschoben auf ${fmtSnoozeTarget(until)}.`);
+    await refresh();
+  } catch (e) { reportError(e); }
+}
+
+async function moveTaskCustom(m) {
+  const def = m.dueAt && new Date(m.dueAt) > new Date() ? new Date(m.dueAt) : addDays(startOfDay(new Date()), 1);
+  if (!m.dueAt || new Date(m.dueAt) <= new Date()) def.setHours(8);
+  const input = dateTimeField(def, 'moveAt');
+  const res = await modal({
+    title: 'Aufgabe verschieben', width: 360,
+    body: h('div', h('label.lbl', 'Neu fällig am:'), input.el),
+    buttons: [{ label: 'Verschieben', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
+    onBeforeClose: () => {
+      const d = input.value();
+      if (!d || d <= new Date()) { input.el.classList.add('invalid'); toast('Bitte einen Zeitpunkt in der Zukunft wählen.', 'error'); return false; }
+      return d;
+    },
+  });
+  if (res instanceof Date) await moveTask(m, res);
 }
 
 function sprintEvent(ev, day) {
@@ -794,6 +917,7 @@ function eventContextMenu(ev, x, y) {
 
 // ------------------------------------------------------------- actions
 export function openEvent(ev) {
+  if (String(ev.id).startsWith('fb:')) { toast('Für diesen Kalender sind nur die Frei/Gebucht-Zeiten freigegeben.'); return; }
   openWindow('event', { accountId: ev.accountId, eventId: ev.id }).catch(reportError);
 }
 

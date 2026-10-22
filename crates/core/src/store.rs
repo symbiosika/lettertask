@@ -141,6 +141,12 @@ impl Store {
         if !has_due {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN due_at TEXT")?;
         }
+        let has_verb: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='last_verb'")?
+            .exists([])?;
+        if !has_verb {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN last_verb TEXT")?;
+        }
         let has_order: bool = conn
             .prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='sort_order'")?
             .exists([])?;
@@ -456,14 +462,15 @@ impl Store {
         {
             let mut st = tx.prepare(
                 "INSERT INTO messages(mailbox_id,id,folder_id,conversation_id,subject,from_name,from_addr,
-                   to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                   to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at,last_verb)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                  ON CONFLICT(mailbox_id,id) DO UPDATE SET folder_id=excluded.folder_id,
                    conversation_id=excluded.conversation_id, subject=excluded.subject,
                    from_name=excluded.from_name, from_addr=excluded.from_addr, to_json=excluded.to_json,
                    received=excluded.received, is_read=excluded.is_read, is_draft=excluded.is_draft,
                    importance=excluded.importance, flag=excluded.flag, has_att=excluded.has_att,
-                   categories_json=excluded.categories_json, preview=excluded.preview, due_at=excluded.due_at",
+                   categories_json=excluded.categories_json, preview=excluded.preview, due_at=excluded.due_at,
+                   last_verb=COALESCE(excluded.last_verb, messages.last_verb)",
             )?;
             for m in msgs {
                 let (fname, faddr) = m
@@ -488,12 +495,30 @@ impl Store {
                     m.has_attachments,
                     serde_json::to_string(&m.categories)?,
                     m.preview,
-                    m.due_at
+                    m.due_at,
+                    m.last_verb
                 ])?;
             }
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Sets the last action ("reply", "replyAll", "forward") of cached messages.
+    pub fn set_last_verbs(&self, mailbox_id: &str, verbs: &[(String, String)]) -> Result<usize> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        let mut n = 0;
+        {
+            let mut st = tx.prepare(
+                "UPDATE messages SET last_verb=?3 WHERE mailbox_id=?1 AND id=?2 AND last_verb IS NOT ?3",
+            )?;
+            for (id, verb) in verbs {
+                n += st.execute(params![mailbox_id, id, verb])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     pub fn message_exists(&self, mailbox_id: &str, id: &str) -> Result<bool> {
@@ -925,7 +950,7 @@ impl Store {
     }
 }
 
-const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at";
+const MSG_COLS: &str = "id,mailbox_id,folder_id,conversation_id,subject,from_name,from_addr,to_json,received,is_read,is_draft,importance,flag,has_att,categories_json,preview,due_at,last_verb";
 
 fn message_row(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     let mut m = message_row_raw(r)?;
@@ -963,6 +988,7 @@ fn message_row_raw(r: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
         preview: r.get(15)?,
         due_at: r.get(16)?,
         recurrence: None,
+        last_verb: r.get(17)?,
     })
 }
 
@@ -1067,6 +1093,7 @@ mod tests {
             preview: String::new(),
             due_at: None,
             recurrence: None,
+            last_verb: None,
         }
     }
 

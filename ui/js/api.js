@@ -2,6 +2,23 @@
 const TAURI = window.__TAURI__;
 export const isTauri = !!(TAURI && TAURI.core);
 
+// The WebView's own context menu ("Neu laden", "Untersuchen", …) is not part of
+// the app. It stays only where it helps: text fields and selected text (copy/paste).
+export function suppressNativeMenu(target) {
+  if (!isTauri) return;
+  target.addEventListener('contextmenu', (e) => {
+    if (e.defaultPrevented) return;
+    const t = e.target && e.target.closest ? e.target : null;
+    if (t && t.closest('input, textarea, [contenteditable=""], [contenteditable="true"]')) return;
+    const doc = t ? t.ownerDocument : document;
+    if (doc.designMode === 'on') return;
+    const sel = (doc.defaultView || window).getSelection();
+    if (sel && !sel.isCollapsed && String(sel).trim()) return;
+    e.preventDefault();
+  });
+}
+suppressNativeMenu(window);
+
 const listeners = new Map(); // event -> Set(cb)
 let eventSource = null;
 // Browser mode: connect early so backend-initiated windows (open-window) are received.

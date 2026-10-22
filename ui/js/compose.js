@@ -1,6 +1,6 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
 import { call, params, closeWindow, isTauri, on } from './api.js';
-import { h, $, esc, fmtSize, fileToBase64 } from './util.js';
+import { h, $, esc, fmtSize, fileToBase64, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
 import { recipientField } from './recipients.js';
@@ -75,8 +75,12 @@ function renderForm() {
 
   // send row: [Senden ▾] + Von
   const sendrow = $('#sendrow');
-  const send = splitBtn('Senden', 'send', () => send_().catch(reportError), (b) => showMenuAt(b, [
-    { label: 'Senden', icon: 'send', shortcut: 'Strg+Eingabe', onClick: () => send_() },
+  // The main button does what was last picked in the menu ("Senden" or "Senden & archivieren").
+  const pick = (mode) => { store('composeSendMode', mode); paintSendLabel(); return send_(); };
+  const send = splitBtn(sendLabel(), 'send', () => send_().catch(reportError), (b) => showMenuAt(b, [
+    { label: 'Senden', icon: 'send', shortcut: sendMode() === 'send' ? 'Strg+Eingabe' : '', onClick: () => pick('send'), testid: 'compose-send-plain' },
+    ...(canArchiveSource() ? [{ label: 'Senden & archivieren', icon: 'archive', shortcut: sendMode() === 'sendArchive' ? 'Strg+Eingabe' : '', onClick: () => pick('sendArchive'), testid: 'compose-send-archive' }] : []),
+    { separator: true },
     { label: 'Speichern & schließen', icon: 'save', onClick: async () => { await save(true); await finish(); } },
   ]), { testid: 'compose-send', menuTestid: 'compose-send-menu', primary: true, title: 'Senden (Strg+Eingabe)' });
   const mbs = mailboxes();
@@ -313,6 +317,7 @@ function buildInput() {
     requestReadReceipt: st.receipt,
     newAttachments: st.newAttachments.map(({ name, contentType, contentBase64 }) => ({ name, contentType, contentBase64 })),
     removedAttachmentIds: [...st.removed],
+    sourceMessageId: sourceId(),
   };
 }
 
@@ -326,6 +331,20 @@ function validate() {
     return false;
   }
   return true;
+}
+
+/** Original mail of a reply/forward, archived by "Senden & archivieren". */
+function sourceId() {
+  const mode = (st.draft && st.draft.mode) || P.mode;
+  return ['reply', 'replyAll', 'forward'].includes(mode) ? P.sourceMessageId || null : null;
+}
+function canArchiveSource() { return !!sourceId(); }
+/** Remembered choice; without an original to archive it is plain "Senden". */
+function sendMode() { return canArchiveSource() && load('composeSendMode', 'send') === 'sendArchive' ? 'sendArchive' : 'send'; }
+function sendLabel() { return sendMode() === 'sendArchive' ? 'Senden & archivieren' : 'Senden'; }
+function paintSendLabel() {
+  const label = sendSplit && sendSplit.querySelector('.tb-btn .tb-label');
+  if (label) label.textContent = sendLabel();
 }
 
 async function send_() {
@@ -346,6 +365,10 @@ async function send_() {
     // Checked right away, sent in the background: the window closes at once.
     await call('send_draft', { draft, background: true });
     st.dirty = false; st.serverCreated = false;
+    if (sendMode() === 'sendArchive' && sourceId()) {
+      try { await call('archive_messages', { mailboxId: P.mailboxId || st.mailboxId, ids: [sourceId()] }); }
+      catch (e) { toast(`Gesendet, aber das Original konnte nicht archiviert werden: ${e.message || e}`, 'error'); }
+    }
     await finish();
   } catch (e) {
     reportError(e);
@@ -363,7 +386,7 @@ function setSending(on) {
   main.disabled = drop.disabled = !!on;
   setPending(main, on);
   const label = main.querySelector('.tb-label');
-  if (label) label.textContent = on ? 'Wird gesendet…' : 'Senden';
+  if (label) label.textContent = on ? 'Wird gesendet…' : sendLabel();
 }
 
 async function save(quiet) {

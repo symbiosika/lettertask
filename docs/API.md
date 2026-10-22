@@ -50,6 +50,7 @@ MessageSummary {
   flag: "notFlagged"|"flagged"|"complete", hasAttachments: bool,
   categories: string[], preview: string,
   dueAt: string|null,  // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
+  lastVerb: "reply"|"replyAll"|"forward"|null,  // last action (Graph: PidTagLastVerbExecuted, IMAP: \Answered/$Forwarded)
   recurrence: string|null // "monthly" etc., from the hidden "[#…]" category
 }
 Attachment   { id, name, contentType: string, size: number, isInline: bool, contentId: string|null }
@@ -251,6 +252,8 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 
 ### Calendar
 | `list_calendars` | `{ accountId }` | `Calendar[]` — default group (`/me/calendars`) plus the calendars of all other calendar groups (`/me/calendarGroups/{id}/calendars`), e.g. colleagues' calendars added in Outlook |
+| `add_people_calendar` | `{ accountId, address, name? }` | `Calendar[]` — adds a colleague's calendar (id `user:<address>`, group "Kalender von Personen"); events come from `/users/{address}/calendar`, without read access from free/busy (`getSchedule`, event ids `fb:…`) |
+| `remove_people_calendar` | `{ accountId, calendarId }` | `Calendar[]` |
 | `list_events` | `{ accountId, calendarIds: string[], start: ISO, end: ISO }` | `Event[]` (expanded occurrences in range) |
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |

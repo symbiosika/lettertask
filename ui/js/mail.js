@@ -6,6 +6,7 @@ import { isImap, isGoogle, kindLabel, kindClass, accountAvatar, accountLabel } f
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
 import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
+import { addrAttrs } from './contactcard.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
 import { state, mailboxes, mailboxById, accountOfMailbox, foldersOf, folderById, wellKnown, loadFolders, lanesOf, loadLanes } from './state.js';
@@ -611,12 +612,26 @@ async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
   }, { silent: true });
   if (state.current.folderId !== folderId) return;
   const items = res.items || [];
+  // The Wiedervorlage view also lists mails with a due date outside the
+  // Wiedervorlage folder (e.g. follow-up flags set in Outlook), as the calendar does.
+  let extra = [];
+  const folder = currentFolder();
+  if (folder && folder.wellKnown === 'snoozed' && !kb && !list.text && !list.filter.unreadOnly && !list.filter.flaggedOnly && !list.filter.category && items.length >= (res.total || 0)) {
+    const due = await call('list_due', { end: new Date(Date.now() + 5 * 365 * 864e5).toISOString() }, { silent: true }).catch((e) => { console.warn(e); return []; });
+    if (state.current.folderId !== folderId) return;
+    const have = new Set(items.map((m) => m.id));
+    extra = (due || []).filter((m) => m.mailboxId === mailboxId && m.folderId !== folderId && !have.has(m.id));
+    if (extra.length) {
+      for (const m of items) m._section = 'Auf Wiedervorlage';
+      for (const m of extra) { m._section = 'Fällig in anderen Ordnern'; items.push(m); }
+    }
+  }
   // Large folders (e.g. an archive with thousands of loaded rows) get many
   // "mail-changed" events; nothing changed → keep the DOM as it is.
   const same = ifChanged && list.items.length === items.length && JSON.stringify(list.items) === JSON.stringify(items);
   list.items = items;
-  list.total = res.total || 0;
-  list.unread = res.unread || 0;
+  list.total = (res.total || 0) + extra.length;
+  list.unread = (res.unread || 0) + extra.filter((m) => !m.isRead).length;
   list.canLoadOlder = !!res.canLoadOlder;
   const ids = new Set(list.items.map((m) => m.id));
   for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
@@ -690,7 +705,7 @@ function rowContext() {
 }
 
 function groupOf(m, ctx) {
-  if (isVirtual() && !list.search) return m._section;
+  if ((isVirtual() || ctx.snoozedView) && !list.search && m._section) return m._section;
   return ctx.separators ? dateGroup(m.receivedAt).key : null;
 }
 
@@ -700,7 +715,7 @@ function buildRows(items, from, ctx) {
   let lastGroup = from > 0 ? groupOf(items[from - 1], ctx) : null;
   for (let i = from; i < items.length; i++) {
     const m = items[i];
-    if (isVirtual() && !list.search && m._section !== lastGroup) {
+    if ((isVirtual() || ctx.snoozedView) && !list.search && m._section && m._section !== lastGroup) {
       lastGroup = m._section;
       frag.appendChild(h('div.m-sep.today-sec', { dataset: { section: m._section } }, m._section));
     }
@@ -780,6 +795,13 @@ function footObserver() {
   return footObs;
 }
 
+const VERB = { reply: ['reply', 'Beantwortet'], replyAll: ['replyAll', 'Allen geantwortet'], forward: ['forward', 'Weitergeleitet'] };
+/** Small reply/forward marker left of the subject, as in Outlook. */
+function verbIcon(verb) {
+  const v = VERB[verb];
+  return v ? `<span class="m-verb" title="${v[1]}" data-testid="m-verb" data-verb="${verb}">${icon(v[0], 13)}</span>` : '';
+}
+
 function msgRow(m, accountId, toMode, snoozedView) {
   const who = toMode ? (m.to || []).map(displayName).join(', ') : displayName(m.from);
   const avatarSrc = toMode ? (m.to && m.to[0]) || {} : (m.from || {});
@@ -798,8 +820,8 @@ function msgRow(m, accountId, toMode, snoozedView) {
     `<span class="m-dot readcell" title="${m.isRead ? 'Als ungelesen markieren' : 'Als gelesen markieren'}"></span>` +
     `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
     `<div class="m-main">` +
-      `<div class="m-l1"><span class="m-from" title="${esc(who)}">${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
-      `<div class="m-l2"><span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
+      `<div class="m-l1"><span class="m-from" title="${esc(who)}"${(toMode ? (m.to || []).length === 1 : true) ? addrAttrs(avatarSrc) : ''}>${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
+      `<div class="m-l2">${verbIcon(m.lastVerb)}<span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
         `<span class="m-icons">${recurrenceBadgeHtml(recurrenceOf(m), { short: true })}${m.importance === 'high' ? icon('important', 14, 'imp') : ''}${m.hasAttachments ? icon('attach', 14) : ''}<span class="flagcell" title="Kennzeichnung umschalten">${flagIc}</span></span></div>` +
       `<div class="m-l3"><span class="m-prev">${esc(m.preview || '')}</span>${cats ? `<span class="m-cats">${cats}</span>` : ''}</div>` +
     `</div>` +
@@ -1104,7 +1126,7 @@ function requireSelection() {
 export function openMessage(m) {
   if (!m) return;
   if (m.isDraft) openWindow('compose', { mailboxId: m.mailboxId || state.current.mailboxId, draftId: m.id }).catch(reportError);
-  else openWindow('message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id, folderId: state.current.folderId }).catch(reportError);
+  else openWindow('message', { mailboxId: m.mailboxId || state.current.mailboxId, messageId: m.id, folderId: m.folderId || state.current.folderId }).catch(reportError);
 }
 
 export function newMail() {
@@ -1384,7 +1406,7 @@ function messageContextMenu(x, y) {
       : { label: 'Als ungelesen markieren', icon: 'mail', shortcut: 'Strg+U', onClick: () => markSelected(false) },
     { label: 'Kategorisieren', icon: 'tag', shortcut: 'T', submenu: categoryMenuItems },
     { label: 'Kennzeichnung', icon: 'flag', submenu: flagMenuItems },
-    { label: 'Auf Wiedervorlage', icon: 'snooze', shortcut: 'S', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
+    { label: s.items.some((m) => m.dueAt) ? 'Wiedervorlage verschieben' : 'Auf Wiedervorlage', icon: 'snooze', shortcut: 'S', submenu: () => (hooks.snoozeItems ? hooks.snoozeItems() : []), testid: 'ctx-snooze' },
     { label: 'Kanban-Lane', icon: 'kanban', submenu: laneMenuItems, testid: 'ctx-lane' },
     { label: 'Wiederholung', icon: 'repeat', submenu: recurrenceSubmenu, testid: 'ctx-recurrence' },
     { separator: true },

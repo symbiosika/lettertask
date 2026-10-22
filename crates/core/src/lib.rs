@@ -11,6 +11,7 @@ pub mod host;
 pub mod imap;
 pub mod model;
 pub mod service;
+pub mod smime;
 pub mod store;
 pub mod tokens;
 
