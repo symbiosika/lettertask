@@ -110,6 +110,9 @@ pub struct MessageSummary {
     /// Recurrence rule of a recurring task ("monthly", …), from the hidden "[#…]" category.
     #[serde(default)]
     pub recurrence: Option<String>,
+    /// Last action on the mail: "reply", "replyAll" or "forward" (list icon).
+    #[serde(default)]
+    pub last_verb: Option<String>,
 }
 
 /// Recurrence encoded in a hidden category "[#<rule>]".
@@ -401,6 +404,9 @@ pub struct DraftInput {
     pub request_read_receipt: bool,
     #[serde(default)]
     pub new_attachments: Vec<NewAttachment>,
+    /// The mail answered/forwarded (marks it in the list after sending).
+    #[serde(default)]
+    pub source_message_id: Option<String>,
     #[serde(default)]
     pub removed_attachment_ids: Vec<String>,
     /// "Erinnerung an mich" after sending (ISO UTC).

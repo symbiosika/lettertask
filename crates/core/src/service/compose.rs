@@ -325,10 +325,14 @@ impl Service {
             let Some(svc) = svc.upgrade() else { return };
             let subject = d.subject.clone();
             let mailbox_id = d.mailbox_id.clone();
+            let mark = answered_mark(&d);
             let r = svc.send_queued(d).await;
             svc.pending_sends.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             match r {
-                Ok(()) => svc.emit("send-done", json!({"mailboxId": mailbox_id, "subject": subject})),
+                Ok(()) => {
+                    svc.mark_answered(mark);
+                    svc.emit("send-done", json!({"mailboxId": mailbox_id, "subject": subject}));
+                }
                 Err(e) => {
                     tracing::warn!("Senden fehlgeschlagen: {e}");
                     let title = if subject.trim().is_empty() { "(Kein Betreff)" } else { subject.trim() };
@@ -371,13 +375,26 @@ impl Service {
 
     /// Sends `d`; with `want_thread` returns the thread id of the sent mail.
     pub(crate) async fn send_draft_thread(&self, d: DraftInput, want_thread: bool) -> Result<Option<String>> {
-        if crate::imap::is_imap_id(&d.mailbox_id) {
-            return self.imap_send_draft(d).await;
+        let mark = answered_mark(&d);
+        let res = if crate::imap::is_imap_id(&d.mailbox_id) {
+            self.imap_send_draft(d).await
+        } else {
+            self.check_send(&d)?;
+            let (mb, c) = self.mailbox(&d.mailbox_id)?;
+            let id = self.write_draft(&mb, &c, &d).await?;
+            self.send_written(&mb, &c, &id, &d, want_thread).await
+        }?;
+        self.mark_answered(mark);
+        Ok(res)
+    }
+
+    /// The answered/forwarded mail shows its reply/forward icon at once.
+    fn mark_answered(&self, mark: Option<(String, String, String)>) {
+        let Some((mailbox_id, src, verb)) = mark else { return };
+        if self.store.set_last_verbs(&mailbox_id, &[(src.clone(), verb)]).unwrap_or(0) > 0 {
+            let folder = self.store.get_summary(&mailbox_id, &src).ok().flatten().map(|m| m.folder_id);
+            self.emit_mail_changed(&mailbox_id, folder.as_deref());
         }
-        self.check_send(&d)?;
-        let (mb, c) = self.mailbox(&d.mailbox_id)?;
-        let id = self.write_draft(&mb, &c, &d).await?;
-        self.send_written(&mb, &c, &id, &d, want_thread).await
     }
 
     /// Sends the draft `id` already written from `d`; returns the thread id
@@ -568,6 +585,14 @@ pub(crate) fn data_to_cid(html: &str) -> String {
         format!("cid:{cid}")
     })
     .into_owned()
+}
+
+/// (mailbox, original mail, verb) of a reply/forward, for the list marker.
+fn answered_mark(d: &DraftInput) -> Option<(String, String, String)> {
+    matches!(d.mode.as_str(), "reply" | "replyAll" | "forward")
+        .then(|| d.source_message_id.clone())
+        .flatten()
+        .map(|src| (d.mailbox_id.clone(), src, d.mode.clone()))
 }
 
 #[cfg(test)]

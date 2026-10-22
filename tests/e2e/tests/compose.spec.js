@@ -53,8 +53,37 @@ test('Antworten', async ({ page }) => {
   const closed = popup.waitForEvent('close');
   await popup.locator('[data-testid=compose-send]').click();
   await closed;
+  // The answered mail shows the reply marker in the list.
+  await expect(row(page, 'Rückfrage Artikelstammdaten').locator('[data-testid=m-verb]')).toHaveAttribute('data-verb', 'reply', { timeout: 20_000 });
   await openFolder(page, 'Gesendete Elemente');
   await expect(row(page, 'Rückfrage Artikelstammdaten').first()).toBeVisible({ timeout: 20_000 });
+});
+
+test('Senden & archivieren: Original wird archiviert, Auswahl bleibt gespeichert', async ({ page }) => {
+  await openApp(page);
+  await select(page, 'Neues Logo für den Website-Relaunch');
+  const popup = await popupFrom(page, () => page.locator('[data-testid=tb-reply]').click());
+  await expect(popup.locator('#subject')).toHaveValue(/Neues Logo/);
+  await popup.locator('[data-testid=compose-send-menu]').click();
+  await expect(popup.locator('[data-testid=compose-send-archive]')).toBeVisible();
+  const closed = popup.waitForEvent('close');
+  await popup.locator('[data-testid=compose-send-archive]').click();
+  await closed;
+  await expect(row(page, 'Neues Logo für den Website-Relaunch')).toHaveCount(0, { timeout: 20_000 });
+  await openFolder(page, 'Archiv');
+  await expect(row(page, 'Neues Logo für den Website-Relaunch')).toBeVisible({ timeout: 20_000 });
+  // Next reply: the main button already archives; a new mail just sends.
+  await openFolder(page, 'Posteingang');
+  await select(page, 'Rechnung 2026-1043');
+  const reply = await popupFrom(page, () => page.locator('[data-testid=tb-reply]').click());
+  await expect(reply.locator('[data-testid=compose-send]')).toContainText('Senden & archivieren');
+  await reply.close();
+  const fresh = await popupFrom(page, () => page.locator('[data-testid=tb-new]').click());
+  await expect(fresh.locator('#subject')).toBeVisible();
+  await expect(fresh.locator('[data-testid=compose-send]')).toHaveText(/^\s*Senden\s*$/);
+  await fresh.locator('[data-testid=compose-send-menu]').click();
+  await expect(fresh.locator('[data-testid=compose-send-archive]')).toHaveCount(0);
+  await fresh.close();
 });
 
 test('Empfängerprüfung verhindert Senden ohne Empfänger', async ({ page }) => {

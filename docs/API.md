@@ -50,6 +50,7 @@ MessageSummary {
   flag: "notFlagged"|"flagged"|"complete", hasAttachments: bool,
   categories: string[], preview: string,
   dueAt: string|null,  // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
+  lastVerb: "reply"|"replyAll"|"forward"|null,  // last action (Graph: PidTagLastVerbExecuted, IMAP: \Answered/$Forwarded)
   recurrence: string|null // "monthly" etc., from the hidden "[#…]" category
 }
 Attachment   { id, name, contentType: string, size: number, isInline: bool, contentId: string|null }

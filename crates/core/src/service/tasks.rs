@@ -248,6 +248,7 @@ impl Service {
             importance: "normal".into(),
             request_read_receipt: false,
             new_attachments: vec![],
+            source_message_id: None,
             removed_attachment_ids: vec![],
             remind_at: None,
         }, true)

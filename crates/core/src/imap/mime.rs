@@ -158,6 +158,18 @@ pub fn summary(
         preview,
         due_at: due(flags),
         recurrence: crate::model::recurrence_of(&categories(flags)),
+        last_verb: last_verb(flags),
+    }
+}
+
+/// "\\Answered" → reply, "$Forwarded" → forward (the later action is unknown; forward wins).
+pub fn last_verb(flags: &[String]) -> Option<String> {
+    if flags.iter().any(|f| f.eq_ignore_ascii_case("$Forwarded")) {
+        Some("forward".into())
+    } else if has_flag(flags, "\\Answered") {
+        Some("reply".into())
+    } else {
+        None
     }
 }
 

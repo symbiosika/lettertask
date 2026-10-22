@@ -427,6 +427,10 @@ impl Service {
                     convert::message_summary(&item, &mb.id, folder_id)
                 };
                 m.folder_id = folder_id.to_string();
+                // Delta never carries the last action; it comes from refresh_last_verbs.
+                if m.last_verb.is_none() {
+                    m.last_verb = cached.as_ref().and_then(|o| o.last_verb.clone());
+                }
                 match cached {
                     Some(old) => {
                         if old != m {
@@ -467,7 +471,36 @@ impl Service {
             }
             break;
         }
+        if result.added + result.updated > 0 {
+            match self.refresh_last_verbs(mb, c, folder_id).await {
+                Ok(n) => result.updated += n as i64,
+                Err(e) => tracing::debug!("last verbs: {e}"),
+            }
+        }
         Ok((result, new_unread))
+    }
+
+    /// Reply/forward state of the newest mails of a folder (one request; delta
+    /// queries cannot expand extended properties).
+    async fn refresh_last_verbs(&self, mb: &Mailbox, c: &Arc<GraphClient>, folder_id: &str) -> Result<usize> {
+        let v = c
+            .get(&format!(
+                "{}/mailFolders/{}/messages?$select=id&$expand={}&$orderby={}&$top=100",
+                mb.graph_prefix(),
+                seg(folder_id),
+                enc(convert::LAST_VERB_EXPAND),
+                enc("receivedDateTime desc"),
+            ))
+            .await?;
+        let verbs: Vec<(String, String)> = v["value"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| Some((m["id"].as_str()?.to_string(), convert::last_verb(m)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.store.set_last_verbs(&mb.id, &verbs)
     }
 
     /// One message summary straight from the server (None: it is gone).

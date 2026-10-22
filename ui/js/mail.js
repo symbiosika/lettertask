@@ -795,6 +795,13 @@ function footObserver() {
   return footObs;
 }
 
+const VERB = { reply: ['reply', 'Beantwortet'], replyAll: ['replyAll', 'Allen geantwortet'], forward: ['forward', 'Weitergeleitet'] };
+/** Small reply/forward marker left of the subject, as in Outlook. */
+function verbIcon(verb) {
+  const v = VERB[verb];
+  return v ? `<span class="m-verb" title="${v[1]}" data-testid="m-verb" data-verb="${verb}">${icon(v[0], 13)}</span>` : '';
+}
+
 function msgRow(m, accountId, toMode, snoozedView) {
   const who = toMode ? (m.to || []).map(displayName).join(', ') : displayName(m.from);
   const avatarSrc = toMode ? (m.to && m.to[0]) || {} : (m.from || {});
@@ -814,7 +821,7 @@ function msgRow(m, accountId, toMode, snoozedView) {
     `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
     `<div class="m-main">` +
       `<div class="m-l1"><span class="m-from" title="${esc(who)}"${(toMode ? (m.to || []).length === 1 : true) ? addrAttrs(avatarSrc) : ''}>${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
-      `<div class="m-l2"><span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
+      `<div class="m-l2">${verbIcon(m.lastVerb)}<span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
         `<span class="m-icons">${recurrenceBadgeHtml(recurrenceOf(m), { short: true })}${m.importance === 'high' ? icon('important', 14, 'imp') : ''}${m.hasAttachments ? icon('attach', 14) : ''}<span class="flagcell" title="Kennzeichnung umschalten">${flagIc}</span></span></div>` +
       `<div class="m-l3"><span class="m-prev">${esc(m.preview || '')}</span>${cats ? `<span class="m-cats">${cats}</span>` : ''}</div>` +
     `</div>` +
