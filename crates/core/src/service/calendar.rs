@@ -10,6 +10,26 @@ use crate::graph::{seg, GraphClient};
 use crate::model::*;
 
 const CACHE_KEY: &str = "calendars";
+/// Colleagues' calendars added inside the app (list of addresses).
+const PEOPLE_KEY: &str = "people_calendars";
+/// Calendar id prefix of such a calendar: "user:<address>".
+const PEOPLE_PREFIX: &str = "user:";
+const PEOPLE_GROUP: &str = "Kalender von Personen";
+/// Colours a new person's calendar gets at random (Outlook-like palette).
+const PEOPLE_COLORS: &[&str] = &[
+    "#e8a33d", "#4aa564", "#3f8fd2", "#c2509b", "#8a63d2", "#d9534f", "#2bb3a3", "#9c7b4f", "#5b6ee1", "#e07b39",
+];
+
+/// A colleague's calendar added in the app; `name` is the label shown.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct PersonCal {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    color: Option<String>,
+}
 
 fn utc_header() -> [(&'static str, String); 1] {
     [("Prefer", "outlook.timezone=\"UTC\"".to_string())]
@@ -32,6 +52,7 @@ impl Service {
             Ok(list) => {
                 let mut cals: Vec<Calendar> = list.iter().map(|v| convert::calendar(v, account_id)).collect();
                 self.add_group_calendars(&c, account_id, &mut cals).await;
+                self.add_people_calendars(account_id, &mut cals)?;
                 // Only calendars of other people carry an owner.
                 let me = self
                     .store
@@ -108,6 +129,144 @@ impl Service {
         }
     }
 
+    /// Calendars of colleagues added in the app. Outlook keeps calendars added
+    /// "from the directory" partly outside of Graph's calendar groups, so they
+    /// would otherwise be missing here although Outlook and Teams show them.
+    fn add_people_calendars(&self, account_id: &str, cals: &mut Vec<Calendar>) -> Result<()> {
+        let people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        for p in people {
+            let addr = p.address.to_lowercase();
+            if cals.iter().any(|k| k.owner.as_ref().is_some_and(|o| o.address.to_lowercase() == addr)) {
+                continue;
+            }
+            cals.push(Calendar {
+                id: format!("{PEOPLE_PREFIX}{addr}"),
+                account_id: account_id.to_string(),
+                name: if p.name.is_empty() { p.address.clone() } else { p.name.clone() },
+                // Added before colours existed: a fixed pick per address.
+                color: p.color.clone().or_else(|| {
+                    let h = addr.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
+                    Some(PEOPLE_COLORS[h % PEOPLE_COLORS.len()].to_string())
+                }),
+                can_edit: false,
+                is_default: false,
+                group: Some(PEOPLE_GROUP.to_string()),
+                group_id: None,
+                owner: Some(Address { name: p.name.clone(), address: addr }),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn add_people_calendar(&self, account_id: &str, address: &str, name: &str) -> Result<Vec<Calendar>> {
+        let address = address.trim().to_lowercase();
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender von Personen gibt es nur bei Microsoft 365-Konten."));
+        }
+        if !address.contains('@') || address.contains(char::is_whitespace) {
+            return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse angeben."));
+        }
+        let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        if !people.iter().any(|p| p.address.eq_ignore_ascii_case(&address)) {
+            use rand::seq::SliceRandom;
+            let color = PEOPLE_COLORS.choose(&mut rand::thread_rng()).map(|c| c.to_string());
+            people.push(PersonCal { name: name.trim().to_string(), address, color });
+            self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
+        }
+        self.list_calendars(account_id).await
+    }
+
+    /// Changes label and/or colour (#rrggbb) of a person's calendar.
+    pub(crate) async fn update_people_calendar(&self, account_id: &str, calendar_id: &str, name: Option<&str>, color: Option<&str>) -> Result<Vec<Calendar>> {
+        let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
+        let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        let p = people
+            .iter_mut()
+            .find(|p| p.address.eq_ignore_ascii_case(address))
+            .ok_or_else(|| Error::NotFound("Kalender".into()))?;
+        if let Some(n) = name {
+            p.name = n.trim().to_string();
+        }
+        if let Some(c) = color {
+            let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit());
+            if !ok {
+                return Err(Error::invalid("Ungültige Farbe"));
+            }
+            p.color = Some(c.to_lowercase());
+        }
+        self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
+        // The cached list must show the change even offline.
+        let mut cals: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
+        cals.retain(|c| c.id != calendar_id);
+        self.add_people_calendars(account_id, &mut cals)?;
+        self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
+        Ok(cals)
+    }
+
+    pub(crate) async fn remove_people_calendar(&self, account_id: &str, calendar_id: &str) -> Result<Vec<Calendar>> {
+        let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
+        let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        people.retain(|p| !p.address.eq_ignore_ascii_case(address));
+        self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
+        self.list_calendars(account_id).await
+    }
+
+    /// Events of another person's calendar read through their mailbox; without
+    /// read access, their free/busy times (getSchedule) as plain blocks.
+    async fn person_events(&self, c: &Arc<GraphClient>, account_id: &str, cid: &str, address: &str, start: &str, end: &str) -> Result<Vec<Event>> {
+        let path = format!(
+            "/users/{}/calendar/calendarView?startDateTime={}&endDateTime={}&$select={EVENT_SELECT}&$top=250",
+            seg(address),
+            urlencoding::encode(start),
+            urlencoding::encode(end),
+        );
+        match c.get_all(&path, &utc_header(), 5000).await {
+            Ok(list) => return Ok(list.iter().map(|v| convert::event(v, account_id, cid)).collect()),
+            Err(e) if e.is_network() => return Err(e),
+            Err(e) => tracing::info!("calendarView {address}: {e} – free/busy instead"),
+        }
+        let naive = |t: &str| t.trim_end_matches('Z').to_string();
+        let res = c
+            .post(
+                "/me/calendar/getSchedule",
+                &json!({
+                    "schedules": [address],
+                    "startTime": {"dateTime": naive(start), "timeZone": "UTC"},
+                    "endTime": {"dateTime": naive(end), "timeZone": "UTC"},
+                    "availabilityViewInterval": 30,
+                }),
+            )
+            .await?;
+        let items = res["value"][0]["scheduleItems"].as_array().cloned().unwrap_or_default();
+        Ok(items
+            .iter()
+            .filter(|i| i["status"].as_str() != Some("free"))
+            .map(|i| {
+                let status = i["status"].as_str().unwrap_or("busy");
+                let subject = i["subject"].as_str().filter(|x| !x.is_empty()).map(str::to_string).unwrap_or_else(|| {
+                    match status {
+                        "tentative" => "Mit Vorbehalt",
+                        "oof" => "Abwesend",
+                        "workingElsewhere" => "Woanders tätig",
+                        _ => "Gebucht",
+                    }
+                    .to_string()
+                });
+                let v = json!({
+                    "id": format!("fb:{address}:{}:{}", s_of(&i["start"]), s_of(&i["end"])),
+                    "subject": subject,
+                    "start": i["start"],
+                    "end": i["end"],
+                    "showAs": status,
+                    "location": {"displayName": i["location"].as_str().unwrap_or("")},
+                    "isOrganizer": false,
+                    "sensitivity": if i["isPrivate"].as_bool() == Some(true) { "private" } else { "normal" },
+                });
+                convert::event(&v, account_id, cid)
+            })
+            .collect())
+    }
+
     pub(crate) async fn list_events(
         &self,
         account_id: &str,
@@ -128,9 +287,10 @@ impl Service {
         let results: Vec<(String, Result<Vec<Value>>)> = stream::iter(calendar_ids.iter().cloned())
             .map(|cid| {
                 let c = c.clone();
-                let base = match known.iter().find(|k| k.id == cid).and_then(|k| k.group_id.as_deref()) {
-                    Some(gid) => format!("/me/calendarGroups/{}/calendars/{}", seg(gid), seg(&cid)),
-                    None => format!("/me/calendars/{}", seg(&cid)),
+                let base = match (cid.strip_prefix(PEOPLE_PREFIX), known.iter().find(|k| k.id == cid).and_then(|k| k.group_id.as_deref())) {
+                    (Some(addr), _) => format!("/users/{}/calendar", seg(addr)),
+                    (None, Some(gid)) => format!("/me/calendarGroups/{}/calendars/{}", seg(gid), seg(&cid)),
+                    (None, None) => format!("/me/calendars/{}", seg(&cid)),
                 };
                 let path = format!(
                     "{base}/calendarView?startDateTime={}&endDateTime={}&$select={EVENT_SELECT}&$top=250",
@@ -147,9 +307,27 @@ impl Service {
             .await;
         let mut out = Vec::new();
         for (cid, r) in results {
+            // Another person's calendar that is not readable via our own
+            // calendar groups: through their mailbox, else free/busy.
+            let owner = cid.strip_prefix(PEOPLE_PREFIX).map(str::to_string).or_else(|| {
+                known.iter().find(|k| k.id == cid).and_then(|k| k.owner.as_ref()).map(|o| o.address.clone())
+            });
+            let r = match (r, owner) {
+                (Err(e), Some(addr)) if !e.is_network() => {
+                    match self.person_events(&c, account_id, &cid, &addr, &start, &end).await {
+                        Ok(events) => Ok(events),
+                        Err(e) if e.is_network() => Err(e),
+                        Err(e) => {
+                            // One colleague's calendar must not hide all others.
+                            tracing::warn!("calendar of {addr}: {e}");
+                            Ok(Vec::new())
+                        }
+                    }
+                }
+                (r, _) => r.map(|list| list.iter().map(|v| convert::event(v, account_id, &cid)).collect()),
+            };
             match r {
-                Ok(list) => {
-                    let events: Vec<Event> = list.iter().map(|v| convert::event(v, account_id, &cid)).collect();
+                Ok(events) => {
                     self.store.replace_events(account_id, &cid, &start, &end, &events)?;
                     out.extend(events);
                 }
@@ -166,7 +344,13 @@ impl Service {
     async fn fetch_event(&self, c: &Arc<GraphClient>, account_id: &str, event_id: &str) -> Result<(Value, Event)> {
         // Events of other people's calendars are not reachable via /me/events.
         let cached = self.store.event_calendar(account_id, event_id).ok().flatten();
+        if event_id.starts_with("fb:") {
+            return Err(Error::invalid("Für diesen Termin sind nur die Frei/Gebucht-Zeiten freigegeben."));
+        }
         let group_path = cached.as_deref().and_then(|cid| {
+            if let Some(addr) = cid.strip_prefix(PEOPLE_PREFIX) {
+                return Some(format!("/users/{}/events/{}", seg(addr), seg(event_id)));
+            }
             let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY).ok().flatten().unwrap_or_default();
             let gid = known.into_iter().find(|k| k.id == cid)?.group_id?;
             Some(format!("/me/calendarGroups/{}/calendars/{}/events/{}", seg(&gid), seg(cid), seg(event_id)))
@@ -419,4 +603,8 @@ impl Service {
         }
         Ok(())
     }
+}
+
+fn s_of(v: &Value) -> String {
+    v["dateTime"].as_str().unwrap_or_default().to_string()
 }

@@ -271,3 +271,22 @@ test('Dev-Server: fremde Websites dürfen die API nicht aufrufen', async ({ page
   const own = await page.request.post('/api/call/list_accounts', { data: {} });
   expect(own.status()).toBe(200);
 });
+
+test('Bilder herunterladen wird pro Absender gemerkt und lässt sich zurücknehmen', async ({ page }) => {
+  await trackRemote(page);
+  await openApp(page);
+  const stamp = Date.now();
+  // both planted mails come from the same sender (yourself)
+  await plantMail(page, `Bilder A ${stamp}`, '<p>A</p><img src="https://img.test/a.png">');
+  await plantMail(page, `Bilder B ${stamp}`, '<p>B</p><img src="https://img.test/b.png">');
+  await page.reload();
+  await select(page, `Bilder A ${stamp}`);
+  await page.locator('[data-testid=remote-bar]').click();
+  await expect(page.locator('[data-testid=remote-bar]')).toHaveCount(0);
+  await select(page, `Bilder B ${stamp}`);
+  await expect(page.locator('[data-testid=remote-bar]')).toHaveCount(0);
+  await expect(page.locator('[data-testid=remote-trusted]')).toBeVisible();
+  await page.locator('[data-testid=remote-trusted] button').click();
+  await select(page, `Bilder A ${stamp}`);
+  await expect(page.locator('[data-testid=remote-bar]')).toBeVisible();
+});

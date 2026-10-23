@@ -6,10 +6,11 @@ import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from '
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
 import { openWindow } from './api.js';
 import { onBroadcast } from './bus.js';
-import { tbBtn, newBtns, sep } from './toolbar.js';
+import { tbBtn, newBtns, sep, setPressed } from './toolbar.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
+import { initCalPanel, toggleCalPanel, calPanelOpen, showCalPanelHost, onCalPanelChanged } from './calpanel.js';
 import { isImap, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { dateTimeField } from './due.js';
@@ -230,6 +231,17 @@ function snoozeItems() {
   return items;
 }
 
+/** Toggles the week calendar below list and reading pane ("hast du da Zeit?"). */
+function calPanelBtn() {
+  const b = tbBtn('', 'calendar', () => { toggleCalPanel(); }, { testid: 'tb-calpanel', title: 'Kalender unten ein-/ausblenden', iconOnly: true });
+  setPressed(b, calPanelOpen());
+  return b;
+}
+document.addEventListener('calpanel-toggled', (e) => {
+  const b = document.querySelector('[data-testid=tb-calpanel]');
+  if (b) setPressed(b, e.detail);
+});
+
 function newTask() {
   const mb = state.current.mailboxId || (mailboxes()[0] && mailboxes()[0].id);
   if (!mb) { toast('Bitte fügen Sie zuerst ein Konto hinzu.'); return; }
@@ -274,6 +286,7 @@ function renderToolbar() {
       ['task', 'Neue Aufgabe (Strg+Umschalt+N)', () => newTask(), 'new-task'],
       ['calendarNew', 'Neuer Termin (Strg+Umschalt+A)', () => calendar.newEvent(), 'new-event'],
     ]));
+    lead.appendChild(tbBtn('', 'kanban', () => mail.openInboxKanban().catch(reportError), { testid: 'tb-kanban', title: 'Posteingang als Kanban öffnen', iconOnly: true }));
     tb.append(lead,
       h('div.ab-group',
         dep(tbBtn('Antworten', 'reply', () => mail.respond('reply'), { testid: 'tb-reply', title: 'Antworten (Strg+R)' })),
@@ -289,6 +302,7 @@ function renderToolbar() {
         dep(tbBtn('', 'tag', (b) => mail.openTagsForSelection(b), { testid: 'tb-tag', title: 'Kategorien (T)', iconOnly: true })),
         dep(tbBtn('', 'flag', () => mail.toggleFlagSelected(), { testid: 'tb-flag', title: 'Kennzeichnen', iconOnly: true })),
         dep(tbBtn('', 'mailOpen', () => mail.toggleRead(), { testid: 'tb-read', title: 'Gelesen/Ungelesen (Strg+Q / Strg+U)', iconOnly: true })),
+        calPanelBtn(),
         tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Senden/Empfangen (F9)', iconOnly: true })),
     );
     updateActionState();
@@ -379,6 +393,7 @@ function setMode(mode) {
   els.calNav.classList.toggle('hidden', mode !== 'calendar');
   els.ctNav.classList.toggle('hidden', mode !== 'contacts');
   mail.showMailView(mode === 'mail');
+  showCalPanelHost(mode === 'mail');
   calendar.showCalendarView(mode === 'calendar');
   contacts.showContactsView(mode === 'contacts');
   renderNavButtons();
@@ -436,9 +451,14 @@ async function syncAll() {
 async function loadAll() {
   await loadAccounts();
   const failed = [];
+  // Categories come from the server (Graph); the window must not wait for them.
+  // The cache-backed rest is local and fast.
+  Promise.all(state.accounts.map((a) => loadCategories(a.id).catch(() => [])))
+    .then(() => { mail.reloadList().catch(() => {}); })
+    .catch(() => {});
   await Promise.all([
+    ...state.accounts.map((a) => loadCategories(a.id, { cached: true }).catch(() => [])),
     ...mailboxes().map((m) => loadFolders(m.id).catch((e) => { failed.push(`${m.address}: ${e.message || e}`); return []; })),
-    ...state.accounts.map((a) => loadCategories(a.id).catch(() => [])),
     ...state.accounts.map((a) => loadLanes(a.id)),
   ]);
   await Promise.all(mailboxes().filter((m) => !(state.folders.get(m.id) || []).length).map(async (m) => {
@@ -533,7 +553,7 @@ function setupEvents() {
     lastError = p && p.state === 'error' ? p.message : null;
   });
   on('mail-changed', (p) => mail.onMailChanged(p).catch((e) => console.warn(e)));
-  on('calendar-changed', () => calendar.onCalendarChanged().catch((e) => console.warn(e)));
+  on('calendar-changed', () => { calendar.onCalendarChanged().catch((e) => console.warn(e)); onCalPanelChanged(); });
   on('accounts-changed', () => onAccountsChanged().catch(reportError));
   on('contacts-changed', () => contacts.onContactsChanged().catch((e) => console.warn(e)));
   on('categories-changed', async (p) => {
@@ -586,6 +606,7 @@ async function init() {
   mail.hooks.openLaneSettings = (accountId) => openSettings('kanban', { accountId });
   mail.initMail({ navHost: els.tree, contentHost: els.content, onCounts: renderStatus, onSelection: updateActionState });
   calendar.initCalendar({ navHost: els.calNav, contentHost: els.content, onCounts: updateActionState });
+  initCalPanel(els.content, $('#mailview'));
   contacts.initContacts({ navHost: els.ctNav, contentHost: els.content, onSelection: updateActionState });
   const navW = load('navWidth2', null);
   if (navW) document.documentElement.style.setProperty('--nav-w', navW + 'px');

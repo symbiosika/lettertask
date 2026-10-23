@@ -29,6 +29,37 @@ test('Nachricht im Lesebereich öffnen', async ({ page }) => {
   await expect(body).toContainText('Hallo Max');
 });
 
+test('Adress-Karte beim Überfahren: Name und Adresse kopieren', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await openApp(page);
+  await select(page, 'Re: Einziger Fokus');
+  await page.locator('.rp-fromname').hover();
+  const card = page.locator('[data-testid=contact-card]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('Laura Schmidt');
+  await card.locator('[data-testid=cc-copy-addr]').click();
+  const addr = await page.evaluate(() => navigator.clipboard.readText());
+  expect(addr).toContain('@');
+  await expect(card).toContainText(addr);
+  await card.locator('[data-testid=cc-copy-name]').click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('Laura Schmidt');
+  // Leaving card and address closes it.
+  await page.mouse.move(5, 5);
+  await expect(card).toHaveCount(0);
+});
+
+test('Links im Nachrichtentext: auch reine Text-Adressen sind klickbar', async ({ page }) => {
+  // Unit-level: the srcdoc builder turns plain URLs and www. links into https links.
+  await openApp(page);
+  const html = await page.evaluate(async () => {
+    const { buildSrcdoc } = await import('/js/mailview.js');
+    return buildSrcdoc('<p>Siehe https://example.com/a?b=1. und www.example.org sowie <a href="www.x.de">x</a></p>', false);
+  });
+  expect(html).toContain('<a href="https://example.com/a?b=1">https://example.com/a?b=1</a>.');
+  expect(html).toContain('<a href="https://www.example.org">www.example.org</a>');
+  expect(html).toContain('href="https://www.x.de"');
+});
+
 test('Als gelesen/ungelesen markieren', async ({ page }) => {
   await openApp(page);
   const r = () => row(page, 'Wartungsfenster Mailserver');
@@ -179,4 +210,15 @@ test('Neu-Termin-Button öffnet Termin-Fenster', async ({ page }) => {
   await expect(popup.locator('input[name=subject]')).toBeVisible();
   expect(popup.url()).toContain('event.html');
   await popup.close({ runBeforeUnload: false });
+});
+
+test('Kanban-Knopf öffnet den Posteingang als Kanban', async ({ page }) => {
+  await openApp(page);
+  await openFolder(page, 'Gesendete Elemente');
+  await page.locator('[data-testid=tb-kanban]').click();
+  await expect(page.locator('.listpane .folder-name')).toHaveText('Posteingang');
+  await expect(page.locator('[data-testid=kanban-board]')).toBeVisible();
+  await page.screenshot({ path: 'test-results/kanban-btn.png', clip: { x: 0, y: 40, width: 700, height: 60 } });
+  // back to the list for the following tests
+  await page.evaluate(() => localStorage.setItem('mailView', JSON.stringify('list')));
 });

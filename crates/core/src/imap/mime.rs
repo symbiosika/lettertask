@@ -158,6 +158,18 @@ pub fn summary(
         preview,
         due_at: due(flags),
         recurrence: crate::model::recurrence_of(&categories(flags)),
+        last_verb: last_verb(flags),
+    }
+}
+
+/// "\\Answered" → reply, "$Forwarded" → forward (the later action is unknown; forward wins).
+pub fn last_verb(flags: &[String]) -> Option<String> {
+    if flags.iter().any(|f| f.eq_ignore_ascii_case("$Forwarded")) {
+        Some("forward".into())
+    } else if has_flag(flags, "\\Answered") {
+        Some("reply".into())
+    } else {
+        None
     }
 }
 
@@ -364,8 +376,66 @@ pub fn detail(raw: &[u8], mut summary: MessageSummary) -> Result<MessageDetail> 
         web_link: None,
         is_meeting_request: false,
         event_id: None,
+        signed: false,
         summary,
     })
+    .map(|d| unwrap_smime(&msg, d, 0))
+}
+
+/// Separator between the container's attachment id and the id inside it.
+pub const SMIME_SEP: char = '|';
+
+/// An opaque-signed mail (one `smime.p7m` part) shows the signed message
+/// inside: its body and attachments (ids "<p7m id>|<inner id>").
+fn unwrap_smime(msg: &mail_parser::Message<'_>, d: MessageDetail, depth: u8) -> MessageDetail {
+    if depth > 3 {
+        return d;
+    }
+    let Some(p7m) = d.attachments.iter().find(|a| crate::smime::is_p7m(&a.name, &a.content_type)).cloned() else {
+        return d;
+    };
+    let Some(part) = p7m.id.parse::<usize>().ok().and_then(|i| attachments(msg).find(|(j, _)| *j == i).map(|(_, p)| p)) else {
+        return d;
+    };
+    let Some(inner) = crate::smime::signed_content(&part_bytes(part)) else {
+        return d;
+    };
+    match detail(&inner, d.summary.clone()) {
+        Ok(inner_d) => merge_signed(d, &p7m.id, inner_d),
+        Err(_) => d,
+    }
+}
+
+/// Outer detail + unwrapped signed content → what the reader sees.
+pub fn merge_signed(mut outer: MessageDetail, p7m_id: &str, inner: MessageDetail) -> MessageDetail {
+    if !inner.body_html.trim().is_empty() {
+        outer.body_html = inner.body_html;
+    }
+    outer.attachments.retain(|a| a.id != p7m_id);
+    outer.attachments.extend(inner.attachments.into_iter().map(|mut a| {
+        a.id = format!("{p7m_id}{SMIME_SEP}{}", a.id);
+        a
+    }));
+    outer.summary.has_attachments = !outer.attachments.is_empty();
+    outer.signed = true;
+    outer
+}
+
+/// Attachment by id; "<p7m>|<inner>" reaches into a signed container.
+pub fn attachment_by_id(raw: &[u8], id: &str) -> Result<(String, String, Vec<u8>)> {
+    let (head, rest) = match id.split_once(SMIME_SEP) {
+        Some((h, r)) => (h, Some(r)),
+        None => (id, None),
+    };
+    let idx: usize = head.parse().map_err(|_| Error::invalid("Ungültige Anhang-ID"))?;
+    let found = attachment(raw, idx)?;
+    match rest {
+        None => Ok(found),
+        Some(r) => {
+            let inner = crate::smime::signed_content(&found.2).ok_or_else(|| Error::NotFound("Anhang".into()))?;
+            attachment_by_id(&inner, r)
+        }
+    }
 }
 
 /// Bytes of attachment `idx`: (file name, content type, bytes).

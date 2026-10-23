@@ -12,6 +12,8 @@ mod mail;
 mod signatures;
 mod snooze;
 mod tasks;
+mod transfer;
+mod reminders;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -58,6 +60,7 @@ pub struct Service {
     send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
     /// Mails queued or being sent in the background.
     pending_sends: std::sync::atomic::AtomicUsize,
+    reminders: std::sync::Mutex<reminders::ReminderState>,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -206,6 +209,7 @@ impl Service {
             google_tokens: Default::default(),
             send_queue: Default::default(),
             pending_sends: Default::default(),
+            reminders: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -460,6 +464,18 @@ impl Service {
                 .await?;
                 ok(Value::Null)
             }
+            "transfer_messages" => {
+                let n = self
+                    .transfer_messages(
+                        &arg::<String>(a, "mailboxId")?,
+                        &arg::<Vec<String>>(a, "ids")?,
+                        &arg::<String>(a, "destMailboxId")?,
+                        &arg::<String>(a, "destFolderId")?,
+                        arg::<Option<bool>>(a, "copy")?.unwrap_or(false),
+                    )
+                    .await?;
+                ok(json!({"count": n}))
+            }
             "copy_messages" => {
                 self.move_messages(
                     &arg::<String>(a, "mailboxId")?,
@@ -613,7 +629,17 @@ impl Service {
                 ok(Value::Null)
             }
 
-            "list_categories" => ok(self.list_categories(&arg::<String>(a, "accountId")?).await?),
+            "list_categories" => {
+                let account_id = arg::<String>(a, "accountId")?;
+                // `cached`: windows render from the local copy instead of waiting for Graph.
+                match arg::<Option<bool>>(a, "cached")?.unwrap_or(false) {
+                    true => match self.cached_categories(&account_id)? {
+                        Some(c) => ok(c),
+                        None => ok(self.list_categories(&account_id).await?),
+                    },
+                    false => ok(self.list_categories(&account_id).await?),
+                }
+            }
             "create_category" => ok(self
                 .create_category(
                     &arg::<String>(a, "accountId")?,
@@ -631,7 +657,36 @@ impl Service {
             }
 
             // ---- calendar ----
-            "list_calendars" => ok(self.list_calendars(&arg::<String>(a, "accountId")?).await?),
+            "list_calendars" => {
+                let account_id = arg::<String>(a, "accountId")?;
+                // `cached`: the last known list (no Graph round trip), if there is one.
+                let cached: Option<Vec<Calendar>> = match arg::<Option<bool>>(a, "cached")?.unwrap_or(false) {
+                    true => self.store.get_account_json(&account_id, "calendars")?,
+                    false => None,
+                };
+                match cached {
+                    Some(c) if !c.is_empty() => ok(c),
+                    _ => ok(self.list_calendars(&account_id).await?),
+                }
+            }
+            "add_people_calendar" => ok(self
+                .add_people_calendar(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "address")?,
+                    &arg::<Option<String>>(a, "name")?.unwrap_or_default(),
+                )
+                .await?),
+            "update_people_calendar" => ok(self
+                .update_people_calendar(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "calendarId")?,
+                    arg::<Option<String>>(a, "name")?.as_deref(),
+                    arg::<Option<String>>(a, "color")?.as_deref(),
+                )
+                .await?),
+            "remove_people_calendar" => ok(self
+                .remove_people_calendar(&arg::<String>(a, "accountId")?, &arg::<String>(a, "calendarId")?)
+                .await?),
             "list_events" => ok(self
                 .list_events(
                     &arg::<String>(a, "accountId")?,
@@ -943,6 +998,7 @@ impl Service {
 
     /// Spawns the periodic sync loop.
     pub fn start_background_sync(self: &Arc<Self>) {
+        self.start_event_reminders();
         let svc = Arc::downgrade(self);
         use futures::FutureExt;
         tokio::spawn(async move {

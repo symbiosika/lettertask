@@ -37,8 +37,8 @@ export async function loadFolders(mailboxId) {
   state.folders.set(mailboxId, list);
   return list;
 }
-export async function loadCategories(accountId) {
-  const list = (await call('list_categories', { accountId }, { silent: true })) || [];
+export async function loadCategories(accountId, { cached = false } = {}) {
+  const list = (await call('list_categories', { accountId, cached }, { silent: true })) || [];
   setCategories(accountId, list);
   return list;
 }
@@ -54,5 +54,7 @@ export async function loadLanes(accountId) {
 /** Standalone windows: loads accounts + categories so shared helpers work. */
 export async function bootstrapSecondary() {
   await Promise.all([loadConfig(), loadAccounts()]);
-  await Promise.all(state.accounts.map((a) => loadCategories(a.id).catch(() => [])));
+  // Local copy first so the window shows at once; the server copy follows.
+  await Promise.all(state.accounts.map((a) => loadCategories(a.id, { cached: true }).catch(() => [])));
+  for (const a of state.accounts) loadCategories(a.id).catch(() => []);
 }

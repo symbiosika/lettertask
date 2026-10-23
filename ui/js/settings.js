@@ -588,9 +588,11 @@ export async function welcomeDialog({ o365Only = false } = {}) {
   const clientId = h('input.input', { value: c.clientId || '', placeholder: 'Anwendungs-ID (GUID)', style: { width: '100%' }, name: 'clientId' });
   const tenant = h('input.input', { value: c.tenant || '', style: { width: '100%' }, name: 'tenant' });
   const builtin = !!c.builtinClientId;
-  const adv = h('details.welcome-adv' + (builtin ? '' : '.open'), { open: !builtin },
-    h('summary', builtin ? 'Erweitert: eigene App-Registrierung verwenden' : 'App-Registrierung'),
-    builtin ? null : h('ol',
+  // With the built-in app registration the wizard asks nothing technical:
+  // App-ID and Mandant only live in Einstellungen → Konten for special cases.
+  const adv = builtin ? null : h('details.welcome-adv.open', { open: true },
+    h('summary', 'App-Registrierung'),
+    h('ol',
       h('li', 'Entra Admin Center → App-Registrierungen → Neue Registrierung'),
       h('li', { html: 'Plattform <b>Mobile und Desktop</b>, Umleitungs-URI <code>http://localhost</code>' }),
       h('li', { html: 'Delegierte Berechtigungen: <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>Calendars.ReadWrite</code>, <code>MailboxSettings.ReadWrite</code>, <code>People.Read</code>, <code>User.Read</code>, <code>offline_access</code>' }),
@@ -609,8 +611,7 @@ export async function welcomeDialog({ o365Only = false } = {}) {
     onBeforeClose: async (v) => {
       if (v === 'imap' || v === 'google') return v;
       const id = clientId.value.trim();
-      const custom = id && id !== (c.clientId || '');
-      if (!builtin || custom || adv.open) {
+      if (!builtin) {
         if (!builtin && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { adv.open = true; clientId.classList.add('invalid'); toast('Bitte eine gültige Anwendungs-ID (GUID) eingeben.', 'error'); return false; }
         if (id || tenant.value.trim() !== (c.tenant || '')) {
           state.config = await call('save_config', { config: { ...state.config, clientId: id, tenant: tenant.value.trim() } });

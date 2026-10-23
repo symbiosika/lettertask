@@ -427,6 +427,10 @@ impl Service {
                     convert::message_summary(&item, &mb.id, folder_id)
                 };
                 m.folder_id = folder_id.to_string();
+                // Delta never carries the last action; it comes from refresh_last_verbs.
+                if m.last_verb.is_none() {
+                    m.last_verb = cached.as_ref().and_then(|o| o.last_verb.clone());
+                }
                 match cached {
                     Some(old) => {
                         if old != m {
@@ -467,7 +471,36 @@ impl Service {
             }
             break;
         }
+        if result.added + result.updated > 0 {
+            match self.refresh_last_verbs(mb, c, folder_id).await {
+                Ok(n) => result.updated += n as i64,
+                Err(e) => tracing::debug!("last verbs: {e}"),
+            }
+        }
         Ok((result, new_unread))
+    }
+
+    /// Reply/forward state of the newest mails of a folder (one request; delta
+    /// queries cannot expand extended properties).
+    async fn refresh_last_verbs(&self, mb: &Mailbox, c: &Arc<GraphClient>, folder_id: &str) -> Result<usize> {
+        let v = c
+            .get(&format!(
+                "{}/mailFolders/{}/messages?$select=id&$expand={}&$orderby={}&$top=100",
+                mb.graph_prefix(),
+                seg(folder_id),
+                enc(convert::LAST_VERB_EXPAND),
+                enc("receivedDateTime desc"),
+            ))
+            .await?;
+        let verbs: Vec<(String, String)> = v["value"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| Some((m["id"].as_str()?.to_string(), convert::last_verb(m)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.store.set_last_verbs(&mb.id, &verbs)
     }
 
     /// One message summary straight from the server (None: it is gone).
@@ -702,7 +735,7 @@ impl Service {
             }
         }
 
-        Ok(MessageDetail {
+        let d = MessageDetail {
             summary,
             cc: convert::addresses(&v, "ccRecipients"),
             bcc: convert::addresses(&v, "bccRecipients"),
@@ -714,7 +747,53 @@ impl Service {
             web_link: v["webLink"].as_str().map(str::to_string),
             is_meeting_request: is_meeting,
             event_id,
-        })
+            signed: false,
+        };
+        Ok(self.unwrap_smime(c, &prefix, message_id, d).await)
+    }
+
+    /// Opaque-signed S/MIME: Graph only lists `smime.p7m`; the real body and
+    /// attachments are inside it. Failures keep the plain view.
+    async fn unwrap_smime(&self, c: &Arc<GraphClient>, prefix: &str, message_id: &str, d: MessageDetail) -> MessageDetail {
+        let Some(p7m) = d.attachments.iter().find(|a| crate::smime::is_p7m(&a.name, &a.content_type)).cloned() else {
+            return d;
+        };
+        let bytes = match self.attachment_bytes(c, prefix, message_id, &p7m.id).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("smime.p7m: {e}");
+                return d;
+            }
+        };
+        let Some(inner) = crate::smime::signed_content(&bytes) else {
+            return d;
+        };
+        match crate::imap::mime::detail(&inner, d.summary.clone()) {
+            Ok(inner_d) => crate::imap::mime::merge_signed(d, &p7m.id, inner_d),
+            Err(_) => d,
+        }
+    }
+
+    async fn attachment_bytes(&self, c: &Arc<GraphClient>, prefix: &str, message_id: &str, attachment_id: &str) -> Result<Vec<u8>> {
+        match c
+            .get_bytes(&format!(
+                "{prefix}/messages/{}/attachments/{}/$value",
+                seg(message_id),
+                seg(attachment_id)
+            ))
+            .await
+        {
+            Ok(b) => Ok(b.to_vec()),
+            Err(_) => {
+                // Fallback for attachment types without $value support.
+                let full = c
+                    .get(&format!("{prefix}/messages/{}/attachments/{}", seg(message_id), seg(attachment_id)))
+                    .await?;
+                base64::engine::general_purpose::STANDARD
+                    .decode(full["contentBytes"].as_str().unwrap_or(""))
+                    .map_err(|e| Error::Other(e.to_string()))
+            }
+        }
     }
 
     pub(crate) async fn get_message_source(&self, mailbox_id: &str, message_id: &str) -> Result<String> {
@@ -962,35 +1041,24 @@ impl Service {
         }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
-        let meta = c
-            .get(&format!(
-                "{prefix}/messages/{}/attachments/{}?$select=id,name,contentType,size",
-                seg(message_id),
-                seg(attachment_id)
-            ))
-            .await?;
-        let name = sanitize_filename(meta["name"].as_str().unwrap_or("anhang"));
-        let bytes = match c
-            .get_bytes(&format!(
-                "{prefix}/messages/{}/attachments/{}/$value",
-                seg(message_id),
-                seg(attachment_id)
-            ))
-            .await
-        {
-            Ok(b) => b,
-            Err(_) => {
-                // Fallback for attachment types without $value support.
-                let full = c
+        let (name, bytes) = match attachment_id.split_once(crate::imap::mime::SMIME_SEP) {
+            // A file inside a signed (smime.p7m) container.
+            Some((outer, inner)) => {
+                let container = self.attachment_bytes(&c, &prefix, message_id, outer).await?;
+                let content = crate::smime::signed_content(&container).ok_or_else(|| Error::NotFound("Anhang".into()))?;
+                let (name, _, bytes) = crate::imap::mime::attachment_by_id(&content, inner)?;
+                (sanitize_filename(&name), bytes)
+            }
+            None => {
+                let meta = c
                     .get(&format!(
-                        "{prefix}/messages/{}/attachments/{}",
+                        "{prefix}/messages/{}/attachments/{}?$select=id,name,contentType,size",
                         seg(message_id),
                         seg(attachment_id)
                     ))
                     .await?;
-                base64::engine::general_purpose::STANDARD
-                    .decode(full["contentBytes"].as_str().unwrap_or(""))
-                    .map_err(|e| Error::Other(e.to_string()))?
+                let name = sanitize_filename(meta["name"].as_str().unwrap_or("anhang"));
+                (name, self.attachment_bytes(&c, &prefix, message_id, attachment_id).await?)
             }
         };
         let path = if action == "save" {

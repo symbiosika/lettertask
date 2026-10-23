@@ -50,6 +50,7 @@ MessageSummary {
   flag: "notFlagged"|"flagged"|"complete", hasAttachments: bool,
   categories: string[], preview: string,
   dueAt: string|null,  // follow-up due time (UTC); for snoozed mails = "Wiedervorlage bis"
+  lastVerb: "reply"|"replyAll"|"forward"|null,  // last action (Graph: PidTagLastVerbExecuted, IMAP: \Answered/$Forwarded)
   recurrence: string|null // "monthly" etc., from the hidden "[#…]" category
 }
 Attachment   { id, name, contentType: string, size: number, isInline: bool, contentId: string|null }
@@ -177,6 +178,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `set_categories` | `{ mailboxId, ids, categories: string[] }` | `null` (replaces the list) |
 | `move_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `copy_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
+| `transfer_messages` | `{ mailboxId, ids, destMailboxId, destFolderId, copy }` | `{ count }` — move/copy into a folder of ANOTHER mailbox (any kind): the full message is read (MIME) and recreated there (IMAP: APPEND; Graph: non-draft message with original dates and attachments); a move then deletes the source into its trash |
 | `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)" (task as mail): a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" (immediately) → Posteingang (inbox, unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
@@ -251,6 +253,9 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 
 ### Calendar
 | `list_calendars` | `{ accountId }` | `Calendar[]` — default group (`/me/calendars`) plus the calendars of all other calendar groups (`/me/calendarGroups/{id}/calendars`), e.g. colleagues' calendars added in Outlook |
+| `add_people_calendar` | `{ accountId, address, name? }` | `Calendar[]` — adds a colleague's calendar (id `user:<address>`, group "Kalender von Personen"); events come from `/users/{address}/calendar`, without read access from free/busy (`getSchedule`, event ids `fb:…`) |
+| `update_people_calendar` | `{ accountId, calendarId, name?, color? }` | `Calendar[]` — label and colour (#rrggbb) of a person's calendar; new ones get a random colour |
+| `remove_people_calendar` | `{ accountId, calendarId }` | `Calendar[]` |
 | `list_events` | `{ accountId, calendarIds: string[], start: ISO, end: ISO }` | `Event[]` (expanded occurrences in range) |
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |

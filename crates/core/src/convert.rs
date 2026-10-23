@@ -323,7 +323,30 @@ pub fn message_summary(v: &Value, mailbox_id: &str, fallback_folder: &str) -> Me
             .filter(|_| v["flag"]["flagStatus"].as_str() != Some("complete"))
             .map(dt_tz),
         recurrence: recurrence_of(&string_list(v, "categories")),
+        last_verb: last_verb(v),
     }
+}
+
+/// Extended property PidTagLastVerbExecuted (0x1081): 102 reply, 103 reply all, 104 forward.
+pub const LAST_VERB_EXPAND: &str = "singleValueExtendedProperties($filter=id eq 'Integer 0x1081')";
+
+pub fn last_verb(v: &Value) -> Option<String> {
+    let props = v.get("singleValueExtendedProperties")?.as_array()?;
+    let val = props
+        .iter()
+        .find(|p| s(p, "id").eq_ignore_ascii_case("Integer 0x1081"))?["value"]
+        .as_str()?
+        .parse::<i64>()
+        .ok()?;
+    Some(
+        match val {
+            102 => "reply",
+            103 => "replyAll",
+            104 => "forward",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 /// True for a delta item that carries only some properties (Graph sends just the
