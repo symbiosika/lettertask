@@ -33,6 +33,9 @@ pub struct Account {
     /// Own look of the round initials badge (used without a picture).
     #[serde(default)]
     pub badge: Option<AccountBadge>,
+    /// Own sync interval in seconds; None = the global setting.
+    #[serde(default)]
+    pub sync_interval_secs: Option<u64>,
 }
 
 /// Round badge of an account without a picture: colour and up to two short lines.

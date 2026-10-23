@@ -503,6 +503,8 @@ async function onAccountsChanged() {
 
 // ------------------------------------------------------------------ keyboard
 function setupShortcuts() {
+  // No page zoom: a touchpad pinch arrives as Ctrl+wheel.
+  window.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
   window.addEventListener('keydown', (e) => {
     if (document.querySelector('.modal-overlay') || document.querySelector('.tagpop')) return;
     const t = e.target;

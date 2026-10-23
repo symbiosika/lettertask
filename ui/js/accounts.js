@@ -443,6 +443,28 @@ function lookEditor(acc, { onPreview, onChanged }) {
         h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`))));
 }
 
+/** Own sync interval of the account; empty = the global setting. Saved right away. */
+function intervalEditor(acc) {
+  const input = h('input.input', { type: 'number', min: '30', max: '3600', step: '30', name: 'accSyncInterval', value: acc.syncIntervalSecs ? String(acc.syncIntervalSecs) : '', placeholder: 'Standard', style: { width: '100px' }, dataset: { testid: 'acc-sync-interval' } });
+  input.addEventListener('change', async () => {
+    const raw = input.value.trim();
+    const secs = raw === '' ? null : parseInt(raw, 10);
+    input.classList.remove('invalid');
+    if (secs !== null && !(secs >= 30 && secs <= 3600)) {
+      input.classList.add('invalid');
+      toast('Das Intervall muss zwischen 30 und 3600 Sekunden liegen.', 'error');
+      return;
+    }
+    try {
+      await call('set_account_sync_interval', { accountId: acc.id, syncIntervalSecs: secs });
+      acc.syncIntervalSecs = secs;
+    } catch (e) { reportError(e); }
+  });
+  return h('div.wiz-grid', { dataset: { testid: 'acc-interval' } },
+    h('label.srv-l', 'Abgleich alle'), h('div', h('span.inline', input, h('span.dim', 'Sekunden')),
+      h('div.note', 'Leer = allgemeine Einstellung (Einstellungen → Allgemein).')));
+}
+
 /** Account detail panel for the settings dialog ("Konten" tab). */
 /** Shared/delegated Exchange mailboxes of a Microsoft 365 account. */
 function sharedMailboxes(acc, { onSaved, onRelogin }) {
@@ -494,7 +516,7 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRel
     avatar.replaceWith(next);
     avatar = next;
   };
-  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }));
+  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc));
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));
   if (isGoogle(acc)) return googleDetail(acc, box, remove, onSaved);

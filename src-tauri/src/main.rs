@@ -223,6 +223,9 @@ fn main() {
             })
             .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?;
             app.manage(svc);
+            if let Some(w) = app.get_webview_window("main") {
+                disable_pinch_zoom(&w);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -244,3 +247,23 @@ fn main() {
             }
         });
 }
+
+/// WebKitGTK zooms the whole page on a touchpad pinch, which is never wanted
+/// in the app: a zoom gesture on the webview is claimed before WebKit sees it.
+#[cfg(target_os = "linux")]
+fn disable_pinch_zoom(w: &tauri::WebviewWindow) {
+    let _ = w.with_webview(|wv| {
+        use gtk::prelude::*;
+        let view = wv.inner();
+        let gesture = gtk::GestureZoom::new(&view);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        gesture.connect_begin(|g, _| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+        });
+        // GTK3 gestures are not owned by their widget; keep it for the app's lifetime.
+        std::mem::forget(gesture);
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn disable_pinch_zoom(_: &tauri::WebviewWindow) {}

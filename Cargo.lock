@@ -2402,6 +2402,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "graph-fake",
+ "gtk",
  "mailcore",
  "serde_json",
  "tauri",
