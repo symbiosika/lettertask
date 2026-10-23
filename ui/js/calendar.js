@@ -97,7 +97,7 @@ function range() {
 export async function refresh() {
   const token = ++cal.loadToken;
   // Pill over the grid while the events of the shown range load (only if it takes a moment).
-  const slow = setTimeout(() => { if (token === cal.loadToken) els.loading.classList.add('on'); }, 200);
+  const slow = setTimeout(() => { if (token === cal.loadToken && cal.shownToken !== token) els.loading.classList.add('on'); }, 200);
   try { await loadRange(token); } finally {
     clearTimeout(slow);
     if (token === cal.loadToken) els.loading.classList.remove('on');
@@ -112,6 +112,18 @@ async function loadRange(token) {
   const tasksP = sprint && cal.sprint.tasks
     ? call('list_due', { end: end.toISOString() }, { silent: true }).catch((e) => { console.warn(e); return []; })
     : Promise.resolve([]);
+  // Last known events first (instant from the local store), the server's follow.
+  if (wantEvents) {
+    const cached = await eventsBetween(start, end, { cached: true });
+    if (token !== cal.loadToken) return;
+    if (cached.length) {
+      cal.events = cached;
+      if (!sprint || !cal.sprint.tasks) cal.tasks = [];
+      cal.shownToken = token;
+      render();
+      els.loading.classList.remove('on');
+    }
+  }
   const results = await Promise.all(calAccounts().map(async (a) => {
     if (!wantEvents) return [];
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
@@ -312,13 +324,14 @@ function isAllDayLike(ev) {
 function eventTitle(ev) { return ev.subject || '(Kein Betreff)'; }
 
 // ------------------------------------------------------------- shared with the mail panel
-/** Events of all visible calendars in [start, end) (same calendars as the calendar view). */
-export async function eventsBetween(start, end) {
+/** Events of all visible calendars in [start, end) (same calendars as the calendar view).
+ *  `cached`: only the last known events from the local store (no server round trip). */
+export async function eventsBetween(start, end, { cached = false } = {}) {
   if (!cal.calendars.size) await loadCalendars();
   const res = await Promise.all(calAccounts().map(async (a) => {
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
     if (!ids.length) return [];
-    try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString() }, { silent: true })) || []; }
+    try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString(), cached }, { silent: true })) || []; }
     catch (e) { console.warn(e); return []; }
   }));
   return res.flat();

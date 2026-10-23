@@ -706,14 +706,16 @@ impl Service {
             "remove_people_calendar" => ok(self
                 .remove_people_calendar(&arg::<String>(a, "accountId")?, &arg::<String>(a, "calendarId")?)
                 .await?),
-            "list_events" => ok(self
-                .list_events(
-                    &arg::<String>(a, "accountId")?,
-                    &arg::<Vec<String>>(a, "calendarIds")?,
-                    &arg::<String>(a, "start")?,
-                    &arg::<String>(a, "end")?,
-                )
-                .await?),
+            "list_events" => {
+                let account_id = arg::<String>(a, "accountId")?;
+                let ids = arg::<Vec<String>>(a, "calendarIds")?;
+                let (start, end) = (arg::<String>(a, "start")?, arg::<String>(a, "end")?);
+                // `cached`: the last known events of the range (no Graph round trip).
+                match arg::<Option<bool>>(a, "cached")?.unwrap_or(false) {
+                    true => ok(self.cached_events(&account_id, &ids, &start, &end)?),
+                    false => ok(self.list_events(&account_id, &ids, &start, &end).await?),
+                }
+            }
             "get_event" => ok(self
                 .get_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
                 .await?),

@@ -267,6 +267,21 @@ impl Service {
             .collect())
     }
 
+    /// Last known events of the range from the local store (no Graph round trip).
+    pub(crate) fn cached_events(&self, account_id: &str, calendar_ids: &[String], start: &str, end: &str) -> Result<Vec<Event>> {
+        let start = convert::normalize_utc(start);
+        let end = convert::normalize_utc(end);
+        if start.is_empty() || end.is_empty() || start >= end {
+            return Err(Error::invalid("Ungültiger Zeitraum"));
+        }
+        let mut out = Vec::new();
+        for cid in calendar_ids {
+            out.extend(self.store.cached_events(account_id, cid, &start, &end)?);
+        }
+        out.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.end.cmp(&a.end)));
+        Ok(out)
+    }
+
     pub(crate) async fn list_events(
         &self,
         account_id: &str,
