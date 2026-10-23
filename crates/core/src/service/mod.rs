@@ -13,6 +13,7 @@ mod signatures;
 mod snooze;
 mod tasks;
 mod transfer;
+mod reminders;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -59,6 +60,7 @@ pub struct Service {
     send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
     /// Mails queued or being sent in the background.
     pending_sends: std::sync::atomic::AtomicUsize,
+    reminders: std::sync::Mutex<reminders::ReminderState>,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -207,6 +209,7 @@ impl Service {
             google_tokens: Default::default(),
             send_queue: Default::default(),
             pending_sends: Default::default(),
+            reminders: Default::default(),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -673,6 +676,14 @@ impl Service {
                     &arg::<Option<String>>(a, "name")?.unwrap_or_default(),
                 )
                 .await?),
+            "update_people_calendar" => ok(self
+                .update_people_calendar(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "calendarId")?,
+                    arg::<Option<String>>(a, "name")?.as_deref(),
+                    arg::<Option<String>>(a, "color")?.as_deref(),
+                )
+                .await?),
             "remove_people_calendar" => ok(self
                 .remove_people_calendar(&arg::<String>(a, "accountId")?, &arg::<String>(a, "calendarId")?)
                 .await?),
@@ -987,6 +998,7 @@ impl Service {
 
     /// Spawns the periodic sync loop.
     pub fn start_background_sync(self: &Arc<Self>) {
+        self.start_event_reminders();
         let svc = Arc::downgrade(self);
         use futures::FutureExt;
         tokio::spawn(async move {

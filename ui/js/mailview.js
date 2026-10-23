@@ -1,5 +1,5 @@
 // Renders a MessageDetail (reading pane and message window share this).
-import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fmtSize } from './util.js';
+import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fmtSize, load, store } from './util.js';
 import { icon } from './icons.js';
 import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
 import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
@@ -189,6 +189,13 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
 // Hover card with copy buttons on every address in reading pane and list.
 bindContactCards(document.body, { onMail: (a) => openWindow('compose', { mode: 'new', to: a.address }).catch(reportError) });
 
+function trustedSenders() { return new Set(load('remoteImageSenders', [])); }
+function setTrustedSender(addr, on) {
+  const set = trustedSenders();
+  if (on) set.add(addr); else set.delete(addr);
+  store('remoteImageSenders', [...set]);
+}
+
 function addrList(list) {
   return (list || []).map((a) => `<span class="addr"${addrAttrs(a)}>${esc(displayName(a))}</span>`).join(', ');
 }
@@ -356,13 +363,28 @@ export function renderMessage(container, msg, opts) {
     bars.appendChild(bar);
   }
   let remoteBar = null;
+  // "Bilder herunterladen" is remembered per sender (only on this device).
+  const sender = (from.address || '').toLowerCase();
+  const trusted = !!sender && trustedSenders().has(sender);
+  if (remote && !allowRemote && trusted) allowRemote = true;
   if (remote && !allowRemote) {
-    remoteBar = h('div.infobar.remote', { role: 'button', title: 'Bilder herunterladen' },
+    remoteBar = h('div.infobar.remote', { role: 'button', title: 'Bilder herunterladen', dataset: { testid: 'remote-bar' } },
       h('span.ib-text', { html: icon('image', 16) + ' Externe Bilder wurden zum Schutz Ihrer Privatsphäre blockiert.' }),
       h('span.spacer'),
-      h('span.linkbtn', 'Bilder herunterladen'));
-    remoteBar.addEventListener('click', () => { allowRemote = true; remoteBar.remove(); mountBody(bodyHost, msg.bodyHtml, { allowRemote, mailboxId: msg.mailboxId }); });
+      h('span.linkbtn', sender ? 'Bilder herunterladen (immer für diesen Absender)' : 'Bilder herunterladen'));
+    remoteBar.addEventListener('click', () => {
+      allowRemote = true;
+      if (sender) setTrustedSender(sender, true);
+      remoteBar.remove();
+      mountBody(bodyHost, msg.bodyHtml, { allowRemote, mailboxId: msg.mailboxId });
+    });
     bars.appendChild(remoteBar);
+  } else if (remote && trusted) {
+    const undo = h('div.infobar', { dataset: { testid: 'remote-trusted' } },
+      h('span.ib-text', { html: icon('image', 16) + ` Bilder von ${esc(sender)} werden immer geladen.` }),
+      h('span.spacer'),
+      h('button.linkbtn', { type: 'button', onclick: () => { setTrustedSender(sender, false); undo.remove(); toast('Bilder dieses Absenders werden wieder blockiert.'); } }, 'Nicht mehr automatisch laden'));
+    bars.appendChild(undo);
   }
   if (bars.childNodes.length) card.appendChild(bars);
 

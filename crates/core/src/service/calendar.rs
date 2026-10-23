@@ -15,6 +15,21 @@ const PEOPLE_KEY: &str = "people_calendars";
 /// Calendar id prefix of such a calendar: "user:<address>".
 const PEOPLE_PREFIX: &str = "user:";
 const PEOPLE_GROUP: &str = "Kalender von Personen";
+/// Colours a new person's calendar gets at random (Outlook-like palette).
+const PEOPLE_COLORS: &[&str] = &[
+    "#e8a33d", "#4aa564", "#3f8fd2", "#c2509b", "#8a63d2", "#d9534f", "#2bb3a3", "#9c7b4f", "#5b6ee1", "#e07b39",
+];
+
+/// A colleague's calendar added in the app; `name` is the label shown.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct PersonCal {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    color: Option<String>,
+}
 
 fn utc_header() -> [(&'static str, String); 1] {
     [("Prefer", "outlook.timezone=\"UTC\"".to_string())]
@@ -118,7 +133,7 @@ impl Service {
     /// "from the directory" partly outside of Graph's calendar groups, so they
     /// would otherwise be missing here although Outlook and Teams show them.
     fn add_people_calendars(&self, account_id: &str, cals: &mut Vec<Calendar>) -> Result<()> {
-        let people: Vec<Address> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        let people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         for p in people {
             let addr = p.address.to_lowercase();
             if cals.iter().any(|k| k.owner.as_ref().is_some_and(|o| o.address.to_lowercase() == addr)) {
@@ -128,7 +143,11 @@ impl Service {
                 id: format!("{PEOPLE_PREFIX}{addr}"),
                 account_id: account_id.to_string(),
                 name: if p.name.is_empty() { p.address.clone() } else { p.name.clone() },
-                color: None,
+                // Added before colours existed: a fixed pick per address.
+                color: p.color.clone().or_else(|| {
+                    let h = addr.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
+                    Some(PEOPLE_COLORS[h % PEOPLE_COLORS.len()].to_string())
+                }),
                 can_edit: false,
                 is_default: false,
                 group: Some(PEOPLE_GROUP.to_string()),
@@ -147,17 +166,46 @@ impl Service {
         if !address.contains('@') || address.contains(char::is_whitespace) {
             return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse angeben."));
         }
-        let mut people: Vec<Address> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         if !people.iter().any(|p| p.address.eq_ignore_ascii_case(&address)) {
-            people.push(Address { name: name.trim().to_string(), address });
+            use rand::seq::SliceRandom;
+            let color = PEOPLE_COLORS.choose(&mut rand::thread_rng()).map(|c| c.to_string());
+            people.push(PersonCal { name: name.trim().to_string(), address, color });
             self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
         }
         self.list_calendars(account_id).await
     }
 
+    /// Changes label and/or colour (#rrggbb) of a person's calendar.
+    pub(crate) async fn update_people_calendar(&self, account_id: &str, calendar_id: &str, name: Option<&str>, color: Option<&str>) -> Result<Vec<Calendar>> {
+        let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
+        let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        let p = people
+            .iter_mut()
+            .find(|p| p.address.eq_ignore_ascii_case(address))
+            .ok_or_else(|| Error::NotFound("Kalender".into()))?;
+        if let Some(n) = name {
+            p.name = n.trim().to_string();
+        }
+        if let Some(c) = color {
+            let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit());
+            if !ok {
+                return Err(Error::invalid("Ungültige Farbe"));
+            }
+            p.color = Some(c.to_lowercase());
+        }
+        self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
+        // The cached list must show the change even offline.
+        let mut cals: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
+        cals.retain(|c| c.id != calendar_id);
+        self.add_people_calendars(account_id, &mut cals)?;
+        self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
+        Ok(cals)
+    }
+
     pub(crate) async fn remove_people_calendar(&self, account_id: &str, calendar_id: &str) -> Result<Vec<Calendar>> {
         let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
-        let mut people: Vec<Address> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
+        let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         people.retain(|p| !p.address.eq_ignore_ascii_case(address));
         self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
         self.list_calendars(account_id).await
