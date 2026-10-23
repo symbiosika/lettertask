@@ -166,6 +166,12 @@ impl Store {
                  ALTER TABLE accounts ADD COLUMN badge_text TEXT;",
             )?;
         }
+        let has_interval: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='sync_interval_secs'")?
+            .exists([])?;
+        if !has_interval {
+            conn.execute_batch("ALTER TABLE accounts ADD COLUMN sync_interval_secs INTEGER;")?;
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -209,6 +215,14 @@ impl Store {
         )? > 0)
     }
 
+    /// Own sync interval of the account (None = global setting).
+    pub fn set_account_sync_interval(&self, id: &str, secs: Option<u64>) -> Result<bool> {
+        Ok(self.c().execute(
+            "UPDATE accounts SET sync_interval_secs=?2 WHERE id=?1",
+            params![id, secs.map(|v| v as i64)],
+        )? > 0)
+    }
+
     pub fn delete_account(&self, id: &str) -> Result<()> {
         self.c().execute("DELETE FROM accounts WHERE id=?1", params![id])?;
         Ok(())
@@ -232,7 +246,7 @@ impl Store {
         let c = self.c();
         // sort_order 0 = never arranged: after the arranged ones, oldest first.
         let mut st = c.prepare(
-            "SELECT id,email,display_name,avatar,label,badge_color,badge_text FROM accounts
+            "SELECT id,email,display_name,avatar,label,badge_color,badge_text,sync_interval_secs FROM accounts
              ORDER BY CASE sort_order WHEN 0 THEN 1 ELSE 0 END, sort_order, created, email",
         )?;
         let mut accounts: Vec<Account> = st
@@ -250,6 +264,7 @@ impl Store {
                         let badge = AccountBadge { color: r.get(5)?, text: r.get(6)? };
                         (badge != AccountBadge::default()).then_some(badge)
                     },
+                    sync_interval_secs: r.get::<_, Option<i64>>(7)?.map(|v| v.max(0) as u64),
                     auth: String::new(),
                 })
             })?
@@ -1053,6 +1068,12 @@ mod tests {
         assert_eq!(acc[1].badge.as_ref(), Some(&badge));
         assert!(s.set_account_look("a", None, &AccountBadge::default()).unwrap());
         assert_eq!(s.list_accounts().unwrap()[1].badge, None);
+        // Own sync interval, None = global setting.
+        assert_eq!(s.list_accounts().unwrap()[1].sync_interval_secs, None);
+        assert!(s.set_account_sync_interval("a", Some(600)).unwrap());
+        assert_eq!(s.list_accounts().unwrap()[1].sync_interval_secs, Some(600));
+        assert!(s.set_account_sync_interval("a", None).unwrap());
+        assert_eq!(s.list_accounts().unwrap()[1].sync_interval_secs, None);
     }
 
     #[test]

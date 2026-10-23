@@ -363,6 +363,18 @@ impl Service {
                 self.emit("accounts-changed", json!({}));
                 ok(Value::Null)
             }
+            "set_account_sync_interval" => {
+                let id: String = arg(a, "accountId")?;
+                let secs: Option<u64> = arg(a, "syncIntervalSecs")?;
+                if secs.is_some_and(|v| !(15..=3600).contains(&v)) {
+                    return Err(Error::invalid("Das Intervall muss zwischen 15 und 3600 Sekunden liegen."));
+                }
+                if !self.store.set_account_sync_interval(&id, secs)? {
+                    return Err(Error::invalid("Unbekanntes Konto."));
+                }
+                self.emit("accounts-changed", json!({}));
+                ok(Value::Null)
+            }
             "remove_account" => {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
                 ok(Value::Null)
@@ -938,11 +950,16 @@ impl Service {
 
     /// "Senden/Empfangen": folders, inbox and active folder of every mailbox.
     pub async fn sync_all(self: &Arc<Self>, background: bool) {
+        self.sync_accounts(background, |_| true).await;
+    }
+
+    /// Like `sync_all`, limited to the accounts `pick` selects.
+    async fn sync_accounts(self: &Arc<Self>, background: bool, pick: impl Fn(&Account) -> bool) {
         let Ok(_guard) = self.sync_all_lock.try_lock() else {
             return;
         };
         let accounts = match self.store.list_accounts() {
-            Ok(a) => a,
+            Ok(a) => a.into_iter().filter(|a| pick(a)).collect::<Vec<_>>(),
             Err(e) => {
                 self.emit_status("error", &e.to_string());
                 return;
@@ -1005,27 +1022,51 @@ impl Service {
             // Small delay so the UI is up before the first sync.
             tokio::time::sleep(Duration::from_secs(2)).await;
             let mut focus_active = false;
+            // Each account syncs on its own interval (default: the global one).
+            let mut last: HashMap<String, std::time::Instant> = HashMap::new();
             loop {
                 let Some(s) = svc.upgrade() else { return };
+                let global = s.config().sync_interval_secs.max(15);
+                let interval = |a: &Account| Duration::from_secs(a.sync_interval_secs.unwrap_or(global).max(15));
+                let accounts = s.store.list_accounts().unwrap_or_default();
+                let now = std::time::Instant::now();
+                let is_due = |a: &Account| last.get(&a.id).is_none_or(|t| now.duration_since(*t) >= interval(a));
                 // Fokuszeit pauses the automatic fetch; when it ends, sync once.
                 match s.focus_until() {
                     Some(_) => focus_active = true,
                     None => {
-                        if focus_active {
-                            focus_active = false;
+                        let all = std::mem::take(&mut focus_active);
+                        if all {
                             s.emit("focus-changed", json!({"until": null}));
                         }
-                        // A panicking sync must not end the loop silently.
-                        if let Err(p) = std::panic::AssertUnwindSafe(s.sync_all(true)).catch_unwind().await {
-                            let msg = format!("Interner Fehler beim Abgleich: {}", panic_text(&p));
-                            tracing::error!("{msg}");
-                            s.emit_status("error", &msg);
+                        let due: std::collections::HashSet<String> =
+                            accounts.iter().filter(|a| all || is_due(a)).map(|a| a.id.clone()).collect();
+                        if !due.is_empty() {
+                            // A panicking sync must not end the loop silently.
+                            let run = s.sync_accounts(true, |a| due.contains(&a.id));
+                            if let Err(p) = std::panic::AssertUnwindSafe(run).catch_unwind().await {
+                                let msg = format!("Interner Fehler beim Abgleich: {}", panic_text(&p));
+                                tracing::error!("{msg}");
+                                s.emit_status("error", &msg);
+                            }
+                            for id in due {
+                                last.insert(id, now);
+                            }
                         }
                     }
                 }
-                let wait = s.config().sync_interval_secs.max(15);
+                last.retain(|id, _| accounts.iter().any(|a| &a.id == id));
+                // Sleep until the next account is due (re-checked at least every 15 s
+                // so changed intervals and new accounts take effect promptly).
+                let now = std::time::Instant::now();
+                let wait = accounts
+                    .iter()
+                    .map(|a| last.get(&a.id).map_or(Duration::ZERO, |t| (*t + interval(a)).saturating_duration_since(now)))
+                    .min()
+                    .unwrap_or(Duration::from_secs(global))
+                    .clamp(Duration::from_secs(1), Duration::from_secs(15));
                 drop(s);
-                tokio::time::sleep(Duration::from_secs(wait)).await;
+                tokio::time::sleep(wait).await;
             }
         });
     }

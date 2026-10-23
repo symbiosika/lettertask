@@ -201,7 +201,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const panels = {
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
-      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden'))),
+      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
       h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null),
     reading: h('div.set-panel',
