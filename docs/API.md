@@ -178,6 +178,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `set_categories` | `{ mailboxId, ids, categories: string[] }` | `null` (replaces the list) |
 | `move_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `copy_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
+| `transfer_messages` | `{ mailboxId, ids, destMailboxId, destFolderId, copy }` | `{ count }` — move/copy into a folder of ANOTHER mailbox (any kind): the full message is read (MIME) and recreated there (IMAP: APPEND; Graph: non-draft message with original dates and attachments); a move then deletes the source into its trash |
 | `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)" (task as mail): a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" (immediately) → Posteingang (inbox, unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |

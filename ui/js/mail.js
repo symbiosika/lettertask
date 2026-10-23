@@ -77,6 +77,17 @@ export function setView(v) {
   reloadList({ keepCount: false }).catch(reportError);
   if (kanbanActive()) board.focus(); else els.list.focus();
 }
+/** Posteingang of the selected mailbox as Kanban board (toolbar button). */
+export async function openInboxKanban() {
+  const mb = mailboxById(state.current.mailboxId) ? state.current.mailboxId : (mailboxes()[0] || {}).id;
+  const inbox = mb && wellKnown(mb, 'inbox');
+  if (!inbox) { toast('Kein Posteingang vorhanden.', 'error'); return; }
+  if (state.current.mailboxId === mb && state.current.folderId === inbox.id) { setView('kanban'); return; }
+  view = 'kanban';
+  store('mailView', 'kanban');
+  await selectFolder(mb, inbox.id);
+  applyReadingPaneLayout();
+}
 export function toggleView() { setView(view === 'kanban' ? 'list' : 'kanban'); }
 function kanbanPane() { return (state.config && state.config.kanbanReadingPane) || load('kanbanPane', 'bottom'); }
 function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
@@ -287,9 +298,8 @@ function folderNode(f, depth, opts = {}) {
     if (!raw) return;
     e.preventDefault();
     const data = JSON.parse(raw);
-    if (data.mailboxId !== f.mailboxId) { toast('Verschieben zwischen Postfächern wird nicht unterstützt.', 'error'); return; }
-    if (data.folderId === f.id) return;
-    moveOrCopy(data.ids, f.id, e.ctrlKey ? 'copy' : 'move').catch(reportError);
+    if (data.folderId === f.id && data.mailboxId === f.mailboxId) return;
+    moveOrCopy(data.ids, f.id, e.ctrlKey ? 'copy' : 'move', f.mailboxId).catch(reportError);
   });
   const frag = [node];
   if (open) {
@@ -1229,8 +1239,9 @@ async function deleteIds(ids, permanent) {
   checkInboxZero();
 }
 
-export async function moveOrCopy(ids, destFolderId, kind = 'move') {
+export async function moveOrCopy(ids, destFolderId, kind = 'move', destMailboxId = null) {
   const mailboxId = mbOf(ids);
+  if (destMailboxId && destMailboxId !== mailboxId) return transfer(ids, mailboxId, destMailboxId, destFolderId, kind);
   const dest = folderById(mailboxId, destFolderId);
   if (kind === 'move' && dest && dest.wellKnown === 'archive') {
     const node = els.nav && els.nav.querySelector(`.tree-node[data-folder-id="${CSS.escape(destFolderId)}"]`);
@@ -1240,6 +1251,25 @@ export async function moveOrCopy(ids, destFolderId, kind = 'move') {
   await call(kind === 'move' ? 'move_messages' : 'copy_messages', { mailboxId, ids, destFolderId });
   toast(`${ids.length} ${ids.length === 1 ? 'Element' : 'Elemente'} ${kind === 'move' ? 'verschoben' : 'kopiert'} nach „${dest ? dest.displayName : ''}".`);
   await refreshFolders(mailboxId);
+  if (kind === 'move') checkInboxZero();
+}
+
+/** Into a folder of another mailbox: the backend copies the whole message over. */
+async function transfer(ids, mailboxId, destMailboxId, destFolderId, kind) {
+  const dest = folderById(destMailboxId, destFolderId);
+  const target = `„${dest ? dest.displayName : ''}" (${(mailboxById(destMailboxId) || {}).address || ''})`;
+  const n = ids.length;
+  const what = `${n} ${n === 1 ? 'Element' : 'Elemente'}`;
+  toast(`${what} ${kind === 'move' ? 'werden verschoben' : 'werden kopiert'} nach ${target}…`, 'info');
+  if (kind === 'move') await removeFromList(ids);
+  try {
+    await call('transfer_messages', { mailboxId, ids, destMailboxId, destFolderId, copy: kind === 'copy' });
+  } catch (e) {
+    if (kind === 'move') await reloadList();
+    throw e;
+  }
+  toast(`${what} ${kind === 'move' ? 'verschoben' : 'kopiert'} nach ${target}.`);
+  await Promise.all([refreshFolders(mailboxId), refreshFolders(destMailboxId)]);
   if (kind === 'move') checkInboxZero();
 }
 
@@ -1286,8 +1316,7 @@ export async function unsnoozeSelected() {
 }
 
 /** Menu items listing all folders of the current mailbox (indented). */
-export function folderPickerItems(onPick, excludeId) {
-  const mbId = state.current.mailboxId;
+export function folderPickerItems(onPick, excludeId, mbId = state.current.mailboxId) {
   const fs = foldersOf(mbId);
   const ids = new Set(fs.map((f) => f.id));
   const out = [];
@@ -1303,10 +1332,21 @@ export function folderPickerItems(onPick, excludeId) {
 }
 
 export function moveMenuItems(kind = 'move') {
-  return folderPickerItems((f) => {
+  const pick = (f) => {
     const s = requireSelection();
-    if (s) return moveOrCopy(s.ids, f.id, kind);
-  }, state.current.folderId);
+    if (s) return moveOrCopy(s.ids, f.id, kind, f.mailboxId);
+  };
+  const src = mbOf(getSelection().ids) || state.current.mailboxId;
+  const items = folderPickerItems(pick, state.current.folderId, src);
+  // Other mailboxes (e.g. Gmail ↔ Microsoft 365): one submenu each.
+  const others = mailboxes().filter((m) => m.id !== src);
+  if (others.length) {
+    items.push({ separator: true });
+    for (const m of others) {
+      items.push({ label: m.address, icon: 'inbox', testid: 'mailbox-pick-' + m.address, submenu: () => folderPickerItems(pick, null, m.id) });
+    }
+  }
+  return items;
 }
 
 export function categoryMenuItems() {

@@ -211,3 +211,14 @@ test('Neu-Termin-Button öffnet Termin-Fenster', async ({ page }) => {
   expect(popup.url()).toContain('event.html');
   await popup.close({ runBeforeUnload: false });
 });
+
+test('Kanban-Knopf öffnet den Posteingang als Kanban', async ({ page }) => {
+  await openApp(page);
+  await openFolder(page, 'Gesendete Elemente');
+  await page.locator('[data-testid=tb-kanban]').click();
+  await expect(page.locator('.listpane .folder-name')).toHaveText('Posteingang');
+  await expect(page.locator('[data-testid=kanban-board]')).toBeVisible();
+  await page.screenshot({ path: 'test-results/kanban-btn.png', clip: { x: 0, y: 40, width: 700, height: 60 } });
+  // back to the list for the following tests
+  await page.evaluate(() => localStorage.setItem('mailView', JSON.stringify('list')));
+});

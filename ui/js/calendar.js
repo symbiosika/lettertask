@@ -205,7 +205,6 @@ async function addPeopleCalendar(acc) {
     buttons: [{ label: 'Hinzufügen', value: 'ok', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: (v) => {
       if (v !== 'ok') return v;
-      field.commit();
       const list = field.get().filter((x) => !x.invalid);
       if (!list.length) { toast('Bitte eine Person auswählen.', 'error'); return false; }
       return list;

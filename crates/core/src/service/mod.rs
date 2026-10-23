@@ -12,6 +12,7 @@ mod mail;
 mod signatures;
 mod snooze;
 mod tasks;
+mod transfer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -459,6 +460,18 @@ impl Service {
                 )
                 .await?;
                 ok(Value::Null)
+            }
+            "transfer_messages" => {
+                let n = self
+                    .transfer_messages(
+                        &arg::<String>(a, "mailboxId")?,
+                        &arg::<Vec<String>>(a, "ids")?,
+                        &arg::<String>(a, "destMailboxId")?,
+                        &arg::<String>(a, "destFolderId")?,
+                        arg::<Option<bool>>(a, "copy")?.unwrap_or(false),
+                    )
+                    .await?;
+                ok(json!({"count": n}))
             }
             "copy_messages" => {
                 self.move_messages(

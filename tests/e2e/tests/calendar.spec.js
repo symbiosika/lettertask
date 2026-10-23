@@ -82,3 +82,19 @@ test('Kalender von Personen werden angezeigt', async ({ page }) => {
   await page.locator('[data-testid=cal-item]', { hasText: 'Jonas Weber' }).locator('input').uncheck();
   await expect(page.locator('.ev', { hasText: 'Lieferantengespräch Tailspin' })).toHaveCount(0);
 });
+
+test('Kalender einer Person hinzufügen und wieder entfernen', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=nav-calendar]').click();
+  await page.locator('[data-testid=cal-add-person]').first().click();
+  const input = page.locator('.modal .rcpt-input');
+  await input.fill('kollegin@contoso.example');
+  await page.locator('.modal button', { hasText: 'Hinzufügen' }).click();
+  await expect(page.locator('.modal')).toHaveCount(0);
+  const item = page.locator('[data-testid=cal-item]', { hasText: 'kollegin@contoso.example' });
+  await expect(item).toBeVisible();
+  await expect(page.locator('[data-testid=cal-group]', { hasText: 'Kalender von Personen' })).toBeVisible();
+  await item.click({ button: 'right' });
+  await page.locator('.menu-item, [role=menuitem]', { hasText: 'Kalender entfernen' }).click();
+  await expect(item).toHaveCount(0);
+});

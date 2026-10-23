@@ -231,7 +231,7 @@ impl Service {
 
     /// Adds a file attachment; above 3 MB through an upload session.
     /// `content_id` makes it an inline attachment.
-    async fn upload_attachment(
+    pub(crate) async fn upload_attachment(
         c: &Arc<GraphClient>,
         prefix: &str,
         id: &str,
