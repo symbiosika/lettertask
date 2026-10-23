@@ -6,8 +6,8 @@ import {
   WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName, initials, avatarColor,
 } from './util.js';
 import { icon } from './icons.js';
-import { modal, reportError, toast, confirmDialog, showMenu, busyClick } from './dialogs.js';
-import { categoryHex, textOn } from './categories.js';
+import { modal, reportError, toast, confirmDialog, showMenu, busyClick, promptDialog } from './dialogs.js';
+import { categoryHex, textOn, swatchHtml } from './categories.js';
 import { state } from './state.js';
 import { isImap, accountLabel } from './accounts.js';
 import { fmtSnoozeTarget, snoozeOptions, computeSnooze } from './snooze.js';
@@ -183,7 +183,12 @@ export function renderNav() {
       if (c.id.startsWith('user:')) {
         item.addEventListener('contextmenu', (e) => {
           e.preventDefault();
-          showMenu([{ label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id) }], e.clientX, e.clientY);
+          showMenu([
+            { label: 'Umbenennen…', icon: 'edit', onClick: () => renamePeopleCalendar(a.id, c), testid: 'cal-rename' },
+            { label: 'Farbe', icon: 'tag', submenu: () => PEOPLE_COLORS.map(([hex, label]) => ({ label: label + (hex === (c.color || '').toLowerCase() ? '  ✓' : ''), iconHtml: swatchHtml(hex, 12), onClick: () => updatePeopleCalendar(a.id, c.id, { color: hex }), testid: 'cal-color-' + hex.slice(1) })), testid: 'cal-color' },
+            { separator: true },
+            { label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id), testid: 'cal-remove' },
+          ], e.clientX, e.clientY);
         });
       }
       sec.appendChild(item);
@@ -218,6 +223,21 @@ async function addPeopleCalendar(acc) {
     renderNav();
     await refresh();
   } catch (e) { reportError(e); }
+}
+
+const PEOPLE_COLORS = [['#e8a33d', 'Gelb'], ['#4aa564', 'Grün'], ['#3f8fd2', 'Blau'], ['#c2509b', 'Pink'], ['#8a63d2', 'Lila'], ['#d9534f', 'Rot'], ['#2bb3a3', 'Türkis'], ['#9c7b4f', 'Braun'], ['#5b6ee1', 'Indigo'], ['#e07b39', 'Orange']];
+
+async function updatePeopleCalendar(accountId, calendarId, patch) {
+  try {
+    cal.calendars.set(accountId, await call('update_people_calendar', { accountId, calendarId, ...patch }));
+    renderNav();
+    render();
+  } catch (e) { reportError(e); }
+}
+
+async function renamePeopleCalendar(accountId, c) {
+  const name = await promptDialog('Bezeichnung im Kalender:', { title: 'Kalender umbenennen', value: c.name, ok: 'Speichern' });
+  if (name) await updatePeopleCalendar(accountId, c.id, { name });
 }
 
 async function removePeopleCalendar(accountId, calendarId) {
