@@ -92,6 +92,17 @@ impl Service {
         })
     }
 
+    /// Stores a complete message (from another mailbox) in `folder`.
+    pub(crate) async fn imap_import(&self, mb: &str, folder: &str, raw: &[u8], seen: bool) -> Result<()> {
+        let flags = if seen { "(\\Seen)" } else { "()" };
+        with_imap!(self, mb, |c| {
+            c.selected = None;
+            timed(c.s().append(folder, Some(flags), None, raw)).await?;
+            Ok::<(), Error>(())
+        })?;
+        Ok(())
+    }
+
     async fn imap_remove(&self, mb: &str, id: &str) -> Result<()> {
         let Some((uv, uid, folder)) = im::parse_message_id(id) else {
             return Ok(());
