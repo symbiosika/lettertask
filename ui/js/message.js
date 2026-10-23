@@ -1,5 +1,5 @@
 // Standalone message window.
-import { call, params, openWindow, closeWindow, isTauri, on } from './api.js';
+import { call, params, openWindow, closeWindow, currentWindow, on } from './api.js';
 import { h, $ } from './util.js';
 import { modal, reportError, toast, showMenuAt, confirmDialog } from './dialogs.js';
 import { renderMessage } from './mailview.js';
@@ -34,7 +34,7 @@ async function load() {
     onManageCategories: () => import('./settings.js').then((m) => m.openCategoryManager(accountId)),
   });
   document.title = msg.subject || '(Kein Betreff)';
-  if (isTauri && window.__TAURI__.window) { try { window.__TAURI__.window.getCurrentWindow().setTitle(document.title); } catch { /* ignore */ } }
+  { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
   if (!msg.isRead) call('set_read', { mailboxId: P.mailboxId, ids: [msg.id], isRead: true }, { silent: true }).catch(() => {});
 }
 

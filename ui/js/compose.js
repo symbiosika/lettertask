@@ -1,5 +1,5 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
-import { call, params, closeWindow, isTauri, on } from './api.js';
+import { call, params, closeWindow, currentWindow, isTauri, isMobile, on } from './api.js';
 import { h, $, esc, fmtSize, fileToBase64, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
@@ -35,7 +35,7 @@ function markDirty() { st.dirty = true; }
 
 function renderHead() {
   const head = $('#head');
-  const more = h('button.icon-btn', { type: 'button', title: 'Weitere Optionen', 'aria-label': 'Weitere Optionen', dataset: { testid: 'compose-more' }, html: icon('menu', 18) });
+  const more = h('button.icon-btn', { type: 'button', title: 'Weitere Optionen', 'aria-label': 'Weitere Optionen', dataset: { testid: 'compose-more' }, html: icon(isMobile ? 'more' : 'menu', 18) });
   more.addEventListener('click', () => showMenuAt(more, [
     { label: 'Als Entwurf speichern', icon: 'save', shortcut: 'Strg+S', onClick: () => save(false), testid: 'compose-save' },
     { label: 'Verwerfen', icon: 'delete', onClick: () => discard(), testid: 'compose-discard' },
@@ -144,7 +144,7 @@ function renderForm() {
   });
   // In the app, file drops arrive from the backend (Tauri takes them over natively).
   if (isTauri) {
-    const w = window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow();
+    const w = currentWindow();
     const mine = (p) => p && w && p.label === w.label;
     on('files-drag', (p) => { if (mine(p)) document.body.classList.toggle('dropping', !!p.over); });
     on('files-dropped', (p) => {
@@ -251,7 +251,7 @@ function updateTitle() {
   const s = subject.value.trim() || MODE_TITLE[(st.draft && st.draft.mode) || P.mode || 'new'];
   document.title = s;
   if (titleEl) titleEl.textContent = s;
-  if (isTauri && window.__TAURI__.window) { try { window.__TAURI__.window.getCurrentWindow().setTitle(document.title); } catch { /* ignore */ } }
+  { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
 }
 
 function applyDraft(d) {
@@ -441,8 +441,8 @@ async function confirmClose() {
 }
 
 function setupClose() {
-  if (isTauri && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
-    const w = window.__TAURI__.window.getCurrentWindow();
+  const w = currentWindow();
+  if (w) {
     if (w.onCloseRequested) {
       w.onCloseRequested(async (event) => {
         if (st.closing) return;
@@ -451,6 +451,8 @@ function setupClose() {
       });
     }
   } else {
+    // Phone: the shell asks before it closes this frame (back button).
+    window.__ltBeforeClose = confirmClose;
     window.addEventListener('beforeunload', (e) => {
       if (st.closing) return;
       if (st.dirty) { e.preventDefault(); e.returnValue = ''; return; }

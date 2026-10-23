@@ -1,6 +1,6 @@
 // Calendar module of the main window: date navigator, calendar list, day/week/month views
 // and the "14 Tage" overview (appointments and due tasks/Wiedervorlagen per day).
-import { call, openWindow } from './api.js';
+import { call, openWindow, isMobile } from './api.js';
 import {
   h, esc, load, store, startOfDay, addDays, addMinutes, sameDay, startOfWeek, startOfMonth, fmtTime, fmtDateLong,
   WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName, initials, avatarColor,
@@ -542,7 +542,7 @@ function renderMonth() {
   const { start } = range();
   els.body.innerHTML = '';
   const grid = h('div.monthgrid');
-  for (const wd of [1, 2, 3, 4, 5, 6, 0]) grid.appendChild(h('div.mg-wd', WEEKDAYS[wd]));
+  for (const wd of [1, 2, 3, 4, 5, 6, 0]) grid.appendChild(h('div.mg-wd', (isMobile ? WEEKDAYS_SHORT : WEEKDAYS)[wd]));
   const today = startOfDay(new Date());
   const m = cal.date.getMonth();
   for (let i = 0; i < 42; i++) {
@@ -564,7 +564,9 @@ function renderMonth() {
       const st = new Date(d); st.setHours(9);
       newEvent({ start: st, end: addMinutes(st, 30) });
     });
-    cell.addEventListener('click', (e) => { if (!e.target.closest('.ev')) { cal.slot = { start: new Date(d.getTime() + 9 * 3600000), end: new Date(d.getTime() + 9.5 * 3600000) }; grid.querySelectorAll('.mg-cell.sel').forEach((x) => x.classList.remove('sel')); cell.classList.add('sel'); closePeek(); } });
+    // Phone: the bars are too small to tap – a tap on the day opens it.
+    if (isMobile) cell.addEventListener('click', () => { cal.date = d; setView('day'); });
+    else cell.addEventListener('click', (e) => { if (!e.target.closest('.ev')) { cal.slot = { start: new Date(d.getTime() + 9 * 3600000), end: new Date(d.getTime() + 9.5 * 3600000) }; grid.querySelectorAll('.mg-cell.sel').forEach((x) => x.classList.remove('sel')); cell.classList.add('sel'); closePeek(); } });
     grid.appendChild(cell);
   }
   els.body.appendChild(grid);

@@ -84,11 +84,12 @@ impl Host for TauriHost {
         Ok(())
     }
 
-    /// Mobile has a single window; separate compose/message/event windows
-    /// still need an in-app navigation (proof of concept).
+    /// Mobile has a single window: the page shows compose/message/event/task
+    /// as a full-screen layer (ui/js/mobile.js listens for this event).
     #[cfg(mobile)]
-    fn open_window(&self, _kind: &str, _query: &str) -> mailcore::Result<()> {
-        Err(mailcore::Error::invalid("Auf dem Smartphone noch nicht verfügbar."))
+    fn open_window(&self, kind: &str, query: &str) -> mailcore::Result<()> {
+        let _ = self.app.emit("open-window", serde_json::json!({ "kind": kind, "query": query }));
+        Ok(())
     }
 }
 
