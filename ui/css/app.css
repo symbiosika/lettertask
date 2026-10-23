@@ -651,6 +651,10 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .acc-name { font-weight: 600; font-size: 14px; }
 .acc-detail .wiz-grid { max-width: 560px; }
 .acc-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.shared-mbs { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 12px; }
+.acc-sub { font-weight: 600; }
+.shared-mb-list { display: flex; flex-direction: column; gap: 4px; }
+.shared-mb { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 
 /* settings: signatures */
 .sig-panel { display: flex; flex-direction: column; gap: 12px; }

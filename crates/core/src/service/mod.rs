@@ -367,6 +367,13 @@ impl Service {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
                 ok(Value::Null)
             }
+            "add_shared_mailbox" => ok(self
+                .add_shared_mailbox(&arg::<String>(a, "accountId")?, &arg::<String>(a, "address")?)
+                .await?),
+            "remove_shared_mailbox" => {
+                self.remove_shared_mailbox(&arg::<String>(a, "mailboxId")?)?;
+                ok(Value::Null)
+            }
             "set_active_folder" => {
                 let mb: String = arg(a, "mailboxId")?;
                 let f: String = arg(a, "folderId")?;
@@ -930,6 +937,74 @@ impl Service {
         self.opts.token_store.delete(account_id);
         self.forget_imap_account(account_id);
         self.clients.write().unwrap().remove(account_id);
+        self.emit("accounts-changed", json!({}));
+        Ok(())
+    }
+
+    /// Adds a shared (or delegated) Exchange mailbox to a Microsoft 365
+    /// account. Graph cannot list the mailboxes a user may open, so the
+    /// address is entered by hand; access is checked on the inbox.
+    pub async fn add_shared_mailbox(self: &Arc<Self>, account_id: &str, address: &str) -> Result<Mailbox> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Freigegebene Postfächer gibt es nur bei Microsoft-365-Konten."));
+        }
+        let address = address.trim().to_lowercase();
+        if !address.contains('@') || address.chars().any(|c| c.is_whitespace() || c == '/') {
+            return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse eingeben."));
+        }
+        let c = self.client(account_id)?;
+        let acc = self
+            .store
+            .list_accounts()?
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| Error::NotFound("Konto".into()))?;
+        if acc.mailboxes.iter().any(|m| m.address.eq_ignore_ascii_case(&address)) {
+            return Err(Error::invalid("Dieses Postfach ist bereits eingebunden."));
+        }
+        let prefix = format!("/users/{}", urlencoding::encode(&address));
+        if let Err(e) = c.get(&format!("{prefix}/mailFolders/inbox?$select=id")).await {
+            return Err(match e {
+                Error::Graph { status: 403, .. } => Error::invalid(
+                    "Kein Zugriff auf dieses Postfach. Entweder fehlt die Freigabe (Vollzugriff) in Exchange, \
+                     oder lettertask braucht die neue Berechtigung: Konto bitte einmal erneut anmelden.",
+                ),
+                Error::Graph { status: 404, .. } => Error::invalid("Dieses Postfach wurde nicht gefunden."),
+                other => other,
+            });
+        }
+        // Reading the name needs User.ReadBasic.All, which may not be granted.
+        let name = match c.get(&format!("{prefix}?$select=displayName")).await {
+            Ok(v) => v["displayName"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| address.clone());
+        let mailbox = Mailbox {
+            id: format!("{account_id}:{address}"),
+            account_id: account_id.to_string(),
+            address,
+            display_name: name,
+            kind: "shared".into(),
+        };
+        self.store.upsert_mailbox(&mailbox)?;
+        if let Err(e) = self.sync_folders(&mailbox.id).await {
+            self.store.delete_mailbox(&mailbox.id)?;
+            return Err(e);
+        }
+        if let Some(inbox) = self.store.folder_by_well_known(&mailbox.id, "inbox")? {
+            let _ = self.sync_folder(&mailbox.id, &inbox.id, true).await;
+        }
+        self.emit("accounts-changed", json!({}));
+        Ok(mailbox)
+    }
+
+    fn remove_shared_mailbox(&self, mailbox_id: &str) -> Result<()> {
+        let mb = self.store.get_mailbox(mailbox_id)?;
+        if mb.is_primary() {
+            return Err(Error::invalid("Das Hauptpostfach lässt sich nur mit dem Konto entfernen."));
+        }
+        self.store.delete_mailbox(mailbox_id)?;
+        self.active_folders.write().unwrap().remove(mailbox_id);
         self.emit("accounts-changed", json!({}));
         Ok(())
     }

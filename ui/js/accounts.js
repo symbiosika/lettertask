@@ -2,7 +2,7 @@
 import { call } from './api.js';
 import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
-import { modal, toast, reportError, busyClick, confirmDialog } from './dialogs.js';
+import { modal, toast, reportError, busyClick, confirmDialog, promptDialog } from './dialogs.js';
 
 const SECURITY = [['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unverschlüsselt)']];
 const DEFAULT_PORT = {
@@ -444,7 +444,42 @@ function lookEditor(acc, { onPreview, onChanged }) {
 }
 
 /** Account detail panel for the settings dialog ("Konten" tab). */
-export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
+/** Shared/delegated Exchange mailboxes of a Microsoft 365 account. */
+function sharedMailboxes(acc, { onSaved, onRelogin }) {
+  const shared = (acc.mailboxes || []).filter((m) => m.kind === 'shared');
+  const list = h('div.shared-mb-list', { dataset: { testid: 'shared-mb-list' } });
+  for (const m of shared) {
+    const rm = h('button.icon-btn.sm', { type: 'button', title: 'Postfach entfernen', 'aria-label': 'Postfach entfernen', html: icon('trash', 14), dataset: { testid: 'shared-mb-remove' } });
+    rm.addEventListener('click', busyClick(async () => {
+      const ok = await confirmDialog(`Postfach „${m.address}“ aus lettertask entfernen? Auf dem Server wird nichts gelöscht.`, { title: 'Postfach entfernen', danger: true, ok: 'Entfernen' });
+      if (!ok) return;
+      await call('remove_shared_mailbox', { mailboxId: m.id });
+      onSaved && onSaved();
+    }));
+    list.appendChild(h('div.shared-mb', { dataset: { testid: 'shared-mb' } },
+      h('span', { html: icon('inbox', 15) }),
+      h('span.acc-text', h('span.acc-n', m.displayName || m.address), h('span.acc-e', m.address)),
+      rm));
+  }
+  if (!shared.length) list.appendChild(h('div.dim', 'Keine freigegebenen Postfächer eingebunden.'));
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'shared-mb-add' }, html: icon('plus', 14) + ' Postfach hinzufügen…' });
+  add.addEventListener('click', busyClick(async () => {
+    const address = await promptDialog('E-Mail-Adresse des freigegebenen Postfachs (Sie brauchen in Exchange Vollzugriff darauf):', { title: 'Freigegebenes Postfach hinzufügen', placeholder: 'team@firma.de', ok: 'Hinzufügen' });
+    if (!address || !address.trim()) return;
+    const mb = await call('add_shared_mailbox', { accountId: acc.id, address: address.trim() });
+    toast(`Postfach ${mb.address} wurde hinzugefügt.`);
+    onSaved && onSaved();
+  }));
+  const relogin = onRelogin ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-relogin' }, html: icon('user', 14) + ' Erneut anmelden…' }) : null;
+  if (relogin) relogin.addEventListener('click', busyClick(() => onRelogin(acc)));
+  return h('div.shared-mbs',
+    h('div.acc-sub', 'Freigegebene Postfächer'),
+    list,
+    h('div.acc-actions', add, relogin),
+    h('p.note', 'Für Konten, die vor dieser Funktion angemeldet wurden, einmal „Erneut anmelden“ wählen, damit lettertask auf freigegebene Postfächer zugreifen darf.'));
+}
+
+export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRelogin }) {
   const box = h('div.acc-detail', { dataset: { testid: 'acc-detail' } });
   let avatar = accountAvatar(acc, 'xl');
   const header = h('div.acc-head',
@@ -466,6 +501,7 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
   if (!isImap(acc)) {
     box.append(
       h('p.note', 'Microsoft-365-Konto. Anmeldung, E-Mail, Kalender, Kontakte und Kategorien laufen über Microsoft Graph. Der Anzeigename wird von Microsoft 365 übernommen.'),
+      sharedMailboxes(acc, { onSaved, onRelogin }),
       h('div.acc-actions', remove));
     return box;
   }

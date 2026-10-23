@@ -316,6 +316,7 @@ function accountsPanel({ initialAccountId }) {
         onRemoved: async (x) => { if (await removeAccount(x)) render(); },
         onSaved: async () => { hooks.onAccountsChanged(); await reloadAccounts(); render(); },
         onAvatar: () => render(),
+        onRelogin: async () => { await loginWithWait(); await reloadAccounts(); render(); },
         onLook: (x) => {
           // state.accounts may already be a reloaded copy (accounts-changed).
           const cur = state.accounts.find((a) => a.id === x.id);
