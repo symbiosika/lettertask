@@ -286,6 +286,7 @@ function renderToolbar() {
       ['task', 'Neue Aufgabe (Strg+Umschalt+N)', () => newTask(), 'new-task'],
       ['calendarNew', 'Neuer Termin (Strg+Umschalt+A)', () => calendar.newEvent(), 'new-event'],
     ]));
+    lead.appendChild(tbBtn('', 'kanban', () => mail.openInboxKanban().catch(reportError), { testid: 'tb-kanban', title: 'Posteingang als Kanban öffnen', iconOnly: true }));
     tb.append(lead,
       h('div.ab-group',
         dep(tbBtn('Antworten', 'reply', () => mail.respond('reply'), { testid: 'tb-reply', title: 'Antworten (Strg+R)' })),

@@ -102,7 +102,7 @@ kbd { font-family: inherit; }
   display: flex; align-items: center; gap: 2px; height: 48px; padding: 0 10px 0 0; background: var(--bg);
   border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden;
 }
-.ab-lead { flex: none; width: var(--nav-w); padding: 0 12px; display: flex; align-items: center; }
+.ab-lead { flex: none; width: var(--nav-w); padding: 0 12px; display: flex; align-items: center; gap: 8px; }
 .ab-group { display: flex; align-items: center; gap: 2px; }
 .tb-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius-sm);

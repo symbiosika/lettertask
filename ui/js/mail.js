@@ -77,6 +77,17 @@ export function setView(v) {
   reloadList({ keepCount: false }).catch(reportError);
   if (kanbanActive()) board.focus(); else els.list.focus();
 }
+/** Posteingang of the selected mailbox as Kanban board (toolbar button). */
+export async function openInboxKanban() {
+  const mb = mailboxById(state.current.mailboxId) ? state.current.mailboxId : (mailboxes()[0] || {}).id;
+  const inbox = mb && wellKnown(mb, 'inbox');
+  if (!inbox) { toast('Kein Posteingang vorhanden.', 'error'); return; }
+  if (state.current.mailboxId === mb && state.current.folderId === inbox.id) { setView('kanban'); return; }
+  view = 'kanban';
+  store('mailView', 'kanban');
+  await selectFolder(mb, inbox.id);
+  applyReadingPaneLayout();
+}
 export function toggleView() { setView(view === 'kanban' ? 'list' : 'kanban'); }
 function kanbanPane() { return (state.config && state.config.kanbanReadingPane) || load('kanbanPane', 'bottom'); }
 function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
