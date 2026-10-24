@@ -151,7 +151,9 @@ impl Service {
         let people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         for p in people {
             let addr = p.address.to_lowercase();
-            if cals.iter().any(|k| k.owner.as_ref().is_some_and(|o| o.address.to_lowercase() == addr)) {
+            // Only the person's own (main) calendar makes this entry redundant:
+            // another calendar they share (e.g. "GYM") must not hide it.
+            if cals.iter().any(|k| is_main_calendar_of(k, &addr)) {
                 continue;
             }
             cals.push(Calendar {
@@ -266,10 +268,36 @@ impl Service {
     }
 
     pub(crate) async fn remove_people_calendar(&self, account_id: &str, calendar_id: &str) -> Result<Vec<Calendar>> {
+        if !calendar_id.starts_with(PEOPLE_PREFIX) {
+            return self.remove_shared_calendar(account_id, calendar_id).await;
+        }
         let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
         let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         people.retain(|p| !p.address.eq_ignore_ascii_case(address));
         self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
+        self.list_calendars(account_id).await
+    }
+
+    /// Removes a calendar someone else shared (e.g. added in Outlook) from
+    /// this account's list – also in Outlook. Own calendars are never deleted.
+    async fn remove_shared_calendar(&self, account_id: &str, calendar_id: &str) -> Result<Vec<Calendar>> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Dieser Kalender kann hier nicht entfernt werden."));
+        }
+        let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
+        let cal = known.iter().find(|c| c.id == calendar_id).ok_or_else(|| Error::NotFound("Kalender".into()))?;
+        if cal.owner.is_none() || cal.is_default {
+            return Err(Error::invalid("Eigene Kalender können hier nicht gelöscht werden – nur von anderen geteilte."));
+        }
+        let path = match cal.group_id.as_deref() {
+            Some(gid) => format!("/me/calendarGroups/{}/calendars/{}", seg(gid), seg(calendar_id)),
+            None => format!("/me/calendars/{}", seg(calendar_id)),
+        };
+        let c = self.client(account_id)?;
+        match c.delete(&path).await {
+            Err(e) if !e.is_not_found() => return Err(e),
+            _ => {}
+        }
         self.list_calendars(account_id).await
     }
 
@@ -702,6 +730,51 @@ impl Service {
     }
 }
 
+/// Whether `c` is the main calendar of the person `addr` as Outlook lists it
+/// under "Kalender von Personen": named after the person (or plainly
+/// "Kalender"/"Calendar"), not a further calendar they share.
+fn is_main_calendar_of(c: &Calendar, addr: &str) -> bool {
+    let Some(o) = c.owner.as_ref().filter(|o| o.address.eq_ignore_ascii_case(addr)) else {
+        return false;
+    };
+    let name = c.name.trim().to_lowercase();
+    let local = addr.split('@').next().unwrap_or("");
+    name == o.name.trim().to_lowercase()
+        || name == addr
+        || name == local
+        || matches!(name.as_str(), "kalender" | "calendar")
+}
+
 fn s_of(v: &Value) -> String {
     v["dateTime"].as_str().unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared(name: &str) -> Calendar {
+        Calendar {
+            id: "x".into(),
+            account_id: "a".into(),
+            name: name.into(),
+            color: None,
+            can_edit: false,
+            is_default: false,
+            group: Some("People's calendars".into()),
+            group_id: Some("g".into()),
+            owner: Some(Address { name: "Tobias Fieberling".into(), address: "fieberling@symbiosika.de".into() }),
+        }
+    }
+
+    #[test]
+    fn only_the_main_calendar_replaces_an_added_person() {
+        let addr = "fieberling@symbiosika.de";
+        assert!(is_main_calendar_of(&shared("Tobias Fieberling"), addr));
+        assert!(is_main_calendar_of(&shared("Kalender"), addr));
+        assert!(is_main_calendar_of(&shared("fieberling"), addr));
+        // A further calendar the person shares must not hide their own.
+        assert!(!is_main_calendar_of(&shared("GYM"), addr));
+        assert!(!is_main_calendar_of(&shared("Tobias Fieberling"), "someone@else.de"));
+    }
 }

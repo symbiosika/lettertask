@@ -443,3 +443,16 @@ async fn shared_calendars_get_own_label_and_colour() {
     assert_eq!(c.name, shared.name);
     assert_eq!(c.color.as_deref(), Some("#d9534f"), "colour stays");
 }
+
+#[tokio::test]
+async fn shared_calendar_can_be_removed_but_own_ones_not() {
+    let ctx = setup_at(now()).await;
+    let cals: Vec<Calendar> = call(&ctx.svc, "list_calendars", json!({"accountId": ctx.account})).await;
+    let shared = cals.iter().find(|c| c.owner.is_some() && !c.id.starts_with("user:")).expect("shared").clone();
+    let after: Vec<Calendar> =
+        call(&ctx.svc, "remove_people_calendar", json!({"accountId": ctx.account, "calendarId": shared.id})).await;
+    assert!(!after.iter().any(|c| c.id == shared.id));
+    let own = cals.iter().find(|c| c.owner.is_none()).unwrap();
+    let err = call_err(&ctx.svc, "remove_people_calendar", json!({"accountId": ctx.account, "calendarId": own.id})).await;
+    assert!(err.contains("Eigene Kalender"), "{err}");
+}
