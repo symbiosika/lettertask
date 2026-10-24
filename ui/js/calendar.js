@@ -9,13 +9,16 @@ import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenu, busyClick, promptDialog } from './dialogs.js';
 import { categoryHex, textOn, swatchHtml } from './categories.js';
 import { state } from './state.js';
-import { isImap, accountLabel } from './accounts.js';
+import { isImap, isGoogle, accountLabel } from './accounts.js';
 import { fmtSnoozeTarget, snoozeOptions, computeSnooze } from './snooze.js';
 import { dateTimeField } from './due.js';
 import { recipientField } from './recipients.js';
 
 /** Accounts with a calendar (IMAP accounts have none). */
-function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
+/** Accounts with a calendar: Microsoft 365 and Google sign-ins. */
+function calAccounts() { return state.accounts.filter((a) => !isImap(a) || isGoogle(a)); }
+/** Google accounts whose missing calendar permission was already reported. */
+const reportedGoogle = new Set();
 
 const SLOT_PX = 24; // per 30 minutes
 const DAY_START_WORK = 8, DAY_END_WORK = 17;
@@ -73,7 +76,11 @@ function refreshCalendarList() {
   const before = JSON.stringify([...cal.calendars.entries()]);
   calListRefresh = Promise.all(calAccounts().map(async (a) => {
     try { cal.calendars.set(a.id, (await call('list_calendars', { accountId: a.id }, { silent: true })) || []); }
-    catch (e) { console.warn(e); }
+    catch (e) {
+      console.warn(e);
+      // Signed in before calendars were part of the Google sign-in: say once what helps.
+      if (isGoogle(a) && !reportedGoogle.has(a.id)) { reportedGoogle.add(a.id); toast(`${accountLabel(a)}: ${e.message}`, 'error', 12000); }
+    }
   })).then(() => {
     if (JSON.stringify([...cal.calendars.entries()]) === before) return;
     renderNav();
@@ -170,7 +177,7 @@ export function renderNav() {
   els.nav.innerHTML = '';
   els.nav.appendChild(miniCalendar());
   if (!calAccounts().length) {
-    els.nav.appendChild(h('p.tree-hint.cal-none', { dataset: { testid: 'cal-none' } }, 'Kalender ist nur für Microsoft-365-Konten verfügbar.'));
+    els.nav.appendChild(h('p.tree-hint.cal-none', { dataset: { testid: 'cal-none' } }, 'Kalender gibt es für Microsoft-365- und Google-Konten.'));
   }
   for (const a of calAccounts()) {
     const sec = h('div.cal-list');
@@ -205,7 +212,7 @@ export function renderNav() {
       }
       sec.appendChild(item);
     }
-    sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
+    if (!isGoogle(a)) sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
       h('span', { html: icon('plus', 13) }), 'Kalender einer Person hinzufügen…'));
     els.nav.appendChild(sec);
   }
@@ -360,7 +367,7 @@ function render() {
     els.body.innerHTML = '';
     els.body.appendChild(h('div.empty.cal-empty', h('span.empty-ic', { html: icon('calendar', 48) }),
       h('div', { style: { fontWeight: '600', color: 'var(--text-2)' } }, 'Kein Kalender verfügbar'),
-      h('div', 'Kalender ist nur für Microsoft-365-Konten verfügbar. IMAP-Konten unterstützen nur E-Mail.')));
+      h('div', 'Kalender gibt es für Microsoft-365- und Google-Konten. Andere IMAP-Konten unterstützen nur E-Mail.')));
     onStatus();
     return;
   }

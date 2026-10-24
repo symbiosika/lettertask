@@ -10,6 +10,7 @@ import { createEditor } from './editor.js';
 import { tbBtn, group, setPressed } from './toolbar.js';
 import { getCategories, presetHex, swatchHtml, textOn, categoryHex } from './categories.js';
 import { state, bootstrapSecondary } from './state.js';
+import { isImap, isGoogle } from './accounts.js';
 
 const P = params();
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -62,7 +63,7 @@ function renderToolbar() {
         tbBtn('Ablehnen', 'decline', () => respond('decline')),
       ),
       group(tbBtn('Löschen', 'delete', () => del())),
-      st.event && st.event.onlineMeetingUrl ? group(tbBtn('Teams beitreten', 'teams', () => import('./api.js').then((m) => m.openUrl(st.event.onlineMeetingUrl)))) : null,
+      st.event && st.event.onlineMeetingUrl ? group(tbBtn(meetingLabel() + ' beitreten', 'teams', () => import('./api.js').then((m) => m.openUrl(st.event.onlineMeetingUrl)))) : null,
     );
     return;
   }
@@ -72,7 +73,7 @@ function renderToolbar() {
   showAs.addEventListener('change', () => { st.showAs = showAs.value; dirty(); });
   const rem = h('select.input', { title: 'Erinnerung vor Beginn', 'aria-label': 'Erinnerung', dataset: { testid: 'ev-reminder' } }, ...REMINDERS.map(([v, l]) => h('option', { value: String(v), selected: st.reminder === v }, l)));
   rem.addEventListener('change', () => { st.reminder = Number(rem.value); dirty(); });
-  const teams = tbBtn('Teams-Besprechung', 'teams', () => { st.online = !st.online; setPressed(teams, st.online); dirty(); }, { toggle: true, testid: 'ev-teams' });
+  const teams = tbBtn(google() ? 'Google Meet' : 'Teams-Besprechung', 'teams', () => { st.online = !st.online; setPressed(teams, st.online); dirty(); }, { toggle: true, testid: 'ev-teams' });
   setPressed(teams, st.online);
   const priv = tbBtn('Privat', 'lock', () => { st.sensitivity = st.sensitivity === 'private' ? 'normal' : 'private'; setPressed(priv, st.sensitivity === 'private'); dirty(); }, { toggle: true });
   setPressed(priv, st.sensitivity === 'private');
@@ -87,9 +88,14 @@ function renderToolbar() {
       h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' }, title: 'Anzeigen als' }, h('span', { html: icon('clock', 14) }), showAs),
       h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' }, title: 'Erinnerung vor Beginn' }, h('span', { html: icon('bell', 14) }), rem))),
     group(series),
-    group(tbBtn('Kategorisieren', 'tag', (b) => showMenuAt(b, categoryItems()), { caret: true, testid: 'ev-categorize' }), priv, hi),
+    // Google calendars know no categories (and no importance).
+    google() ? group(priv) : group(tbBtn('Kategorisieren', 'tag', (b) => showMenuAt(b, categoryItems()), { caret: true, testid: 'ev-categorize' }), priv, hi),
   );
 }
+
+/** Event of a Google account (Google Meet instead of Teams, no categories). */
+function google() { const a = state.accounts.find((x) => x.id === st.accountId); return !!a && isGoogle(a); }
+function meetingLabel() { return /meet\.google\.com/.test((st.event && st.event.onlineMeetingUrl) || '') ? 'Meet' : 'Teams'; }
 
 function categoryItems() {
   return [
@@ -396,7 +402,7 @@ function renderReadOnly(ev) {
 
 async function init() {
   try { await bootstrapSecondary(); } catch (e) { reportError(e); }
-  if (!st.accountId) { const o = state.accounts.find((a) => a.kind !== 'imap') || state.accounts[0]; st.accountId = o && o.id; }
+  if (!st.accountId) { const o = state.accounts.find((a) => !isImap(a) || isGoogle(a)) || state.accounts[0]; st.accountId = o && o.id; }
   renderForm();
   // Calendar list and event load in parallel; the form is already on screen.
   const calendarsP = call('list_calendars', { accountId: st.accountId, cached: true }, { silent: true }).catch((e) => { reportError(e); return []; });

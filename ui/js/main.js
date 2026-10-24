@@ -11,7 +11,7 @@ import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
 import { initCalPanel, toggleCalPanel, calPanelOpen, showCalPanelHost, onCalPanelChanged } from './calpanel.js';
-import { isImap, accountAvatar } from './accounts.js';
+import { isImap, isGoogle, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { dateTimeField } from './due.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
@@ -176,6 +176,7 @@ function accountChip() {
 function appMenu() {
   const acc = state.accounts[0] && state.accounts[0].id;
   const o365 = state.accounts.find((a) => !isImap(a));
+  const withCalendar = state.accounts.find((a) => !isImap(a) || isGoogle(a));
   const c = state.config || {};
   const setCfg = async (patch) => {
     state.config = await call('save_config', { config: { ...state.config, ...patch } });
@@ -184,7 +185,7 @@ function appMenu() {
   return [
     { label: 'Neue E-Mail', icon: 'mail', shortcut: 'Strg+N', onClick: () => mail.newMail() },
     { label: 'Neue Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', disabled: !acc, onClick: () => newTask() },
-    { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', disabled: !o365, onClick: () => calendar.newEvent() },
+    { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', disabled: !withCalendar, onClick: () => calendar.newEvent() },
     { label: 'Neuer Kontakt', icon: 'contacts', disabled: !acc, onClick: () => { setMode('contacts'); contacts.newContact().catch(reportError); } },
     { separator: true },
     { label: 'Ansicht', icon: 'workWeek', submenu: () => [

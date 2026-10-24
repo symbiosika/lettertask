@@ -4,11 +4,11 @@ import { h, esc, initials, avatarColor, debounce, load, store, EMAIL_RE } from '
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, showMenu, busyClick } from './dialogs.js';
 import { state, mailboxes } from './state.js';
-import { isImap, kindLabel, kindClass, accountLabel } from './accounts.js';
+import { isImap, isGoogle, kindLabel, kindClass, accountLabel } from './accounts.js';
 import { makeSplitter } from './mail.js';
 
 const PHONE_KINDS = [['business', 'Geschäftlich'], ['mobile', 'Mobil'], ['home', 'Privat']];
-const SOURCE_LABEL = { o365: 'Microsoft 365', local: 'Lokal', collected: 'Gesammelt' };
+const SOURCE_LABEL = { o365: 'Microsoft 365', google: 'Google', local: 'Lokal', collected: 'Gesammelt' };
 
 const ct = {
   source: load('contactsSource', 'all'), // 'all' | 'collected' | accountId
@@ -98,7 +98,7 @@ export async function reload() {
 }
 
 export async function sync() {
-  await Promise.all(state.accounts.filter((a) => !isImap(a)).map((a) => call('sync_contacts', { accountId: a.id }, { silent: true }).catch((e) => console.warn(e))));
+  await Promise.all(state.accounts.filter((a) => !isImap(a) || isGoogle(a)).map((a) => call('sync_contacts', { accountId: a.id }, { silent: true }).catch((e) => console.warn(e))));
   await reload();
 }
 
@@ -224,7 +224,7 @@ export async function editContact(c, accountId) {
   const job = inp('jobTitle', v.jobTitle, 'Position');
   const notes = h('textarea.input', { name: 'notes', rows: 3 });
   notes.value = v.notes || '';
-  const accSel = h('select.input', { name: 'contactAccount' }, ...state.accounts.map((a) => h('option', { value: a.id, selected: a.id === accountId }, `${accountLabel(a)} (${isImap(a) ? 'lokal' : 'Microsoft 365'})`)));
+  const accSel = h('select.input', { name: 'contactAccount' }, ...state.accounts.map((a) => h('option', { value: a.id, selected: a.id === accountId }, `${accountLabel(a)} (${isGoogle(a) ? 'Google' : isImap(a) ? 'lokal' : 'Microsoft 365'})`)));
 
   const emailsHost = h('div.ct-multi', { dataset: { testid: 'ct-emails' } });
   const renderEmails = () => {
@@ -292,7 +292,7 @@ export async function editContact(c, accountId) {
 export async function deleteContact(c) {
   c = c || selectedContact();
   if (!c || c.readOnly) return;
-  if (!(await confirmDialog(`Kontakt „${c.displayName || c.emails[0]}“ löschen?${c.source === 'o365' ? ' Er wird auch in Microsoft 365 gelöscht.' : ''}`, { danger: true, ok: 'Löschen', title: 'Kontakt löschen' }))) return;
+  if (!(await confirmDialog(`Kontakt „${c.displayName || c.emails[0]}“ löschen?${c.source === 'o365' ? ' Er wird auch in Microsoft 365 gelöscht.' : c.source === 'google' ? ' Er wird auch in Google gelöscht.' : ''}`, { danger: true, ok: 'Löschen', title: 'Kontakt löschen' }))) return;
   await call('delete_contact', { id: c.id });
   ct.selectedId = null;
   await reload();

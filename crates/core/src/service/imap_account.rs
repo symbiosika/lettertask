@@ -138,7 +138,7 @@ impl Service {
     }
 
     /// Valid access token of a Google account, refreshed when needed.
-    async fn google_access_token(&self, account_id: &str) -> Result<String> {
+    pub(crate) async fn google_access_token(&self, account_id: &str) -> Result<String> {
         if let Some(t) = self.google_tokens.lock().unwrap().get(account_id) {
             if !t.needs_refresh() {
                 return Ok(t.access_token.clone());

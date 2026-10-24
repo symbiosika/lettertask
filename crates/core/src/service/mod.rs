@@ -4,6 +4,7 @@ mod calendar;
 mod categories;
 mod compose;
 mod contacts;
+mod google_cal;
 mod imap_account;
 mod imap_compose;
 mod imap_mail;
@@ -56,6 +57,8 @@ pub struct Service {
     pub(crate) imap: crate::imap::conn::Pool,
     /// Access tokens of accounts signed in with Google.
     google_tokens: std::sync::Mutex<HashMap<String, TokenSet>>,
+    /// Roots of the Google Calendar and People APIs.
+    google_api: RwLock<(String, String)>,
     /// Mails sent in the background, in order, to one worker (started on demand).
     send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
     /// Mails queued or being sent in the background.
@@ -207,6 +210,7 @@ impl Service {
             last_sync: RwLock::new(None),
             imap: Default::default(),
             google_tokens: Default::default(),
+            google_api: RwLock::new((crate::gapi::DEFAULT_API_BASE.into(), crate::gapi::DEFAULT_PEOPLE_BASE.into())),
             send_queue: Default::default(),
             pending_sends: Default::default(),
             reminders: Default::default(),

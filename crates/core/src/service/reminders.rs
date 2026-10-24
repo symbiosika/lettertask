@@ -114,7 +114,7 @@ impl Service {
         let mut out = Vec::new();
         let mut any = false;
         for acc in self.store.list_accounts().ok()? {
-            if crate::imap::is_imap_id(&acc.id) {
+            if crate::imap::is_imap_id(&acc.id) && !self.is_google_account(&acc.id) {
                 continue;
             }
             let cals: Vec<Calendar> = match self.store.get_account_json(&acc.id, "calendars").ok().flatten() {

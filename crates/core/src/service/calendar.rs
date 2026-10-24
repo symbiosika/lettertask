@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::graph::{seg, GraphClient};
 use crate::model::*;
 
-const CACHE_KEY: &str = "calendars";
+pub(super) const CACHE_KEY: &str = "calendars";
 /// Colleagues' calendars added inside the app (list of addresses).
 const PEOPLE_KEY: &str = "people_calendars";
 /// Calendar id prefix of such a calendar: "user:<address>".
@@ -37,6 +37,9 @@ fn utc_header() -> [(&'static str, String); 1] {
 
 impl Service {
     pub(crate) async fn list_calendars(&self, account_id: &str) -> Result<Vec<Calendar>> {
+        if self.is_google_account(account_id) {
+            return self.google_list_calendars(account_id).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Ok(vec![]);
         }
@@ -289,13 +292,16 @@ impl Service {
         start: &str,
         end: &str,
     ) -> Result<Vec<Event>> {
-        if crate::imap::is_imap_id(account_id) {
-            return Ok(vec![]);
-        }
         let start = convert::normalize_utc(start);
         let end = convert::normalize_utc(end);
         if start.is_empty() || end.is_empty() || start >= end {
             return Err(Error::invalid("Ungültiger Zeitraum"));
+        }
+        if self.is_google_account(account_id) {
+            return self.google_list_events(account_id, calendar_ids, &start, &end).await;
+        }
+        if crate::imap::is_imap_id(account_id) {
+            return Ok(vec![]);
         }
         let c = self.client(account_id)?;
         let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
@@ -416,6 +422,9 @@ impl Service {
     }
 
     pub(crate) async fn get_event(&self, account_id: &str, event_id: &str) -> Result<EventDetail> {
+        if self.is_google_account(account_id) {
+            return self.google_get_event(account_id, event_id).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -503,6 +512,10 @@ impl Service {
     }
 
     pub(crate) async fn create_event(&self, account_id: &str, calendar_id: &str, input: EventInput) -> Result<Event> {
+        if self.is_google_account(account_id) {
+            Self::validate_event(&input)?;
+            return self.google_create_event(account_id, calendar_id, &input).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -530,6 +543,10 @@ impl Service {
     }
 
     pub(crate) async fn update_event(&self, account_id: &str, event_id: &str, input: EventInput) -> Result<Event> {
+        if self.is_google_account(account_id) {
+            Self::validate_event(&input)?;
+            return self.google_update_event(account_id, event_id, &input).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -581,6 +598,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_event(&self, account_id: &str, event_id: &str) -> Result<()> {
+        if self.is_google_account(account_id) {
+            return self.google_delete_event(account_id, event_id).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -599,6 +619,9 @@ impl Service {
         comment: &str,
         send_response: bool,
     ) -> Result<()> {
+        if self.is_google_account(account_id) {
+            return self.google_respond_event(account_id, event_id, response, comment, send_response).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
