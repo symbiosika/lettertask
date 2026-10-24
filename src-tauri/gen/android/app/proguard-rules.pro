@@ -22,3 +22,11 @@
 
 # Called from Rust through JNI (src-tauri/src/android.rs): keep names.
 -keep class de.symbiosika.lettertask.LettertaskNative { *; }
+
+# WorkManager creates its Room database and workers by reflection; R8 in full
+# mode removes their constructors otherwise ("NoSuchMethodException:
+# WorkDatabase_Impl.<init>" at app start).
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}

@@ -219,6 +219,8 @@ pub fn run() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
+    #[cfg(target_os = "android")]
+    android::log_panics();
     let demo = mobile_demo() || std::env::args().any(|a| a == "--demo");
 
     tauri::Builder::default()
@@ -267,7 +269,9 @@ pub fn run() {
             };
             #[cfg(target_os = "android")]
             android::set_service(svc.clone());
-            svc.start_background_sync();
+            // Spawns tasks: needs the async runtime's context.
+            let bg = svc.clone();
+            tauri::async_runtime::block_on(async move { bg.start_background_sync() });
             app.manage(svc);
             if let Some(w) = app.get_webview_window("main") {
                 disable_pinch_zoom(&w);

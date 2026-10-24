@@ -141,6 +141,28 @@ fn to_jstring(env: &mut JNIEnv, v: Value) -> jstring {
     env.new_string(v.to_string()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+extern "C" {
+    fn __android_log_write(prio: i32, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> i32;
+}
+
+/// Writes to logcat (tag "lettertask"); stdout and stderr go nowhere on Android.
+pub(crate) fn log_error(text: &str) {
+    let tag = c"lettertask";
+    if let Ok(msg) = std::ffi::CString::new(text.replace('\0', " ")) {
+        // 6 = ANDROID_LOG_ERROR
+        unsafe { __android_log_write(6, tag.as_ptr(), msg.as_ptr()) };
+    }
+}
+
+/// A panic aborts the app on Android; at least its message reaches logcat.
+pub(crate) fn log_panics() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log_error(&format!("Absturz: {info}"));
+        prev(info);
+    }));
+}
+
 // ---- called from Kotlin (LettertaskNative) ----
 
 #[no_mangle]
