@@ -243,8 +243,66 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       { label: 'Zitat', icon: 'quote', onClick: () => exec('formatBlock', 'blockquote') },
       { label: 'Normaler Text', onClick: () => exec('formatBlock', 'p') },
       { label: 'Horizontale Linie', onClick: () => exec('insertHorizontalRule') },
+      { label: 'Link entfernen', icon: 'link', onClick: removeLink },
     ]);
   });
+  /** Link around the selection: <a> it lies in, else null. */
+  const linkAt = (range) => {
+    const n = range && range.commonAncestorContainer;
+    const el = n && (n.nodeType === 1 ? n : n.parentElement);
+    return el && el.closest ? el.closest('a[href]') : null;
+  };
+  /** "www.x.de" → https://…, "a@b.de" → mailto:…; anything else non-http(s)/mailto is refused. */
+  const normalizeUrl = (v) => {
+    v = (v || '').trim();
+    if (!v || /^(https?:\/\/|mailto:)?$/i.test(v)) return null;
+    if (/^(https?:\/\/|mailto:)/i.test(v)) return v;
+    if (/^[^\s/@:]+@[^\s/@]+\.[^\s/@]+$/.test(v)) return 'mailto:' + v;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(v) && !/^[^:/]+:\d/.test(v)) return null;
+    return 'https://' + v.replace(/^\/+/, '');
+  };
+  // Done on the DOM rather than with execCommand('createLink'), which WebKit
+  // ignores in the sandboxed frame once the selection was lost to the dialog.
+  async function editLink() {
+    if (!doc) return;
+    const d = doc;
+    const sel = d.getSelection();
+    const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    const existing = linkAt(range);
+    const input = await promptDialog('Adresse:', { title: existing ? 'Link bearbeiten' : 'Link einfügen', value: existing ? existing.getAttribute('href') : 'https://' });
+    if (input == null || d !== doc) return;
+    const url = normalizeUrl(input);
+    if (!url) return;
+    frame.contentWindow.focus();
+    if (existing) {
+      if (existing.textContent === existing.getAttribute('href')) existing.textContent = url;
+      existing.setAttribute('href', url);
+    } else {
+      const r = range || (() => { const x = d.createRange(); x.selectNodeContents(d.body); x.collapse(false); return x; })();
+      const a = d.createElement('a');
+      a.setAttribute('href', url);
+      if (r.collapsed) a.textContent = url.replace(/^mailto:/i, '');
+      else {
+        // Links nested in the selection are replaced by the new one.
+        const frag = r.extractContents();
+        frag.querySelectorAll('a').forEach((x) => x.replaceWith(...x.childNodes));
+        a.appendChild(frag);
+      }
+      r.insertNode(a);
+      const after = d.createRange();
+      after.setStartAfter(a); after.collapse(true);
+      sel.removeAllRanges(); sel.addRange(after);
+    }
+    onInput && onInput();
+    updateState();
+  }
+  function removeLink() {
+    const sel = doc && doc.getSelection();
+    const a = linkAt(sel && sel.rangeCount ? sel.getRangeAt(0) : null);
+    if (!a) return;
+    a.replaceWith(...a.childNodes);
+    onInput && onInput();
+  }
   const sep = () => h('span.ed-sep');
 
   const toolbar = h('div.ed-toolbar',
@@ -257,16 +315,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     btn('numbers', 'Nummerierung', () => exec('insertOrderedList')),
     btn('outdent', 'Einzug verkleinern', () => exec('outdent')),
     btn('indent', 'Einzug vergrößern', () => exec('indent')), sep(),
-    btn('link', 'Link einfügen', async () => {
-      const sel = doc && doc.getSelection();
-      const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-      const url = await promptDialog('Adresse:', { title: 'Link einfügen', value: 'https://' });
-      if (!url || !/^(https?:|mailto:)/i.test(url)) return;
-      frame.contentWindow.focus();
-      if (range) { sel.removeAllRanges(); sel.addRange(range); }
-      if (!range || range.collapsed) exec('insertHTML', `<a href="${url.replace(/"/g, '&quot;')}">${url.replace(/</g, '&lt;')}</a>`);
-      else exec('createLink', url);
-    }),
+    btn('link', 'Link einfügen/bearbeiten', () => editLink()),
     btn('clearFormat', 'Formatierung löschen', () => exec('removeFormat')),
     moreBtn,
   );
