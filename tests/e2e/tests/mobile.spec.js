@@ -37,6 +37,12 @@ test('Handy: App-Leiste und Navigation statt Desktop-Werkzeugleiste', async ({ p
   await expect(page.locator('[data-testid=m-tab-mail]')).toHaveClass(/on/);
   // nothing may widen the page (Chrome would zoom the whole layout out)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(393);
+  // the list scrolls itself instead of growing past the screen
+  const list = await page.locator('#msglist').evaluate((e) => ({ h: e.clientHeight, sh: e.scrollHeight }));
+  expect(list.h).toBeLessThan(852);
+  expect(list.sh).toBeGreaterThan(list.h);
+  await page.locator('#msglist').evaluate((e) => { e.scrollTop = 400; });
+  expect(await page.locator('#msglist').evaluate((e) => e.scrollTop)).toBeGreaterThan(0);
 
   await page.locator('[data-testid=m-tab-calendar]').tap();
   await expect(page.locator('[data-testid=sprint-day]').first()).toBeVisible();

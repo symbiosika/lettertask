@@ -3,7 +3,7 @@
 import { call, openWindow, isMobile } from './api.js';
 import {
   h, esc, load, store, startOfDay, addDays, addMinutes, sameDay, startOfWeek, startOfMonth, fmtTime, fmtDateLong,
-  WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName, initials, avatarColor,
+  WEEKDAYS, WEEKDAYS_SHORT, MONTHS, toLocalIso, pad, displayName, initials, avatarColor, touchInput,
 } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenu, busyClick, promptDialog } from './dialogs.js';
@@ -942,7 +942,7 @@ function hideHover(now = false) {
 }
 function attachHover(el, ev) {
   el.addEventListener('mouseenter', () => {
-    if (peekEl) return;
+    if (peekEl || touchInput()) return;
     clearTimeout(hoverHide);
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {

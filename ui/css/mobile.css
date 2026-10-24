@@ -136,8 +136,9 @@ html.mobile .m-drawer .tree-root { min-height: 42px; font-size: 13px; }
 html.mobile .m-drawer .sb-status { position: sticky; bottom: 0; margin-top: auto; padding: 10px 18px 12px; font-size: 13px; border-top: 1px solid var(--border); background: var(--bg); }
 
 /* ================================================================ mail list */
-html.mobile body.m-app .mailview { position: relative; flex-direction: column; }
-html.mobile body.m-app .listpane { width: auto !important; height: auto !important; min-width: 0; flex: 1; border: 0; position: relative; }
+/* min-height: 0 down the flex column, or the list grows instead of scrolling */
+html.mobile body.m-app .mailview { position: relative; flex-direction: column; min-height: 0; }
+html.mobile body.m-app .listpane { width: auto !important; height: auto !important; min-width: 0; min-height: 0; flex: 1; border: 0; position: relative; }
 html.mobile body.m-app .mailview > .splitter { display: none !important; }
 html.mobile body.m-app .list-head { padding: 8px 12px 8px; border-bottom: 1px solid var(--border); }
 html.mobile body.m-app .lh-title { display: none; }
@@ -288,11 +289,11 @@ html.mobile .peek {
   border-radius: 22px 22px 0 0; padding-bottom: calc(14px + var(--m-bottom)); z-index: 2300; box-shadow: 0 -8px 30px rgba(16, 24, 40, .2);
 }
 html.mobile .peek .btn { min-height: 42px; }
-html.mobile .ev-hover, html.mobile .hovercard { display: none !important; }
+html.mobile .peek.hover { display: none !important; }
 
 /* ================================================================ contacts */
 html.mobile body.m-app .contactsview { position: relative; }
-html.mobile body.m-app .ct-listpane { width: auto !important; flex: 1; border: 0; min-width: 0; }
+html.mobile body.m-app .ct-listpane { width: auto !important; flex: 1; border: 0; min-width: 0; min-height: 0; }
 html.mobile body.m-app .contactsview > .splitter { display: none !important; }
 html.mobile .ct-row { min-height: 60px; padding: 8px 18px; gap: 14px; }
 html.mobile .ct-letter { padding: 14px 18px 4px; }

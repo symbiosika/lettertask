@@ -1,10 +1,12 @@
 // Transport to the Rust service layer. See docs/API.md.
 
 // On the phone the compose/message/event/task "windows" are full-screen frames
-// inside the main page (see mobile.js); they use the main page's bridge.
+// inside the main page (see mobile.js). They always use the main page's
+// bridge: Android injects Tauri into frames too, but delivers the answers to
+// the main page only, so a frame's own calls would never return.
 export const framed = window.parent !== window;
 function parentTauri() { try { return framed ? window.parent.__TAURI__ : null; } catch { return null; } }
-const TAURI = window.__TAURI__ || parentTauri();
+const TAURI = parentTauri() || window.__TAURI__;
 export const isTauri = !!(TAURI && TAURI.core);
 
 /** Phone layout: Android/iOS app, a phone browser, or `?mobile=1` (tests). */
