@@ -1,6 +1,9 @@
 //! The app itself; `main.rs` (desktop) and the Android/iOS entry point both
 //! start it through `run()`.
 
+#[cfg(target_os = "android")]
+mod android;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -171,6 +174,44 @@ fn navigation_guard() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .build()
 }
 
+/// The phone build runs against the built-in demo server unless it was built
+/// with `LETTERTASK_DEMO=0` (real accounts).
+pub(crate) fn mobile_demo() -> bool {
+    cfg!(mobile) && option_env!("LETTERTASK_DEMO") != Some("0")
+}
+
+/// Options for the real (non-demo) service in `dir`.
+pub(crate) fn real_options(dir: PathBuf) -> ServiceOptions {
+    #[cfg(desktop)]
+    let tokens: Arc<dyn TokenStore> = Arc::new(mailcore::tokens::KeyringTokenStore::new("lettertask", dir.join("tokens.json")));
+    // No keyring crate backend on mobile; the app data dir is private to the
+    // app. TODO: Android Keystore.
+    #[cfg(mobile)]
+    let tokens: Arc<dyn TokenStore> = Arc::new(mailcore::tokens::FileTokenStore::new(dir.join("tokens.json")));
+    ServiceOptions {
+        data_dir: dir,
+        graph_base: mailcore::graph::DEFAULT_GRAPH_BASE.to_string(),
+        authority: mailcore::auth::DEFAULT_AUTHORITY.to_string(),
+        demo: false,
+        token_store: tokens,
+    }
+}
+
+/// Demo: a fake Graph server in this process and a throw-away data dir.
+async fn demo_options(tmp: PathBuf) -> ServiceOptions {
+    let fake = graph_fake::spawn(graph_fake::FakeOptions { seed_demo: true, now: chrono::Utc::now() }).await;
+    let base = fake.base_url.clone();
+    // Keep the fake server alive for the whole process.
+    std::mem::forget(fake);
+    ServiceOptions {
+        data_dir: tmp.join(format!("lettertask-demo-{}", std::process::id())),
+        graph_base: format!("{base}/v1.0"),
+        authority: base,
+        demo: true,
+        token_store: Arc::new(MemoryTokenStore::default()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -178,8 +219,7 @@ pub fn run() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    // Proof of concept: the mobile build always starts in demo mode.
-    let demo = cfg!(mobile) || std::env::args().any(|a| a == "--demo");
+    let demo = mobile_demo() || std::env::args().any(|a| a == "--demo");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -190,61 +230,44 @@ pub fn run() {
         .on_window_event(on_window_event)
         .setup(move |app| {
             let handle = app.handle().clone();
-            let host = Arc::new(TauriHost { app: handle.clone() });
-            let svc = tauri::async_runtime::block_on(async move {
-                let (data_dir, graph_base, authority, tokens): (PathBuf, String, String, Arc<dyn TokenStore>) =
-                    if demo {
-                        let fake = graph_fake::spawn(graph_fake::FakeOptions {
-                            seed_demo: true,
-                            now: chrono::Utc::now(),
-                        })
-                        .await;
+            let host: Arc<dyn mailcore::Host> = Arc::new(TauriHost { app: handle.clone() });
+            // Android: the background worker or push service may have started
+            // the service before the window; the window then joins it.
+            #[cfg(target_os = "android")]
+            let (host, existing) = (android::host_with_ui(host), android::service());
+            #[cfg(not(target_os = "android"))]
+            let existing: Option<Arc<Service>> = None;
+            let svc = match existing {
+                Some(svc) => svc,
+                None => tauri::async_runtime::block_on(async move {
+                    let opts = if demo {
                         // Android apps may not write to the system temp dir.
                         let tmp = if cfg!(mobile) {
                             handle.path().app_cache_dir().expect("app cache dir")
                         } else {
                             std::env::temp_dir()
                         };
-                        let dir = tmp.join(format!("lettertask-demo-{}", std::process::id()));
-                        let base = fake.base_url.clone();
-                        // Keep the fake server alive for the whole process.
-                        std::mem::forget(fake);
-                        (dir, format!("{base}/v1.0"), base, Arc::new(MemoryTokenStore::default()))
+                        demo_options(tmp).await
                     } else {
-                        let dir = handle.path().app_data_dir().expect("app data dir");
-                        #[cfg(desktop)]
-                        let tokens = Arc::new(mailcore::tokens::KeyringTokenStore::new(
-                            "lettertask",
-                            dir.join("tokens.json"),
-                        ));
-                        // No keyring crate backend on mobile; the app data dir is
-                        // private to the app. TODO: Android Keystore.
-                        #[cfg(mobile)]
-                        let tokens = Arc::new(mailcore::tokens::FileTokenStore::new(dir.join("tokens.json")));
-                        (
-                            dir,
-                            mailcore::graph::DEFAULT_GRAPH_BASE.to_string(),
-                            mailcore::auth::DEFAULT_AUTHORITY.to_string(),
-                            tokens,
-                        )
+                        let app_dir = || handle.path().app_data_dir().expect("app data dir");
+                        // Android: where the background worker looks, too.
+                        #[cfg(target_os = "android")]
+                        let dir = android::data_dir().unwrap_or_else(app_dir);
+                        #[cfg(not(target_os = "android"))]
+                        let dir = app_dir();
+                        real_options(dir)
                     };
-                let svc = Service::new(
-                    ServiceOptions {
-                        data_dir,
-                        graph_base,
-                        authority,
-                        demo,
-                        token_store: tokens,
-                    },
-                    host,
-                )?;
-                if demo {
-                    svc.ensure_demo_account().await?;
-                }
-                svc.start_background_sync();
-                Ok::<_, mailcore::Error>(svc)
-            })
-            .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?;
+                    let svc = Service::new(opts, host)?;
+                    if demo {
+                        svc.ensure_demo_account().await?;
+                    }
+                    Ok::<_, mailcore::Error>(svc)
+                })
+                .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?,
+            };
+            #[cfg(target_os = "android")]
+            android::set_service(svc.clone());
+            svc.start_background_sync();
             app.manage(svc);
             if let Some(w) = app.get_webview_window("main") {
                 disable_pinch_zoom(&w);

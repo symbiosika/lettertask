@@ -134,3 +134,18 @@ test('Handy: Menüs erscheinen als Sheet von unten', async ({ page }) => {
   await page.goBack();
   await expect(page.locator('.msheet')).toHaveCount(0);
 });
+
+test('Handy: Abruf bei geschlossener App einstellen', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=m-account]').tap();
+  await page.locator('.msheet-item', { hasText: 'Einstellungen' }).tap();
+  const sel = page.locator('[data-testid=set-bg-interval]');
+  await expect(sel).toBeVisible();
+  await expect(sel).toHaveValue('15');
+  await sel.selectOption('60');
+  await page.locator('#settings-ok').tap();
+  await expect(page.locator('.modal', { hasText: 'Einstellungen' })).toHaveCount(0);
+  const cfg = await (await page.request.post('/api/call/get_config', { data: {} })).json();
+  expect(cfg.backgroundIntervalMins).toBe(60);
+  await api(page, 'save_config', { config: { ...cfg, backgroundIntervalMins: 15 } });
+});

@@ -35,3 +35,7 @@ mailcore = { path = "../crates/core", features = ["keyring"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+# Bridge to the Kotlin side (background worker, push service).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

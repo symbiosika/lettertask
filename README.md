@@ -30,6 +30,8 @@ Each mail is either done, snoozed or on your board, and your inbox stays empty.
   due today.
 - ⌨️ **Keyboard triage.** Press `E` to archive, `S` to snooze and `1`–`9` to move a mail to a lane.
 - 📅 **Calendar and contacts** for Microsoft 365, including meetings, Teams links and invitations.
+- 🔔 **Instant push for IMAP and Gmail** (IMAP IDLE), on the desktop and on Android. On Android
+  the app also syncs in the background every 15 minutes or more and returns snoozed mail on time.
 - 🔒 **Private by design.** HTML mails render in a sandbox and remote images load only when you
   allow them. Tokens are kept in your OS keychain, and a local cache lets you read offline.
 

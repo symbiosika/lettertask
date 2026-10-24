@@ -1,15 +1,23 @@
 package de.symbiosika.lettertask
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Before the window's Rust code runs: it joins the service a background
+    // worker may already have started.
+    LettertaskNative.init(this)
     // White bars with dark icons, matching the app bar and bottom navigation.
     enableEdgeToEdge(
       statusBarStyle = SystemBarStyle.light(Color.WHITE, Color.WHITE),
@@ -27,5 +35,23 @@ class MainActivity : TauriActivity() {
       v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
       WindowInsetsCompat.CONSUMED
     }
+    Notifications.ensureChannels(this)
+    if (Build.VERSION.SDK_INT >= 33 &&
+      ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    ) {
+      ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+    }
+  }
+
+  // While the window is visible the service syncs on its own timer; in the
+  // background WorkManager (and push) take over.
+  override fun onStart() {
+    super.onStart()
+    LettertaskNative.setAppVisible(true)
+  }
+
+  override fun onStop() {
+    LettertaskNative.setAppVisible(false)
+    super.onStop()
   }
 }
