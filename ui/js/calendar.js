@@ -236,11 +236,26 @@ async function addPeopleCalendar(acc) {
   });
   if (!Array.isArray(res)) return;
   try {
+    const before = cal.calendars.get(acc.id) || [];
     let cals = null;
     for (const p of res) cals = await call('add_people_calendar', { accountId: acc.id, address: p.address, name: p.name || '' });
     if (cals) cal.calendars.set(acc.id, cals);
+    // The person's calendar: added in the app, or already there (e.g. shared in
+    // Outlook, or added earlier and switched off). It is always shown afterwards,
+    // so adding never ends silently with nothing visible.
+    const msgs = [];
+    for (const p of res) {
+      const addr = p.address.toLowerCase();
+      const c = (cals || []).find((x) => x.id === 'user:' + addr || (x.owner && x.owner.address.toLowerCase() === addr));
+      if (!c) { msgs.push(`Kalender von ${p.name || p.address} konnte nicht hinzugefügt werden.`); continue; }
+      const wasHidden = cal.hidden.delete(c.id);
+      const existed = before.some((x) => x.id === c.id);
+      msgs.push(existed ? `Kalender „${c.name}“ ist schon vorhanden${wasHidden ? ' und wird wieder angezeigt' : ''}.` : `Kalender „${c.name}“ wurde hinzugefügt.`);
+    }
+    store('hiddenCalendars', [...cal.hidden]);
     renderNav();
     await refresh();
+    if (msgs.length) toast(msgs.join(' '));
   } catch (e) { reportError(e); }
 }
 
