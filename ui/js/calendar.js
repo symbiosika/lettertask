@@ -204,10 +204,13 @@ export function renderNav() {
       item.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         const added = c.id.startsWith('user:');
+        // Calendars others shared (e.g. in Outlook) can be removed from the list, own ones not.
+        const shared = !added && !!c.owner && !c.isDefault;
         showMenu([
           { label: 'Umbenennen…', icon: 'edit', onClick: () => renamePeopleCalendar(a.id, c), testid: 'cal-rename' },
           { label: 'Farbe', icon: 'tag', submenu: () => PEOPLE_COLORS.map(([hex, label]) => ({ label: label + (hex === (c.color || '').toLowerCase() ? '  ✓' : ''), iconHtml: swatchHtml(hex, 12), onClick: () => updatePeopleCalendar(a.id, c.id, { color: hex }), testid: 'cal-color-' + hex.slice(1) })), testid: 'cal-color' },
           ...(added ? [{ separator: true }, { label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id), testid: 'cal-remove' }] : []),
+          ...(shared ? [{ separator: true }, { label: 'Geteilten Kalender entfernen…', icon: 'trash', onClick: () => removeSharedCalendar(a.id, c), testid: 'cal-remove-shared' }] : []),
         ], e.clientX, e.clientY);
       });
       sec.appendChild(item);
@@ -246,7 +249,8 @@ async function addPeopleCalendar(acc) {
     const msgs = [];
     for (const p of res) {
       const addr = p.address.toLowerCase();
-      const c = (cals || []).find((x) => x.id === 'user:' + addr || (x.owner && x.owner.address.toLowerCase() === addr));
+      // The app's entry first; else the person's calendar Outlook already lists.
+      const c = (cals || []).find((x) => x.id === 'user:' + addr) || (cals || []).find((x) => x.owner && x.owner.address.toLowerCase() === addr);
       if (!c) { msgs.push(`Kalender von ${p.name || p.address} konnte nicht hinzugefügt werden.`); continue; }
       const wasHidden = cal.hidden.delete(c.id);
       const existed = before.some((x) => x.id === c.id);
@@ -272,6 +276,12 @@ async function updatePeopleCalendar(accountId, calendarId, patch) {
 async function renamePeopleCalendar(accountId, c) {
   const name = await promptDialog('Bezeichnung im Kalender:', { title: 'Kalender umbenennen', value: c.name, ok: 'Speichern' });
   if (name) await updatePeopleCalendar(accountId, c.id, { name });
+}
+
+async function removeSharedCalendar(accountId, c) {
+  const who = c.owner && (c.owner.name || c.owner.address);
+  const ok = await confirmDialog(`„${c.name}“${who ? ` von ${who}` : ''} aus Ihrer Kalenderliste entfernen? Er verschwindet auch in Outlook; der Kalender selbst bleibt beim Besitzer erhalten.`, { title: 'Geteilten Kalender entfernen', ok: 'Entfernen', danger: true });
+  if (ok) await removePeopleCalendar(accountId, c.id);
 }
 
 async function removePeopleCalendar(accountId, calendarId) {

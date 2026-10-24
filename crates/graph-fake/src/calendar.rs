@@ -43,6 +43,15 @@ pub fn handle(mb: &mut Mailbox, rest: &[&str], req: &Req) -> GResult {
                 .collect();
             ok(paged(req, vals, 10))
         }
+        // Removing a calendar someone shared only removes it from this mailbox.
+        ["calendarGroups", _, "calendars", cid] | ["calendars", cid] if m == Method::DELETE => {
+            let i = mb.calendars.iter().position(|c| c.id == *cid).ok_or_else(|| GErr::not_found("calendar"))?;
+            if mb.calendars[i].is_default {
+                return Err(GErr::new(StatusCode::BAD_REQUEST, "ErrorCannotDeleteObject", "The default calendar cannot be deleted."));
+            }
+            mb.calendars.remove(i);
+            no_content()
+        }
         ["calendarGroups", _gid, "calendars", cid, "calendarView"] if m == Method::GET => calendar_view(mb, &cal(mb, cid)?, req),
         ["calendarGroups", _gid, "calendars", _cid, "events", id] if m == Method::GET => event_item(mb, id, req),
         ["calendars", cid] if m == Method::GET => {
