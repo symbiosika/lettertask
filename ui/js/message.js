@@ -38,7 +38,10 @@ async function load() {
   if (!msg.isRead) call('set_read', { mailboxId: P.mailboxId, ids: [msg.id], isRead: true }, { silent: true }).catch(() => {});
 }
 
-function respond(mode) { openWindow('compose', { mailboxId: P.mailboxId, mode, sourceMessageId: P.messageId }).catch(reportError); }
+function respond(mode) {
+  const p = mode === 'delegate' ? { mailboxId: P.mailboxId, mode: 'forward', delegate: '1', sourceMessageId: P.messageId } : { mailboxId: P.mailboxId, mode, sourceMessageId: P.messageId };
+  openWindow('compose', p).catch(reportError);
+}
 
 async function setCats(cats) {
   await call('set_categories', { mailboxId: P.mailboxId, ids: [msg.id], categories: cats });
@@ -51,6 +54,7 @@ function renderToolbar() {
     tbBtn('Antworten', 'reply', () => respond('reply'), { testid: 'msg-reply' }),
     tbBtn('Allen antworten', 'replyAll', () => respond('replyAll')),
     tbBtn('Weiterleiten', 'forward', () => respond('forward')),
+    tbBtn('Delegieren', 'people', () => respond('delegate'), { testid: 'msg-delegate' }),
     sep(),
     tbBtn('Archivieren', 'archive', async () => {
       await call('archive_messages', { mailboxId: P.mailboxId, ids: [msg.id] });

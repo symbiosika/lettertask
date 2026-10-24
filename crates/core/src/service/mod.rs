@@ -570,6 +570,13 @@ impl Service {
                 }
                 ok(Value::Null)
             }
+            "delegate_draft" => ok(self
+                .delegate_draft(
+                    arg(a, "draft")?,
+                    arg::<Option<String>>(a, "due")?.as_deref(),
+                    arg::<Option<bool>>(a, "todoPrefix")?.unwrap_or(true),
+                )
+                .await?),
             "discard_draft" => {
                 self.discard_draft(&arg::<String>(a, "mailboxId")?, arg::<Option<String>>(a, "draftId")?.as_deref())
                     .await?;
@@ -886,7 +893,7 @@ impl Service {
             .await?
         } else {
             let host = self.host.clone();
-            auth::interactive_login(&self.http, &oauth, move |url| host.open_url(&url), Duration::from_secs(300))
+            auth::interactive_login(&self.http, &oauth, move |url| open_login_url(host.as_ref(), &url), Duration::from_secs(300))
                 .await?
         };
         self.finish_login(tokens).await
@@ -1188,6 +1195,17 @@ impl Service {
         .await?;
         self.get_auto_reply(account_id).await
     }
+}
+
+/// Opens the sign-in page in the browser. The UI also gets the link
+/// (`login-url`): if no browser opens (seen on macOS), the user can open or
+/// copy it from the waiting dialog instead of waiting for nothing.
+pub(crate) fn open_login_url(host: &dyn Host, url: &str) -> Result<()> {
+    host.emit("login-url", json!({"url": url}));
+    if let Err(e) = host.open_url(url) {
+        tracing::warn!("Browser für die Anmeldung nicht geöffnet: {e}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

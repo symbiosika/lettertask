@@ -13,6 +13,8 @@ import { loadSignatures, defaultSignatureFor, applySignature, currentSignatureId
 
 const P = params();
 const MODE_TITLE = { new: 'Neue Nachricht', reply: 'Antwort', replyAll: 'Antwort', forward: 'Weiterleitung' };
+/** "Delegieren": a forward to one person that is then followed up like a delegated task. */
+const DELEGATE = P.delegate === '1';
 
 const st = {
   draft: null,            // last Draft from the server
@@ -29,7 +31,7 @@ const st = {
   closing: false,
 };
 
-let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind, sendSplit;
+let to, cc, bcc, subject, editor, ccRow, bccRow, attList, fromSel, impBtn, titleEl, ccLink, sigBtn, remind, sendSplit, delegation;
 
 function markDirty() { st.dirty = true; }
 
@@ -78,8 +80,8 @@ function renderForm() {
   // The main button does what was last picked in the menu ("Senden" or "Senden & archivieren").
   const pick = (mode) => { store('composeSendMode', mode); paintSendLabel(); return send_(); };
   const send = splitBtn(sendLabel(), 'send', () => send_().catch(reportError), (b) => showMenuAt(b, [
-    { label: 'Senden', icon: 'send', shortcut: sendMode() === 'send' ? 'Strg+Eingabe' : '', onClick: () => pick('send'), testid: 'compose-send-plain' },
-    ...(canArchiveSource() ? [{ label: 'Senden & archivieren', icon: 'archive', shortcut: sendMode() === 'sendArchive' ? 'Strg+Eingabe' : '', onClick: () => pick('sendArchive'), testid: 'compose-send-archive' }] : []),
+    { label: DELEGATE ? 'Delegieren' : 'Senden', icon: 'send', shortcut: sendMode() === 'send' ? 'Strg+Eingabe' : '', onClick: () => pick('send'), testid: 'compose-send-plain' },
+    ...(canArchiveSource() ? [{ label: DELEGATE ? 'Delegieren & archivieren' : 'Senden & archivieren', icon: 'archive', shortcut: sendMode() === 'sendArchive' ? 'Strg+Eingabe' : '', onClick: () => pick('sendArchive'), testid: 'compose-send-archive' }] : []),
     { separator: true },
     { label: 'Speichern & schließen', icon: 'save', onClick: async () => { await save(true); await finish(); } },
   ]), { testid: 'compose-send', menuTestid: 'compose-send-menu', primary: true, title: 'Senden (Strg+Eingabe)' });
@@ -114,8 +116,14 @@ function renderForm() {
   ccRow = row('Cc', cc);
   bccRow = row('Bcc', bcc);
   ccRow.classList.add('hidden'); bccRow.classList.add('hidden');
-  remind = reminderRow();
-  form.append(toRow, ccRow, bccRow, row('Betreff', subject), remind.el);
+  if (DELEGATE) {
+    delegation = delegationRow();
+    remind = null;
+    form.append(toRow, ccRow, bccRow, row('Betreff', subject), delegation.el);
+  } else {
+    remind = reminderRow();
+    form.append(toRow, ccRow, bccRow, row('Betreff', subject), remind.el);
+  }
 
   attList = $('#atts');
 
@@ -248,7 +256,7 @@ function renderAttachments() {
 }
 
 function updateTitle() {
-  const s = subject.value.trim() || MODE_TITLE[(st.draft && st.draft.mode) || P.mode || 'new'];
+  const s = subject.value.trim() || (DELEGATE ? 'Delegieren' : MODE_TITLE[(st.draft && st.draft.mode) || P.mode || 'new']);
   document.title = s;
   if (titleEl) titleEl.textContent = s;
   if (isTauri && window.__TAURI__.window) { try { window.__TAURI__.window.getCurrentWindow().setTitle(document.title); } catch { /* ignore */ } }
@@ -275,6 +283,19 @@ function applyDraft(d) {
 }
 
 /** "Erinnerung an mich: Aus | Ein [Zeitpunkt]" – a follow-up copy in Wiedervorlage after sending. */
+/** Delegation options: when to follow up, and "ToDo: " in front of the subject. */
+function delegationRow() {
+  const picker = duePicker({ config: state.config, allowNow: true, variant: 'select', testid: 'delegate-due', onChange: markDirty });
+  const todo = h('input', { type: 'checkbox', checked: true, dataset: { testid: 'delegate-todo-prefix' } });
+  todo.addEventListener('change', markDirty);
+  const el = h('div.cw-row.remind-row.active', { dataset: { testid: 'delegate-row' } },
+    h('span.cw-lbl.remind-lbl'),
+    h('div.cw-val.remind-val', { title: 'Nach dem Senden liegt eine Kopie mit der Kennzeichnung „Delegiert“ auf Wiedervorlage; sie erscheint in der Liste „Delegiert“.' },
+      h('span.remind-text', { html: icon('people', 15) + '<span>Nachfassen:</span>' }), picker.el,
+      h('label.task-check', { title: 'Betreff der gesendeten Mail beginnt mit „ToDo: “' }, todo, h('span', '„ToDo: “ voranstellen'))));
+  return { el, get: () => picker.get(), todoPrefix: () => todo.checked };
+}
+
 function reminderRow() {
   let on = false;
   const picker = duePicker({ config: state.config, variant: 'select', testid: 'remind-when' });
@@ -341,7 +362,10 @@ function sourceId() {
 function canArchiveSource() { return !!sourceId(); }
 /** Remembered choice; without an original to archive it is plain "Senden". */
 function sendMode() { return canArchiveSource() && load('composeSendMode', 'send') === 'sendArchive' ? 'sendArchive' : 'send'; }
-function sendLabel() { return sendMode() === 'sendArchive' ? 'Senden & archivieren' : 'Senden'; }
+function sendLabel() {
+  if (DELEGATE) return sendMode() === 'sendArchive' ? 'Delegieren & archivieren' : 'Delegieren';
+  return sendMode() === 'sendArchive' ? 'Senden & archivieren' : 'Senden';
+}
 function paintSendLabel() {
   const label = sendSplit && sendSplit.querySelector('.tb-btn .tb-label');
   if (label) label.textContent = sendLabel();
@@ -357,13 +381,25 @@ async function send_() {
   const r = remind ? remind.get() : null;
   if (r && r.error) { toast(r.error, 'error'); return; }
   const remindAt = r && r.date ? r.date : null;
+  const dl = delegation ? delegation.get() : null;
+  if (dl && dl.error) { toast(dl.error, 'error'); return; }
+  if (DELEGATE && buildInput().to.length !== 1) {
+    toast('Delegieren geht an genau eine Person im Feld „An“ (weitere bitte in Cc).', 'error');
+    to.focus();
+    return;
+  }
   st.busy = true;
   setSending(true);
   try {
     const draft = buildInput();
     if (remindAt) draft.remindAt = remindAt.toISOString();
-    // Checked right away, sent in the background: the window closes at once.
-    await call('send_draft', { draft, background: true });
+    if (DELEGATE) {
+      // Sent right away: the follow-up copy needs the sent mail's thread.
+      await call('delegate_draft', { draft, due: dl && dl.date ? dl.date.toISOString() : null, todoPrefix: delegation.todoPrefix() });
+    } else {
+      // Checked right away, sent in the background: the window closes at once.
+      await call('send_draft', { draft, background: true });
+    }
     st.dirty = false; st.serverCreated = false;
     if (sendMode() === 'sendArchive' && sourceId()) {
       try { await call('archive_messages', { mailboxId: P.mailboxId || st.mailboxId, ids: [sourceId()] }); }

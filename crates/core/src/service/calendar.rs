@@ -15,10 +15,21 @@ const PEOPLE_KEY: &str = "people_calendars";
 /// Calendar id prefix of such a calendar: "user:<address>".
 const PEOPLE_PREFIX: &str = "user:";
 const PEOPLE_GROUP: &str = "Kalender von Personen";
+/// Own label/colour of any other calendar (e.g. one shared in Outlook), by id.
+const OVERRIDES_KEY: &str = "calendar_overrides";
 /// Colours a new person's calendar gets at random (Outlook-like palette).
 const PEOPLE_COLORS: &[&str] = &[
     "#e8a33d", "#4aa564", "#3f8fd2", "#c2509b", "#8a63d2", "#d9534f", "#2bb3a3", "#9c7b4f", "#5b6ee1", "#e07b39",
 ];
+
+/// Label and/or colour set in the app for a calendar the app did not add.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct CalOverride {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+}
 
 /// A colleague's calendar added in the app; `name` is the label shown.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -71,6 +82,7 @@ impl Service {
                     }
                 }
                 cals.sort_by_key(|c| (!c.is_default, c.group.is_some()));
+                self.apply_calendar_overrides(account_id, &mut cals)?;
                 self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
                 Ok(cals)
             }
@@ -179,8 +191,55 @@ impl Service {
         self.list_calendars(account_id).await
     }
 
-    /// Changes label and/or colour (#rrggbb) of a person's calendar.
+    /// Own labels/colours set in the app (calendars shared in Outlook etc.).
+    pub(super) fn apply_calendar_overrides(&self, account_id: &str, cals: &mut [Calendar]) -> Result<()> {
+        let overrides: std::collections::HashMap<String, CalOverride> =
+            self.store.get_account_json(account_id, OVERRIDES_KEY)?.unwrap_or_default();
+        for c in cals.iter_mut() {
+            if let Some(o) = overrides.get(&c.id) {
+                if let Some(n) = o.name.as_ref().filter(|n| !n.is_empty()) {
+                    c.name = n.clone();
+                }
+                if let Some(col) = &o.color {
+                    c.color = Some(col.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Changes label and/or colour (#rrggbb) of a calendar: for one added in
+    /// the app its entry, for any other one an override kept in the app (an
+    /// empty name restores the server's name).
     pub(crate) async fn update_people_calendar(&self, account_id: &str, calendar_id: &str, name: Option<&str>, color: Option<&str>) -> Result<Vec<Calendar>> {
+        if let Some(c) = color {
+            let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit());
+            if !ok {
+                return Err(Error::invalid("Ungültige Farbe"));
+            }
+        }
+        if !calendar_id.starts_with(PEOPLE_PREFIX) {
+            let mut overrides: std::collections::HashMap<String, CalOverride> =
+                self.store.get_account_json(account_id, OVERRIDES_KEY)?.unwrap_or_default();
+            let o = overrides.entry(calendar_id.to_string()).or_default();
+            if let Some(n) = name {
+                o.name = Some(n.trim().to_string()).filter(|n| !n.is_empty());
+            }
+            if let Some(c) = color {
+                o.color = Some(c.to_lowercase());
+            }
+            self.store.put_account_json(account_id, OVERRIDES_KEY, &overrides)?;
+            // The server's name is needed back after a reset: reload, else the cache.
+            return match self.list_calendars(account_id).await {
+                Ok(c) => Ok(c),
+                Err(_) => {
+                    let mut cals: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
+                    self.apply_calendar_overrides(account_id, &mut cals)?;
+                    self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
+                    Ok(cals)
+                }
+            };
+        }
         let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
         let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         let p = people

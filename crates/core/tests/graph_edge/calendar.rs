@@ -418,3 +418,28 @@ async fn calendars_are_cached_for_offline_use() {
     let offline: Vec<Calendar> = call(&svc, "list_calendars", json!({"accountId": account})).await;
     assert_eq!(offline, cals);
 }
+
+#[tokio::test]
+async fn shared_calendars_get_own_label_and_colour() {
+    let ctx = setup_at(now()).await;
+    let cals: Vec<Calendar> = call(&ctx.svc, "list_calendars", json!({"accountId": ctx.account})).await;
+    // A colleague's calendar shared in Outlook (not added in the app).
+    let shared = cals.iter().find(|c| c.owner.is_some() && !c.id.starts_with("user:")).expect("shared calendar").clone();
+    let after: Vec<Calendar> = call(
+        &ctx.svc,
+        "update_people_calendar",
+        json!({"accountId": ctx.account, "calendarId": shared.id, "name": "Chefin", "color": "#D9534F"}),
+    )
+    .await;
+    let c = after.iter().find(|c| c.id == shared.id).unwrap();
+    assert_eq!((c.name.as_str(), c.color.as_deref()), ("Chefin", Some("#d9534f")));
+    // Kept across a reload from the server …
+    let again: Vec<Calendar> = call(&ctx.svc, "list_calendars", json!({"accountId": ctx.account})).await;
+    assert_eq!(again.iter().find(|c| c.id == shared.id).unwrap().name, "Chefin");
+    // … and an empty name restores the server's.
+    let reset: Vec<Calendar> =
+        call(&ctx.svc, "update_people_calendar", json!({"accountId": ctx.account, "calendarId": shared.id, "name": ""})).await;
+    let c = reset.iter().find(|c| c.id == shared.id).unwrap();
+    assert_eq!(c.name, shared.name);
+    assert_eq!(c.color.as_deref(), Some("#d9534f"), "colour stays");
+}

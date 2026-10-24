@@ -199,17 +199,17 @@ export function renderNav() {
       });
       const who = c.owner && c.owner.address ? `${c.name}\n${c.owner.address}` : c.name;
       const item = h('label.cal-item', { title: who, dataset: { testid: 'cal-item' } }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' }));
-      if (c.id.startsWith('user:')) {
-        item.addEventListener('contextmenu', (e) => {
-          e.preventDefault();
-          showMenu([
-            { label: 'Umbenennen…', icon: 'edit', onClick: () => renamePeopleCalendar(a.id, c), testid: 'cal-rename' },
-            { label: 'Farbe', icon: 'tag', submenu: () => PEOPLE_COLORS.map(([hex, label]) => ({ label: label + (hex === (c.color || '').toLowerCase() ? '  ✓' : ''), iconHtml: swatchHtml(hex, 12), onClick: () => updatePeopleCalendar(a.id, c.id, { color: hex }), testid: 'cal-color-' + hex.slice(1) })), testid: 'cal-color' },
-            { separator: true },
-            { label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id), testid: 'cal-remove' },
-          ], e.clientX, e.clientY);
-        });
-      }
+      // Label and colour can be set for every calendar (also ones shared in
+      // Outlook); only calendars added in the app can be removed here.
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const added = c.id.startsWith('user:');
+        showMenu([
+          { label: 'Umbenennen…', icon: 'edit', onClick: () => renamePeopleCalendar(a.id, c), testid: 'cal-rename' },
+          { label: 'Farbe', icon: 'tag', submenu: () => PEOPLE_COLORS.map(([hex, label]) => ({ label: label + (hex === (c.color || '').toLowerCase() ? '  ✓' : ''), iconHtml: swatchHtml(hex, 12), onClick: () => updatePeopleCalendar(a.id, c.id, { color: hex }), testid: 'cal-color-' + hex.slice(1) })), testid: 'cal-color' },
+          ...(added ? [{ separator: true }, { label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id), testid: 'cal-remove' }] : []),
+        ], e.clientX, e.clientY);
+      });
       sec.appendChild(item);
     }
     if (!isGoogle(a)) sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },

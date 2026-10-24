@@ -54,6 +54,7 @@ impl Service {
             Ok(list) => {
                 let mut cals: Vec<Calendar> = list.iter().map(|v| gapi::calendar(v, account_id)).collect();
                 cals.sort_by_key(|c| (!c.is_default, c.group.is_some()));
+                self.apply_calendar_overrides(account_id, &mut cals)?;
                 let reminders: HashMap<String, i64> = list
                     .iter()
                     .filter_map(|v| {

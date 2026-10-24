@@ -179,6 +179,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `move_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `copy_messages` | `{ mailboxId, ids, destFolderId }` | `null` |
 | `transfer_messages` | `{ mailboxId, ids, destMailboxId, destFolderId, copy }` | `{ count }` — move/copy into a folder of ANOTHER mailbox (any kind): the full message is read (MIME) and recreated there (IMAP: APPEND; Graph: non-draft message with original dates and attachments); a move then deletes the source into its trash |
+| `delegate_draft` | `{ draft: DraftInput, due: ISO\|null, todoPrefix?: bool }` | `MessageSummary` — "Delegieren" of an existing mail: sends the forward (exactly one "An" recipient = assignee, subject "ToDo: …" unless `todoPrefix` false) and places the delegation copy (`[D_<address>]`) like a delegated task |
 | `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)" (task as mail): a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" (immediately) → Posteingang (inbox, unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
@@ -254,7 +255,7 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 ### Calendar
 | `list_calendars` | `{ accountId }` | `Calendar[]` — default group (`/me/calendars`) plus the calendars of all other calendar groups (`/me/calendarGroups/{id}/calendars`), e.g. colleagues' calendars added in Outlook. Google accounts: the calendar list (`calendarList`), calendars not owned under the group "Weitere Kalender" |
 | `add_people_calendar` | `{ accountId, address, name? }` | `Calendar[]` — adds a colleague's calendar (id `user:<address>`, group "Kalender von Personen"); events come from `/users/{address}/calendar`, without read access from free/busy (`getSchedule`, event ids `fb:…`) |
-| `update_people_calendar` | `{ accountId, calendarId, name?, color? }` | `Calendar[]` — label and colour (#rrggbb) of a person's calendar; new ones get a random colour |
+| `update_people_calendar` | `{ accountId, calendarId, name?, color? }` | `Calendar[]` — label and colour (#rrggbb) of a person's calendar; new ones get a random colour. Any other calendar (e.g. shared in Outlook, Google) gets an override kept in the app; an empty name restores the server's |
 | `remove_people_calendar` | `{ accountId, calendarId }` | `Calendar[]` |
 | `list_events` | `{ accountId, calendarIds: string[], start: ISO, end: ISO, cached?: bool }` | `Event[]` (expanded occurrences in range; `cached`: only the last known events from the local store, no server round trip). Google events have the id `<calendarId>\|<eventId>` |
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
@@ -277,6 +278,7 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 | `sync-status` | `{ state: "syncing"\|"idle"\|"offline"\|"error", message: string, lastSync: string\|null }` |
 | `mail-changed` | `{ mailboxId: string, folderId: string\|null }` — reload folder counts / list |
 | `calendar-changed` | `{ accountId: string }` |
+| `login-url` | `{ url: string }` — sign-in page just opened in the browser (shown as fallback link while waiting) |
 | `accounts-changed` | `{}` |
 | `categories-changed` | `{ accountId: string }` |
 | `contacts-changed` | `{}` |

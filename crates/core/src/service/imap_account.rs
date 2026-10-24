@@ -196,7 +196,7 @@ impl Service {
             &self.http,
             &self.google_config(),
             login_hint.as_deref(),
-            move |url| host.open_url(&url),
+            move |url| super::open_login_url(host.as_ref(), &url),
             Duration::from_secs(300),
         )
         .await?;
