@@ -1,5 +1,5 @@
 // Account setup: chooser (Microsoft 365 / Google / IMAP), IMAP wizard, server settings editor.
-import { call } from './api.js';
+import { call, on, openUrl } from './api.js';
 import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
 import { modal, toast, reportError, busyClick, confirmDialog, promptDialog } from './dialogs.js';
@@ -256,17 +256,43 @@ function googleDetail(acc, box, remove, onSaved) {
  * Sign-in with Google in the browser (new account, or renewal when
  * `loginHint` names an existing one). Returns the Account or null.
  */
-export async function googleLogin(loginHint = null) {
-  const waiting = h('div.confirm-body', h('span', { html: icon('google', 32) }), h('div',
+/**
+ * Waiting dialog while the user signs in in the browser. Shows the sign-in
+ * link as soon as the backend has it (in case no browser window opened) and
+ * can be cancelled. Resolves with the result of `login`, or null when cancelled.
+ */
+export function waitForLogin({ title, ic, text }, login) {
+  const linkRow = h('div.login-link.hidden', { dataset: { testid: 'login-link' } },
+    h('span.dim', 'Kein Browserfenster? '));
+  const waiting = h('div.confirm-body', h('span', { html: icon(ic, 32) }), h('div',
     h('div', { style: { fontWeight: '600', marginBottom: '4px' } }, 'Anmeldung im Browser…'),
-    h('div', 'Bitte melden Sie sich im geöffneten Browserfenster bei Google an und erlauben Sie den Zugriff auf Gmail. Dieses Fenster schließt sich automatisch.')));
-  const overlay = h('div.modal-overlay', h('div.modal', { style: { width: '420px' } }, h('div.modal-title', h('span', 'Mit Google anmelden')), h('div.modal-body', waiting)));
+    h('div', text), linkRow));
+  let cancel;
+  const cancelled = new Promise((resolve) => { cancel = () => resolve(null); });
+  const cancelBtn = h('button.btn', { type: 'button', dataset: { testid: 'login-cancel' }, onclick: () => cancel() }, 'Abbrechen');
+  const overlay = h('div.modal-overlay', h('div.modal', { role: 'dialog', 'aria-label': title, style: { width: '440px' } },
+    h('div.modal-title', h('span', title)), h('div.modal-body', waiting), h('div.modal-footer', cancelBtn)));
+  const off = on('login-url', ({ url }) => {
+    if (!url) return;
+    linkRow.replaceChildren(h('span.dim', 'Kein Browserfenster? '),
+      h('button.linkbtn', { type: 'button', onclick: () => openUrl(url).catch(reportError) }, 'Erneut öffnen'), ' · ',
+      h('button.linkbtn', { type: 'button', onclick: () => navigator.clipboard.writeText(url).then(() => toast('Link kopiert – im Browser einfügen.'), reportError) }, 'Link kopieren'));
+    linkRow.classList.remove('hidden');
+  });
   document.body.appendChild(overlay);
+  // A login that is cancelled here ends on its own in the backend (timeout).
+  return Promise.race([login(), cancelled]).finally(() => { off(); overlay.remove(); });
+}
+
+export async function googleLogin(loginHint = null) {
   try {
-    const acc = await call('add_google_account', { loginHint }, { silent: true });
+    const acc = await waitForLogin(
+      { title: 'Mit Google anmelden', ic: 'google', text: 'Bitte melden Sie sich im geöffneten Browserfenster bei Google an und erlauben Sie den Zugriff auf Gmail, Kalender und Kontakte. Dieses Fenster schließt sich automatisch.' },
+      () => call('add_google_account', { loginHint }, { silent: true }));
+    if (!acc) return null;
     toast(loginHint ? `Konto ${acc.email} ist wieder angemeldet.` : `Konto ${acc.email} wurde hinzugefügt.`);
     return acc;
-  } catch (e) { reportError(e); return null; } finally { overlay.remove(); }
+  } catch (e) { reportError(e); return null; }
 }
 
 /** Name of the account in the views: the own name, else the address. */

@@ -4,6 +4,7 @@ mod calendar;
 mod categories;
 mod compose;
 mod contacts;
+mod google_cal;
 mod imap_account;
 mod imap_compose;
 mod imap_mail;
@@ -56,6 +57,8 @@ pub struct Service {
     pub(crate) imap: crate::imap::conn::Pool,
     /// Access tokens of accounts signed in with Google.
     google_tokens: std::sync::Mutex<HashMap<String, TokenSet>>,
+    /// Roots of the Google Calendar and People APIs.
+    google_api: RwLock<(String, String)>,
     /// Mails sent in the background, in order, to one worker (started on demand).
     send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
     /// Mails queued or being sent in the background.
@@ -207,6 +210,7 @@ impl Service {
             last_sync: RwLock::new(None),
             imap: Default::default(),
             google_tokens: Default::default(),
+            google_api: RwLock::new((crate::gapi::DEFAULT_API_BASE.into(), crate::gapi::DEFAULT_PEOPLE_BASE.into())),
             send_queue: Default::default(),
             pending_sends: Default::default(),
             reminders: Default::default(),
@@ -566,6 +570,13 @@ impl Service {
                 }
                 ok(Value::Null)
             }
+            "delegate_draft" => ok(self
+                .delegate_draft(
+                    arg(a, "draft")?,
+                    arg::<Option<String>>(a, "due")?.as_deref(),
+                    arg::<Option<bool>>(a, "todoPrefix")?.unwrap_or(true),
+                )
+                .await?),
             "discard_draft" => {
                 self.discard_draft(&arg::<String>(a, "mailboxId")?, arg::<Option<String>>(a, "draftId")?.as_deref())
                     .await?;
@@ -706,14 +717,16 @@ impl Service {
             "remove_people_calendar" => ok(self
                 .remove_people_calendar(&arg::<String>(a, "accountId")?, &arg::<String>(a, "calendarId")?)
                 .await?),
-            "list_events" => ok(self
-                .list_events(
-                    &arg::<String>(a, "accountId")?,
-                    &arg::<Vec<String>>(a, "calendarIds")?,
-                    &arg::<String>(a, "start")?,
-                    &arg::<String>(a, "end")?,
-                )
-                .await?),
+            "list_events" => {
+                let account_id = arg::<String>(a, "accountId")?;
+                let ids = arg::<Vec<String>>(a, "calendarIds")?;
+                let (start, end) = (arg::<String>(a, "start")?, arg::<String>(a, "end")?);
+                // `cached`: the last known events of the range (no Graph round trip).
+                match arg::<Option<bool>>(a, "cached")?.unwrap_or(false) {
+                    true => ok(self.cached_events(&account_id, &ids, &start, &end)?),
+                    false => ok(self.list_events(&account_id, &ids, &start, &end).await?),
+                }
+            }
             "get_event" => ok(self
                 .get_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
                 .await?),
@@ -880,7 +893,7 @@ impl Service {
             .await?
         } else {
             let host = self.host.clone();
-            auth::interactive_login(&self.http, &oauth, move |url| host.open_url(&url), Duration::from_secs(300))
+            auth::interactive_login(&self.http, &oauth, move |url| open_login_url(host.as_ref(), &url), Duration::from_secs(300))
                 .await?
         };
         self.finish_login(tokens).await
@@ -1182,6 +1195,17 @@ impl Service {
         .await?;
         self.get_auto_reply(account_id).await
     }
+}
+
+/// Opens the sign-in page in the browser. The UI also gets the link
+/// (`login-url`): if no browser opens (seen on macOS), the user can open or
+/// copy it from the waiting dialog instead of waiting for nothing.
+pub(crate) fn open_login_url(host: &dyn Host, url: &str) -> Result<()> {
+    host.emit("login-url", json!({"url": url}));
+    if let Err(e) = host.open_url(url) {
+        tracing::warn!("Browser für die Anmeldung nicht geöffnet: {e}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

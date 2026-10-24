@@ -80,14 +80,20 @@ impl Service {
     async fn imap_append(&self, mb: &str, folder: &str, flags: &str, raw: &[u8], message_id: &str) -> Result<String> {
         let header = format!("HEADER Message-ID {}", im::quote(message_id));
         with_imap!(self, mb, |c| {
+            // UIDNEXT before the APPEND: the new message gets a UID from there on.
+            let before = c.select(folder).await?;
             c.selected = None;
             timed(c.s().append(folder, Some(flags), None, raw)).await?;
             let sel = c.select(folder).await?;
-            let uid = uid_search(c, &header)
-                .await?
-                .into_iter()
-                .max()
-                .ok_or_else(|| Error::Other("Gespeicherte Nachricht nicht gefunden".into()))?;
+            // Some servers do not find a just appended message by header
+            // (no or delayed search index): then the newest UID since UIDNEXT.
+            let mut uid = uid_search(c, &header).await.ok().and_then(|v| v.into_iter().max());
+            if uid.is_none() {
+                if let Some(next) = before.uid_next.filter(|_| before.uid_validity == sel.uid_validity) {
+                    uid = uid_search(c, &format!("UID {next}:*")).await?.into_iter().filter(|u| *u >= next).max();
+                }
+            }
+            let uid = uid.ok_or_else(|| Error::Other("Gespeicherte Nachricht nicht gefunden".into()))?;
             Ok(im::message_id(sel.uid_validity.unwrap_or(0), uid, folder))
         })
     }

@@ -2,7 +2,8 @@
 //! a loopback redirect, as Google prescribes for desktop apps ("installed
 //! applications"). The token grants IMAP/SMTP access (scope
 //! `https://mail.google.com/`); mail itself then runs over the IMAP/SMTP
-//! code path with SASL XOAUTH2.
+//! code path with SASL XOAUTH2. Calendar and contacts use the Google Calendar
+//! and People APIs (see `gapi`) with the same token.
 //!
 //! Register an OAuth client of type "Desktop app" in the Google Cloud
 //! console. Google issues a client secret for it as well; for installed apps
@@ -19,8 +20,8 @@ pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 
-/// Full mailbox access over IMAP/SMTP, plus who signed in.
-pub const SCOPES: &[&str] = &[MAIL_SCOPE, "openid", "email", "profile"];
+/// Full mailbox access over IMAP/SMTP, calendars and contacts, plus who signed in.
+pub const SCOPES: &[&str] = &[MAIL_SCOPE, crate::gapi::CALENDAR_SCOPE, crate::gapi::CONTACTS_SCOPE, "openid", "email", "profile"];
 const MAIL_SCOPE: &str = "https://mail.google.com/";
 
 pub const IMAP_HOST: &str = "imap.gmail.com";

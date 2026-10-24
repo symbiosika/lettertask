@@ -148,6 +148,9 @@ impl Service {
 
     /// Delta sync of the account's Outlook contacts into the local cache.
     pub(crate) async fn sync_contacts(&self, account_id: &str) -> Result<SyncResult> {
+        if self.is_google_account(account_id) {
+            return self.google_sync_contacts(account_id).await;
+        }
         let mut result = SyncResult::default();
         if !self.is_o365_account(account_id) {
             return Ok(result);
@@ -241,6 +244,8 @@ impl Service {
             let c = self.client(account_id)?;
             let v = c.post("/me/contacts", &contact_to_graph(&input)).await?;
             contact_from_graph(&v, account_id)
+        } else if self.is_google_account(account_id) {
+            self.google_create_contact(account_id, &input).await?
         } else {
             local_contact(format!("local:{}", uuid::Uuid::new_v4()), account_id, &input)
         };
@@ -266,6 +271,7 @@ impl Service {
                     contact_from_graph(&c.get(&format!("/me/contacts/{}?$select={CONTACT_SELECT}", seg(gid))).await?, &old.account_id)
                 }
             }
+            "google" => self.google_update_contact(&old, &input).await?,
             // Editing a collected address turns it into a real local contact.
             _ => {
                 let new_id = if old.source == "collected" {
@@ -293,6 +299,9 @@ impl Service {
                 Err(e) if !e.is_not_found() => return Err(e),
                 _ => {}
             }
+        }
+        if old.source == "google" {
+            self.google_delete_contact(&old).await?;
         }
         self.store.delete_contact(id)?;
         self.emit("contacts-changed", json!({}));

@@ -9,13 +9,16 @@ import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenu, busyClick, promptDialog } from './dialogs.js';
 import { categoryHex, textOn, swatchHtml } from './categories.js';
 import { state } from './state.js';
-import { isImap, accountLabel } from './accounts.js';
+import { isImap, isGoogle, accountLabel } from './accounts.js';
 import { fmtSnoozeTarget, snoozeOptions, computeSnooze } from './snooze.js';
 import { dateTimeField } from './due.js';
 import { recipientField } from './recipients.js';
 
 /** Accounts with a calendar (IMAP accounts have none). */
-function calAccounts() { return state.accounts.filter((a) => !isImap(a)); }
+/** Accounts with a calendar: Microsoft 365 and Google sign-ins. */
+function calAccounts() { return state.accounts.filter((a) => !isImap(a) || isGoogle(a)); }
+/** Google accounts whose missing calendar permission was already reported. */
+const reportedGoogle = new Set();
 
 const SLOT_PX = 24; // per 30 minutes
 const DAY_START_WORK = 8, DAY_END_WORK = 17;
@@ -73,7 +76,11 @@ function refreshCalendarList() {
   const before = JSON.stringify([...cal.calendars.entries()]);
   calListRefresh = Promise.all(calAccounts().map(async (a) => {
     try { cal.calendars.set(a.id, (await call('list_calendars', { accountId: a.id }, { silent: true })) || []); }
-    catch (e) { console.warn(e); }
+    catch (e) {
+      console.warn(e);
+      // Signed in before calendars were part of the Google sign-in: say once what helps.
+      if (isGoogle(a) && !reportedGoogle.has(a.id)) { reportedGoogle.add(a.id); toast(`${accountLabel(a)}: ${e.message}`, 'error', 12000); }
+    }
   })).then(() => {
     if (JSON.stringify([...cal.calendars.entries()]) === before) return;
     renderNav();
@@ -97,7 +104,7 @@ function range() {
 export async function refresh() {
   const token = ++cal.loadToken;
   // Pill over the grid while the events of the shown range load (only if it takes a moment).
-  const slow = setTimeout(() => { if (token === cal.loadToken) els.loading.classList.add('on'); }, 200);
+  const slow = setTimeout(() => { if (token === cal.loadToken && cal.shownToken !== token) els.loading.classList.add('on'); }, 200);
   try { await loadRange(token); } finally {
     clearTimeout(slow);
     if (token === cal.loadToken) els.loading.classList.remove('on');
@@ -112,6 +119,18 @@ async function loadRange(token) {
   const tasksP = sprint && cal.sprint.tasks
     ? call('list_due', { end: end.toISOString() }, { silent: true }).catch((e) => { console.warn(e); return []; })
     : Promise.resolve([]);
+  // Last known events first (instant from the local store), the server's follow.
+  if (wantEvents) {
+    const cached = await eventsBetween(start, end, { cached: true });
+    if (token !== cal.loadToken) return;
+    if (cached.length) {
+      cal.events = cached;
+      if (!sprint || !cal.sprint.tasks) cal.tasks = [];
+      cal.shownToken = token;
+      render();
+      els.loading.classList.remove('on');
+    }
+  }
   const results = await Promise.all(calAccounts().map(async (a) => {
     if (!wantEvents) return [];
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
@@ -158,7 +177,7 @@ export function renderNav() {
   els.nav.innerHTML = '';
   els.nav.appendChild(miniCalendar());
   if (!calAccounts().length) {
-    els.nav.appendChild(h('p.tree-hint.cal-none', { dataset: { testid: 'cal-none' } }, 'Kalender ist nur für Microsoft-365-Konten verfügbar.'));
+    els.nav.appendChild(h('p.tree-hint.cal-none', { dataset: { testid: 'cal-none' } }, 'Kalender gibt es für Microsoft-365- und Google-Konten.'));
   }
   for (const a of calAccounts()) {
     const sec = h('div.cal-list');
@@ -180,20 +199,20 @@ export function renderNav() {
       });
       const who = c.owner && c.owner.address ? `${c.name}\n${c.owner.address}` : c.name;
       const item = h('label.cal-item', { title: who, dataset: { testid: 'cal-item' } }, cb, h('span.cal-name', c.name), c.canEdit ? null : h('span.cal-ro', { html: icon('lock', 13), title: 'Schreibgeschützt' }));
-      if (c.id.startsWith('user:')) {
-        item.addEventListener('contextmenu', (e) => {
-          e.preventDefault();
-          showMenu([
-            { label: 'Umbenennen…', icon: 'edit', onClick: () => renamePeopleCalendar(a.id, c), testid: 'cal-rename' },
-            { label: 'Farbe', icon: 'tag', submenu: () => PEOPLE_COLORS.map(([hex, label]) => ({ label: label + (hex === (c.color || '').toLowerCase() ? '  ✓' : ''), iconHtml: swatchHtml(hex, 12), onClick: () => updatePeopleCalendar(a.id, c.id, { color: hex }), testid: 'cal-color-' + hex.slice(1) })), testid: 'cal-color' },
-            { separator: true },
-            { label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id), testid: 'cal-remove' },
-          ], e.clientX, e.clientY);
-        });
-      }
+      // Label and colour can be set for every calendar (also ones shared in
+      // Outlook); only calendars added in the app can be removed here.
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const added = c.id.startsWith('user:');
+        showMenu([
+          { label: 'Umbenennen…', icon: 'edit', onClick: () => renamePeopleCalendar(a.id, c), testid: 'cal-rename' },
+          { label: 'Farbe', icon: 'tag', submenu: () => PEOPLE_COLORS.map(([hex, label]) => ({ label: label + (hex === (c.color || '').toLowerCase() ? '  ✓' : ''), iconHtml: swatchHtml(hex, 12), onClick: () => updatePeopleCalendar(a.id, c.id, { color: hex }), testid: 'cal-color-' + hex.slice(1) })), testid: 'cal-color' },
+          ...(added ? [{ separator: true }, { label: 'Kalender entfernen', icon: 'trash', onClick: () => removePeopleCalendar(a.id, c.id), testid: 'cal-remove' }] : []),
+        ], e.clientX, e.clientY);
+      });
       sec.appendChild(item);
     }
-    sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
+    if (!isGoogle(a)) sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
       h('span', { html: icon('plus', 13) }), 'Kalender einer Person hinzufügen…'));
     els.nav.appendChild(sec);
   }
@@ -217,11 +236,26 @@ async function addPeopleCalendar(acc) {
   });
   if (!Array.isArray(res)) return;
   try {
+    const before = cal.calendars.get(acc.id) || [];
     let cals = null;
     for (const p of res) cals = await call('add_people_calendar', { accountId: acc.id, address: p.address, name: p.name || '' });
     if (cals) cal.calendars.set(acc.id, cals);
+    // The person's calendar: added in the app, or already there (e.g. shared in
+    // Outlook, or added earlier and switched off). It is always shown afterwards,
+    // so adding never ends silently with nothing visible.
+    const msgs = [];
+    for (const p of res) {
+      const addr = p.address.toLowerCase();
+      const c = (cals || []).find((x) => x.id === 'user:' + addr || (x.owner && x.owner.address.toLowerCase() === addr));
+      if (!c) { msgs.push(`Kalender von ${p.name || p.address} konnte nicht hinzugefügt werden.`); continue; }
+      const wasHidden = cal.hidden.delete(c.id);
+      const existed = before.some((x) => x.id === c.id);
+      msgs.push(existed ? `Kalender „${c.name}“ ist schon vorhanden${wasHidden ? ' und wird wieder angezeigt' : ''}.` : `Kalender „${c.name}“ wurde hinzugefügt.`);
+    }
+    store('hiddenCalendars', [...cal.hidden]);
     renderNav();
     await refresh();
+    if (msgs.length) toast(msgs.join(' '));
   } catch (e) { reportError(e); }
 }
 
@@ -312,13 +346,14 @@ function isAllDayLike(ev) {
 function eventTitle(ev) { return ev.subject || '(Kein Betreff)'; }
 
 // ------------------------------------------------------------- shared with the mail panel
-/** Events of all visible calendars in [start, end) (same calendars as the calendar view). */
-export async function eventsBetween(start, end) {
+/** Events of all visible calendars in [start, end) (same calendars as the calendar view).
+ *  `cached`: only the last known events from the local store (no server round trip). */
+export async function eventsBetween(start, end, { cached = false } = {}) {
   if (!cal.calendars.size) await loadCalendars();
   const res = await Promise.all(calAccounts().map(async (a) => {
     const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
     if (!ids.length) return [];
-    try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString() }, { silent: true })) || []; }
+    try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString(), cached }, { silent: true })) || []; }
     catch (e) { console.warn(e); return []; }
   }));
   return res.flat();
@@ -347,7 +382,7 @@ function render() {
     els.body.innerHTML = '';
     els.body.appendChild(h('div.empty.cal-empty', h('span.empty-ic', { html: icon('calendar', 48) }),
       h('div', { style: { fontWeight: '600', color: 'var(--text-2)' } }, 'Kein Kalender verfügbar'),
-      h('div', 'Kalender ist nur für Microsoft-365-Konten verfügbar. IMAP-Konten unterstützen nur E-Mail.')));
+      h('div', 'Kalender gibt es für Microsoft-365- und Google-Konten. Andere IMAP-Konten unterstützen nur E-Mail.')));
     onStatus();
     return;
   }
