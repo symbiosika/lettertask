@@ -1,7 +1,7 @@
 // Modal dialogs, menus, toasts – no native alert()/confirm().
 import { h, esc } from './util.js';
 import { icon } from './icons.js';
-import { onBusy, isBusy } from './api.js';
+import { onBusy, isBusy, isMobile, shell } from './api.js';
 
 // ---------------- modal ----------------
 /**
@@ -20,7 +20,10 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
     );
     let done = false;
     let closing = false;
-    async function close(value, isCancel = false, btn = null) {
+    // Phone: the back button cancels the dialog.
+    const sh = shell();
+    const popLayer = sh ? sh.pushLayer(() => close(cancelValue, true, null, true)) : null;
+    async function close(value, isCancel = false, btn = null, fromBack = false) {
       if (done) return;
       if (onBeforeClose && !isCancel) {
         // onBeforeClose may save to the server: one run at a time, spinner on the button.
@@ -37,6 +40,7 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
         } finally { closing = false; stop(); }
       }
       done = true;
+      if (popLayer && !fromBack) popLayer(false);
       overlay.remove();
       document.removeEventListener('keydown', onKey, true);
       resolve(isCancel ? cancelValue : value);
@@ -139,6 +143,7 @@ window.addEventListener('resize', () => closeMenus());
  * items: [{label, icon, iconHtml, onClick, disabled, checked, submenu: items | () => items, separator, shortcut, header}]
  */
 export function showMenu(items, x, y, level = 0) {
+  if (isMobile) return showSheetMenu(items);
   closeMenus(level);
   const menu = h('div.menu', { role: 'menu' });
   for (const it of items) {
@@ -193,7 +198,75 @@ export function showMenuAt(anchor, items) {
   return showMenu(items, r.left, r.bottom + 1);
 }
 
-export function closeAllMenus() { closeMenus(); }
+export function closeAllMenus() { closeMenus(); closeSheetMenu(); }
+
+// ---------------- phone: menus as bottom sheets ----------------
+// Keyboard hints mean nothing on a touch screen; other hints (snooze times) stay.
+const KEY_HINT = /Strg|Umschalt|Entf|Alt\+|^F\d+$|^[A-Z0-9]$/;
+let sheetMenu = null;
+
+function closeSheetMenu() { if (sheetMenu) sheetMenu.close(); }
+
+/** Same items as showMenu; submenus open in place with a back row. */
+export function showSheetMenu(items, { title } = {}) {
+  closeSheetMenu();
+  const scrim = h('div.msheet-scrim');
+  const sheet = h('div.msheet', { role: 'menu' });
+  const render = (list, back, heading) => {
+    sheet.innerHTML = '';
+    sheet.appendChild(h('div.msheet-grip'));
+    if (back) {
+      const b = h('button.msheet-item.msheet-back', { type: 'button', html: icon('chevronLeft', 18) + `<span class="msheet-label">${esc(heading || 'Zurück')}</span>` });
+      b.addEventListener('click', () => render(back.list, back.back, back.heading));
+      sheet.appendChild(b);
+    } else if (heading) {
+      sheet.appendChild(h('div.msheet-title', heading));
+    }
+    const body = h('div.msheet-body');
+    for (const it of list) {
+      if (!it) continue;
+      if (it.separator) { body.appendChild(h('div.msheet-sep')); continue; }
+      if (it.header) { body.appendChild(h('div.msheet-header', it.header)); continue; }
+      const hint = it.shortcut && !KEY_HINT.test(it.shortcut) ? it.shortcut : '';
+      const row = h('button.msheet-item' + (it.disabled ? '.disabled' : '') + (it.checked ? '.checked' : ''), { type: 'button', role: 'menuitem', disabled: !!it.disabled },
+        h('span.msheet-icon', { html: it.checked ? icon('check', 18) : (it.iconHtml || (it.icon ? icon(it.icon, 20) : '')) }),
+        h('span.msheet-label', it.label),
+        hint ? h('span.msheet-hint', hint) : null,
+        it.submenu ? h('span.msheet-arrow', { html: icon('chevronRight', 16) }) : null);
+      if (it.testid) row.dataset.testid = it.testid;
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (it.disabled) return;
+        if (it.submenu) {
+          const sub = typeof it.submenu === 'function' ? it.submenu() : it.submenu;
+          render(sub, { list, back, heading }, it.label);
+          return;
+        }
+        close();
+        if (it.onClick) Promise.resolve().then(() => it.onClick()).catch(reportError);
+      });
+      body.appendChild(row);
+    }
+    sheet.appendChild(body);
+  };
+  render(items, null, title);
+  let done = false;
+  const sh = shell();
+  const popLayer = sh ? sh.pushLayer(() => close(true)) : null;
+  function close(fromBack = false) {
+    if (done) return;
+    done = true;
+    if (popLayer && !fromBack) popLayer(false);
+    sheetMenu = null;
+    scrim.classList.remove('in'); sheet.classList.remove('in');
+    setTimeout(() => { scrim.remove(); sheet.remove(); }, 200);
+  }
+  scrim.addEventListener('click', () => close());
+  document.body.append(scrim, sheet);
+  requestAnimationFrame(() => { scrim.classList.add('in'); sheet.classList.add('in'); });
+  sheetMenu = { close, el: sheet };
+  return sheet;
+}
 
 // ---------------- busy indicator ----------------
 export function busyIndicator(el) {

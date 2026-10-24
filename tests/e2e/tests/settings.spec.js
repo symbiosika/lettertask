@@ -62,3 +62,22 @@ test('Wiedervorlage-Optionen bearbeiten', async ({ page }) => {
   await expect(page.locator('input[name=snoozeLabel0]')).toHaveValue('Morgen 8 Uhr');
   await page.locator('#settings-ok').click();
 });
+
+test('Sofort benachrichtigen (Push) wird gespeichert; Hintergrundabruf nur auf dem Handy', async ({ page }) => {
+  await openApp(page);
+  await openSettings(page);
+  await expect(page.locator('[data-testid=set-bg-interval]')).toHaveCount(0);
+  const push = page.locator('[data-testid=set-push]');
+  await expect(push).not.toBeChecked();
+  await push.check();
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.toast', { hasText: 'Einstellungen gespeichert' })).toBeVisible();
+  const cfg = await (await page.request.post('/api/call/get_config', { data: {} })).json();
+  expect(cfg.pushEnabled).toBe(true);
+  expect(cfg.backgroundIntervalMins).toBe(15);
+  await openSettings(page);
+  await expect(page.locator('[data-testid=set-push]')).toBeChecked();
+  await page.locator('[data-testid=set-push]').uncheck();
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.modal', { hasText: 'Einstellungen' })).toHaveCount(0);
+});
