@@ -1,8 +1,8 @@
 // Account setup: chooser (Microsoft 365 / Google / IMAP), IMAP wizard, server settings editor.
-import { call } from './api.js';
+import { call, on, openUrl } from './api.js';
 import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
-import { modal, toast, reportError, busyClick, confirmDialog } from './dialogs.js';
+import { modal, toast, reportError, busyClick, confirmDialog, promptDialog } from './dialogs.js';
 
 const SECURITY = [['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unverschlüsselt)']];
 const DEFAULT_PORT = {
@@ -256,17 +256,43 @@ function googleDetail(acc, box, remove, onSaved) {
  * Sign-in with Google in the browser (new account, or renewal when
  * `loginHint` names an existing one). Returns the Account or null.
  */
-export async function googleLogin(loginHint = null) {
-  const waiting = h('div.confirm-body', h('span', { html: icon('google', 32) }), h('div',
+/**
+ * Waiting dialog while the user signs in in the browser. Shows the sign-in
+ * link as soon as the backend has it (in case no browser window opened) and
+ * can be cancelled. Resolves with the result of `login`, or null when cancelled.
+ */
+export function waitForLogin({ title, ic, text }, login) {
+  const linkRow = h('div.login-link.hidden', { dataset: { testid: 'login-link' } },
+    h('span.dim', 'Kein Browserfenster? '));
+  const waiting = h('div.confirm-body', h('span', { html: icon(ic, 32) }), h('div',
     h('div', { style: { fontWeight: '600', marginBottom: '4px' } }, 'Anmeldung im Browser…'),
-    h('div', 'Bitte melden Sie sich im geöffneten Browserfenster bei Google an und erlauben Sie den Zugriff auf Gmail. Dieses Fenster schließt sich automatisch.')));
-  const overlay = h('div.modal-overlay', h('div.modal', { style: { width: '420px' } }, h('div.modal-title', h('span', 'Mit Google anmelden')), h('div.modal-body', waiting)));
+    h('div', text), linkRow));
+  let cancel;
+  const cancelled = new Promise((resolve) => { cancel = () => resolve(null); });
+  const cancelBtn = h('button.btn', { type: 'button', dataset: { testid: 'login-cancel' }, onclick: () => cancel() }, 'Abbrechen');
+  const overlay = h('div.modal-overlay', h('div.modal', { role: 'dialog', 'aria-label': title, style: { width: '440px' } },
+    h('div.modal-title', h('span', title)), h('div.modal-body', waiting), h('div.modal-footer', cancelBtn)));
+  const off = on('login-url', ({ url }) => {
+    if (!url) return;
+    linkRow.replaceChildren(h('span.dim', 'Kein Browserfenster? '),
+      h('button.linkbtn', { type: 'button', onclick: () => openUrl(url).catch(reportError) }, 'Erneut öffnen'), ' · ',
+      h('button.linkbtn', { type: 'button', onclick: () => navigator.clipboard.writeText(url).then(() => toast('Link kopiert – im Browser einfügen.'), reportError) }, 'Link kopieren'));
+    linkRow.classList.remove('hidden');
+  });
   document.body.appendChild(overlay);
+  // A login that is cancelled here ends on its own in the backend (timeout).
+  return Promise.race([login(), cancelled]).finally(() => { off(); overlay.remove(); });
+}
+
+export async function googleLogin(loginHint = null) {
   try {
-    const acc = await call('add_google_account', { loginHint }, { silent: true });
+    const acc = await waitForLogin(
+      { title: 'Mit Google anmelden', ic: 'google', text: 'Bitte melden Sie sich im geöffneten Browserfenster bei Google an und erlauben Sie den Zugriff auf Gmail, Kalender und Kontakte. Dieses Fenster schließt sich automatisch.' },
+      () => call('add_google_account', { loginHint }, { silent: true }));
+    if (!acc) return null;
     toast(loginHint ? `Konto ${acc.email} ist wieder angemeldet.` : `Konto ${acc.email} wurde hinzugefügt.`);
     return acc;
-  } catch (e) { reportError(e); return null; } finally { overlay.remove(); }
+  } catch (e) { reportError(e); return null; }
 }
 
 /** Name of the account in the views: the own name, else the address. */
@@ -443,8 +469,65 @@ function lookEditor(acc, { onPreview, onChanged }) {
         h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`))));
 }
 
+/** Own sync interval of the account; empty = the global setting. Saved right away. */
+function intervalEditor(acc) {
+  const input = h('input.input', { type: 'number', min: '30', max: '3600', step: '30', name: 'accSyncInterval', value: acc.syncIntervalSecs ? String(acc.syncIntervalSecs) : '', placeholder: 'Standard', style: { width: '100px' }, dataset: { testid: 'acc-sync-interval' } });
+  input.addEventListener('change', async () => {
+    const raw = input.value.trim();
+    const secs = raw === '' ? null : parseInt(raw, 10);
+    input.classList.remove('invalid');
+    if (secs !== null && !(secs >= 30 && secs <= 3600)) {
+      input.classList.add('invalid');
+      toast('Das Intervall muss zwischen 30 und 3600 Sekunden liegen.', 'error');
+      return;
+    }
+    try {
+      await call('set_account_sync_interval', { accountId: acc.id, syncIntervalSecs: secs });
+      acc.syncIntervalSecs = secs;
+    } catch (e) { reportError(e); }
+  });
+  return h('div.wiz-grid', { dataset: { testid: 'acc-interval' } },
+    h('label.srv-l', 'Abgleich alle'), h('div', h('span.inline', input, h('span.dim', 'Sekunden')),
+      h('div.note', 'Leer = allgemeine Einstellung (Einstellungen → Allgemein).')));
+}
+
 /** Account detail panel for the settings dialog ("Konten" tab). */
-export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
+/** Shared/delegated Exchange mailboxes of a Microsoft 365 account. */
+function sharedMailboxes(acc, { onSaved, onRelogin }) {
+  const shared = (acc.mailboxes || []).filter((m) => m.kind === 'shared');
+  const list = h('div.shared-mb-list', { dataset: { testid: 'shared-mb-list' } });
+  for (const m of shared) {
+    const rm = h('button.icon-btn.sm', { type: 'button', title: 'Postfach entfernen', 'aria-label': 'Postfach entfernen', html: icon('trash', 14), dataset: { testid: 'shared-mb-remove' } });
+    rm.addEventListener('click', busyClick(async () => {
+      const ok = await confirmDialog(`Postfach „${m.address}“ aus lettertask entfernen? Auf dem Server wird nichts gelöscht.`, { title: 'Postfach entfernen', danger: true, ok: 'Entfernen' });
+      if (!ok) return;
+      await call('remove_shared_mailbox', { mailboxId: m.id });
+      onSaved && onSaved();
+    }));
+    list.appendChild(h('div.shared-mb', { dataset: { testid: 'shared-mb' } },
+      h('span', { html: icon('inbox', 15) }),
+      h('span.acc-text', h('span.acc-n', m.displayName || m.address), h('span.acc-e', m.address)),
+      rm));
+  }
+  if (!shared.length) list.appendChild(h('div.dim', 'Keine freigegebenen Postfächer eingebunden.'));
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'shared-mb-add' }, html: icon('plus', 14) + ' Postfach hinzufügen…' });
+  add.addEventListener('click', busyClick(async () => {
+    const address = await promptDialog('E-Mail-Adresse des freigegebenen Postfachs (Sie brauchen in Exchange Vollzugriff darauf):', { title: 'Freigegebenes Postfach hinzufügen', placeholder: 'team@firma.de', ok: 'Hinzufügen' });
+    if (!address || !address.trim()) return;
+    const mb = await call('add_shared_mailbox', { accountId: acc.id, address: address.trim() });
+    toast(`Postfach ${mb.address} wurde hinzugefügt.`);
+    onSaved && onSaved();
+  }));
+  const relogin = onRelogin ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-relogin' }, html: icon('user', 14) + ' Erneut anmelden…' }) : null;
+  if (relogin) relogin.addEventListener('click', busyClick(() => onRelogin(acc)));
+  return h('div.shared-mbs',
+    h('div.acc-sub', 'Freigegebene Postfächer'),
+    list,
+    h('div.acc-actions', add, relogin),
+    h('p.note', 'Für Konten, die vor dieser Funktion angemeldet wurden, einmal „Erneut anmelden“ wählen, damit lettertask auf freigegebene Postfächer zugreifen darf.'));
+}
+
+export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRelogin }) {
   const box = h('div.acc-detail', { dataset: { testid: 'acc-detail' } });
   let avatar = accountAvatar(acc, 'xl');
   const header = h('div.acc-head',
@@ -459,13 +542,14 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook }) {
     avatar.replaceWith(next);
     avatar = next;
   };
-  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }));
+  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc));
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));
   if (isGoogle(acc)) return googleDetail(acc, box, remove, onSaved);
   if (!isImap(acc)) {
     box.append(
       h('p.note', 'Microsoft-365-Konto. Anmeldung, E-Mail, Kalender, Kontakte und Kategorien laufen über Microsoft Graph. Der Anzeigename wird von Microsoft 365 übernommen.'),
+      sharedMailboxes(acc, { onSaved, onRelogin }),
       h('div.acc-actions', remove));
     return box;
   }

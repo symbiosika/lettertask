@@ -145,6 +145,39 @@ function linkOf(target) {
   return { el: a, href: (a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '').trim() };
 }
 
+/** The picture as PNG (other formats are converted; the clipboard takes PNG). */
+async function imagePng(img) {
+  const src = img.currentSrc || img.src;
+  const toPng = (source, w, h_) => new Promise((resolve, reject) => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h_;
+    c.getContext('2d').drawImage(source, 0, 0);
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('Bild nicht lesbar'))), 'image/png');
+  });
+  try {
+    if (!img.complete) await img.decode();
+    return await toPng(img, img.naturalWidth, img.naturalHeight);
+  } catch {
+    // Remote picture (canvas tainted): fetch it as data instead.
+    const blob = await (await fetch(src)).blob();
+    if (blob.type === 'image/png') return blob;
+    const bmp = await createImageBitmap(blob);
+    return toPng(bmp, bmp.width, bmp.height);
+  }
+}
+
+/** Copies a picture of a mail as image (pasted as picture elsewhere, e.g. in a chat). */
+export async function copyImage(img) {
+  try {
+    if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) throw new Error('Die Zwischenablage nimmt hier keine Bilder an.');
+    // A promise inside the item keeps the user gesture (required by WebKit).
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': imagePng(img) })]);
+    toast('Bild kopiert.');
+  } catch (e) {
+    reportError(new Error('Bild konnte nicht kopiert werden: ' + (e.message || e)));
+  }
+}
+
 /** Mounts the body iframe and wires link interception. */
 export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
   host.innerHTML = '';
@@ -173,6 +206,17 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
         const t = doc.getElementById(href.slice(1)) || doc.getElementsByName(href.slice(1))[0];
         if (t) t.scrollIntoView();
       }
+    });
+    // Own menu on pictures: the WebView's "Copy image" puts a data: picture
+    // on the clipboard as its (base64) address text.
+    doc.addEventListener('contextmenu', (e) => {
+      const img = e.target && e.target.closest ? e.target.closest('img') : null;
+      if (!img || !img.currentSrc) return;
+      e.preventDefault();
+      const r = frame.getBoundingClientRect();
+      showMenu([
+        { label: 'Bild kopieren', icon: 'copy', onClick: () => copyImage(img), testid: 'img-copy' },
+      ], r.left + e.clientX, r.top + e.clientY);
     });
     suppressNativeMenu(doc);
     // Middle click / other buttons never follow a link.
@@ -287,6 +331,7 @@ export function renderMessage(container, msg, opts) {
     act('reply', 'reply', 'Antworten (Strg+R)', 'rp-reply'),
     act('replyAll', 'replyAll', 'Allen antworten (Strg+Umschalt+R)', 'rp-replyall'),
     act('forward', 'forward', 'Weiterleiten (Strg+F)', 'rp-forward'),
+    act('delegate', 'people', 'Delegieren: weiterleiten und als Aufgabe nachverfolgen', 'rp-delegate'),
     h('span.rp-actsep'),
     act('more', 'more', 'Weitere Aktionen', 'rp-more')) : null;
 

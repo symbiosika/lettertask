@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "devserver"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "graph-fake"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2396,12 +2396,13 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lettertask"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
  "graph-fake",
+ "gtk",
  "mailcore",
  "serde_json",
  "tauri",
@@ -2570,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "mailcore"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "async-imap",
  "async-trait",

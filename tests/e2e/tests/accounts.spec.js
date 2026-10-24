@@ -107,6 +107,21 @@ test('Einstellungen › Konten zeigt das Microsoft-365-Konto', async ({ page }) 
   await expect(page.locator('.tree-root.account .kind-badge').first()).toHaveText('M365');
 });
 
+test('Freigegebenes Postfach hinzufügen und entfernen', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=app-menu]').click();
+  await page.locator('[data-testid=menu-settings]').click();
+  await page.locator('[data-testid=settings-tab-accounts]').click();
+  await expect(page.locator('[data-testid=shared-mb]')).toHaveCount(0);
+  await page.locator('[data-testid=shared-mb-add]').click();
+  await page.locator('.modal-overlay').last().locator('input').fill('datenschutz@contoso.example');
+  await page.locator('.modal-overlay').last().getByRole('button', { name: 'Hinzufügen' }).click();
+  await expect(page.locator('[data-testid=shared-mb]')).toContainText('Datenschutz Contoso');
+  await page.locator('[data-testid=shared-mb-remove]').click();
+  await page.locator('.modal-overlay').last().getByRole('button', { name: 'Entfernen' }).click();
+  await expect(page.locator('[data-testid=shared-mb]')).toHaveCount(0);
+});
+
 test('Eigenes Kontobild: wählen, rund anzeigen, entfernen', async ({ page }) => {
   await openApp(page);
   await page.locator('[data-testid=app-menu]').click();

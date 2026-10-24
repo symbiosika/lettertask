@@ -1166,7 +1166,14 @@ export function respond(mode) {
   const s = requireSelection();
   if (!s) return;
   const m = s.items[0];
-  openWindow('compose', { mailboxId: m.mailboxId || s.mailboxId, mode, sourceMessageId: m.id }).catch(reportError);
+  openWindow('compose', composeParams(m.mailboxId || s.mailboxId, mode, m.id)).catch(reportError);
+}
+
+/** Compose window parameters; "delegate" is a forward that becomes a delegated task. */
+export function composeParams(mailboxId, mode, sourceMessageId) {
+  return mode === 'delegate'
+    ? { mailboxId, mode: 'forward', delegate: '1', sourceMessageId }
+    : { mailboxId, mode, sourceMessageId };
 }
 
 function localUpdate(ids, fn) {
@@ -1457,6 +1464,7 @@ function messageContextMenu(x, y) {
     { label: 'Antworten', icon: 'reply', disabled: !single, shortcut: 'Strg+R', onClick: () => respond('reply') },
     { label: 'Allen antworten', icon: 'replyAll', disabled: !single, shortcut: 'Strg+Umschalt+R', onClick: () => respond('replyAll') },
     { label: 'Weiterleiten', icon: 'forward', disabled: !single, shortcut: 'Strg+F', onClick: () => respond('forward') },
+    { label: 'Delegieren…', icon: 'people', disabled: !single, onClick: () => respond('delegate'), testid: 'ctx-delegate' },
     { separator: true },
     anyUnread
       ? { label: 'Als gelesen markieren', icon: 'mailOpen', shortcut: 'Strg+Q', onClick: () => markSelected(true) }

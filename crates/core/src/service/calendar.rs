@@ -9,16 +9,27 @@ use crate::error::{Error, Result};
 use crate::graph::{seg, GraphClient};
 use crate::model::*;
 
-const CACHE_KEY: &str = "calendars";
+pub(super) const CACHE_KEY: &str = "calendars";
 /// Colleagues' calendars added inside the app (list of addresses).
 const PEOPLE_KEY: &str = "people_calendars";
 /// Calendar id prefix of such a calendar: "user:<address>".
 const PEOPLE_PREFIX: &str = "user:";
 const PEOPLE_GROUP: &str = "Kalender von Personen";
+/// Own label/colour of any other calendar (e.g. one shared in Outlook), by id.
+const OVERRIDES_KEY: &str = "calendar_overrides";
 /// Colours a new person's calendar gets at random (Outlook-like palette).
 const PEOPLE_COLORS: &[&str] = &[
     "#e8a33d", "#4aa564", "#3f8fd2", "#c2509b", "#8a63d2", "#d9534f", "#2bb3a3", "#9c7b4f", "#5b6ee1", "#e07b39",
 ];
+
+/// Label and/or colour set in the app for a calendar the app did not add.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct CalOverride {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+}
 
 /// A colleague's calendar added in the app; `name` is the label shown.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -37,6 +48,9 @@ fn utc_header() -> [(&'static str, String); 1] {
 
 impl Service {
     pub(crate) async fn list_calendars(&self, account_id: &str) -> Result<Vec<Calendar>> {
+        if self.is_google_account(account_id) {
+            return self.google_list_calendars(account_id).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Ok(vec![]);
         }
@@ -68,6 +82,7 @@ impl Service {
                     }
                 }
                 cals.sort_by_key(|c| (!c.is_default, c.group.is_some()));
+                self.apply_calendar_overrides(account_id, &mut cals)?;
                 self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
                 Ok(cals)
             }
@@ -136,7 +151,9 @@ impl Service {
         let people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         for p in people {
             let addr = p.address.to_lowercase();
-            if cals.iter().any(|k| k.owner.as_ref().is_some_and(|o| o.address.to_lowercase() == addr)) {
+            // Only the person's own (main) calendar makes this entry redundant:
+            // another calendar they share (e.g. "GYM") must not hide it.
+            if cals.iter().any(|k| is_main_calendar_of(k, &addr)) {
                 continue;
             }
             cals.push(Calendar {
@@ -176,8 +193,55 @@ impl Service {
         self.list_calendars(account_id).await
     }
 
-    /// Changes label and/or colour (#rrggbb) of a person's calendar.
+    /// Own labels/colours set in the app (calendars shared in Outlook etc.).
+    pub(super) fn apply_calendar_overrides(&self, account_id: &str, cals: &mut [Calendar]) -> Result<()> {
+        let overrides: std::collections::HashMap<String, CalOverride> =
+            self.store.get_account_json(account_id, OVERRIDES_KEY)?.unwrap_or_default();
+        for c in cals.iter_mut() {
+            if let Some(o) = overrides.get(&c.id) {
+                if let Some(n) = o.name.as_ref().filter(|n| !n.is_empty()) {
+                    c.name = n.clone();
+                }
+                if let Some(col) = &o.color {
+                    c.color = Some(col.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Changes label and/or colour (#rrggbb) of a calendar: for one added in
+    /// the app its entry, for any other one an override kept in the app (an
+    /// empty name restores the server's name).
     pub(crate) async fn update_people_calendar(&self, account_id: &str, calendar_id: &str, name: Option<&str>, color: Option<&str>) -> Result<Vec<Calendar>> {
+        if let Some(c) = color {
+            let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit());
+            if !ok {
+                return Err(Error::invalid("Ungültige Farbe"));
+            }
+        }
+        if !calendar_id.starts_with(PEOPLE_PREFIX) {
+            let mut overrides: std::collections::HashMap<String, CalOverride> =
+                self.store.get_account_json(account_id, OVERRIDES_KEY)?.unwrap_or_default();
+            let o = overrides.entry(calendar_id.to_string()).or_default();
+            if let Some(n) = name {
+                o.name = Some(n.trim().to_string()).filter(|n| !n.is_empty());
+            }
+            if let Some(c) = color {
+                o.color = Some(c.to_lowercase());
+            }
+            self.store.put_account_json(account_id, OVERRIDES_KEY, &overrides)?;
+            // The server's name is needed back after a reset: reload, else the cache.
+            return match self.list_calendars(account_id).await {
+                Ok(c) => Ok(c),
+                Err(_) => {
+                    let mut cals: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
+                    self.apply_calendar_overrides(account_id, &mut cals)?;
+                    self.store.put_account_json(account_id, CACHE_KEY, &cals)?;
+                    Ok(cals)
+                }
+            };
+        }
         let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
         let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         let p = people
@@ -204,10 +268,36 @@ impl Service {
     }
 
     pub(crate) async fn remove_people_calendar(&self, account_id: &str, calendar_id: &str) -> Result<Vec<Calendar>> {
+        if !calendar_id.starts_with(PEOPLE_PREFIX) {
+            return self.remove_shared_calendar(account_id, calendar_id).await;
+        }
         let address = calendar_id.strip_prefix(PEOPLE_PREFIX).unwrap_or(calendar_id);
         let mut people: Vec<PersonCal> = self.store.get_account_json(account_id, PEOPLE_KEY)?.unwrap_or_default();
         people.retain(|p| !p.address.eq_ignore_ascii_case(address));
         self.store.put_account_json(account_id, PEOPLE_KEY, &people)?;
+        self.list_calendars(account_id).await
+    }
+
+    /// Removes a calendar someone else shared (e.g. added in Outlook) from
+    /// this account's list – also in Outlook. Own calendars are never deleted.
+    async fn remove_shared_calendar(&self, account_id: &str, calendar_id: &str) -> Result<Vec<Calendar>> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Dieser Kalender kann hier nicht entfernt werden."));
+        }
+        let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
+        let cal = known.iter().find(|c| c.id == calendar_id).ok_or_else(|| Error::NotFound("Kalender".into()))?;
+        if cal.owner.is_none() || cal.is_default {
+            return Err(Error::invalid("Eigene Kalender können hier nicht gelöscht werden – nur von anderen geteilte."));
+        }
+        let path = match cal.group_id.as_deref() {
+            Some(gid) => format!("/me/calendarGroups/{}/calendars/{}", seg(gid), seg(calendar_id)),
+            None => format!("/me/calendars/{}", seg(calendar_id)),
+        };
+        let c = self.client(account_id)?;
+        match c.delete(&path).await {
+            Err(e) if !e.is_not_found() => return Err(e),
+            _ => {}
+        }
         self.list_calendars(account_id).await
     }
 
@@ -267,6 +357,21 @@ impl Service {
             .collect())
     }
 
+    /// Last known events of the range from the local store (no Graph round trip).
+    pub(crate) fn cached_events(&self, account_id: &str, calendar_ids: &[String], start: &str, end: &str) -> Result<Vec<Event>> {
+        let start = convert::normalize_utc(start);
+        let end = convert::normalize_utc(end);
+        if start.is_empty() || end.is_empty() || start >= end {
+            return Err(Error::invalid("Ungültiger Zeitraum"));
+        }
+        let mut out = Vec::new();
+        for cid in calendar_ids {
+            out.extend(self.store.cached_events(account_id, cid, &start, &end)?);
+        }
+        out.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.end.cmp(&a.end)));
+        Ok(out)
+    }
+
     pub(crate) async fn list_events(
         &self,
         account_id: &str,
@@ -274,13 +379,16 @@ impl Service {
         start: &str,
         end: &str,
     ) -> Result<Vec<Event>> {
-        if crate::imap::is_imap_id(account_id) {
-            return Ok(vec![]);
-        }
         let start = convert::normalize_utc(start);
         let end = convert::normalize_utc(end);
         if start.is_empty() || end.is_empty() || start >= end {
             return Err(Error::invalid("Ungültiger Zeitraum"));
+        }
+        if self.is_google_account(account_id) {
+            return self.google_list_events(account_id, calendar_ids, &start, &end).await;
+        }
+        if crate::imap::is_imap_id(account_id) {
+            return Ok(vec![]);
         }
         let c = self.client(account_id)?;
         let known: Vec<Calendar> = self.store.get_account_json(account_id, CACHE_KEY)?.unwrap_or_default();
@@ -401,6 +509,9 @@ impl Service {
     }
 
     pub(crate) async fn get_event(&self, account_id: &str, event_id: &str) -> Result<EventDetail> {
+        if self.is_google_account(account_id) {
+            return self.google_get_event(account_id, event_id).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -488,6 +599,10 @@ impl Service {
     }
 
     pub(crate) async fn create_event(&self, account_id: &str, calendar_id: &str, input: EventInput) -> Result<Event> {
+        if self.is_google_account(account_id) {
+            Self::validate_event(&input)?;
+            return self.google_create_event(account_id, calendar_id, &input).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -515,6 +630,10 @@ impl Service {
     }
 
     pub(crate) async fn update_event(&self, account_id: &str, event_id: &str, input: EventInput) -> Result<Event> {
+        if self.is_google_account(account_id) {
+            Self::validate_event(&input)?;
+            return self.google_update_event(account_id, event_id, &input).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -566,6 +685,9 @@ impl Service {
     }
 
     pub(crate) async fn delete_event(&self, account_id: &str, event_id: &str) -> Result<()> {
+        if self.is_google_account(account_id) {
+            return self.google_delete_event(account_id, event_id).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -584,6 +706,9 @@ impl Service {
         comment: &str,
         send_response: bool,
     ) -> Result<()> {
+        if self.is_google_account(account_id) {
+            return self.google_respond_event(account_id, event_id, response, comment, send_response).await;
+        }
         if crate::imap::is_imap_id(account_id) {
             return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
         }
@@ -605,6 +730,51 @@ impl Service {
     }
 }
 
+/// Whether `c` is the main calendar of the person `addr` as Outlook lists it
+/// under "Kalender von Personen": named after the person (or plainly
+/// "Kalender"/"Calendar"), not a further calendar they share.
+fn is_main_calendar_of(c: &Calendar, addr: &str) -> bool {
+    let Some(o) = c.owner.as_ref().filter(|o| o.address.eq_ignore_ascii_case(addr)) else {
+        return false;
+    };
+    let name = c.name.trim().to_lowercase();
+    let local = addr.split('@').next().unwrap_or("");
+    name == o.name.trim().to_lowercase()
+        || name == addr
+        || name == local
+        || matches!(name.as_str(), "kalender" | "calendar")
+}
+
 fn s_of(v: &Value) -> String {
     v["dateTime"].as_str().unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared(name: &str) -> Calendar {
+        Calendar {
+            id: "x".into(),
+            account_id: "a".into(),
+            name: name.into(),
+            color: None,
+            can_edit: false,
+            is_default: false,
+            group: Some("People's calendars".into()),
+            group_id: Some("g".into()),
+            owner: Some(Address { name: "Tobias Fieberling".into(), address: "fieberling@symbiosika.de".into() }),
+        }
+    }
+
+    #[test]
+    fn only_the_main_calendar_replaces_an_added_person() {
+        let addr = "fieberling@symbiosika.de";
+        assert!(is_main_calendar_of(&shared("Tobias Fieberling"), addr));
+        assert!(is_main_calendar_of(&shared("Kalender"), addr));
+        assert!(is_main_calendar_of(&shared("fieberling"), addr));
+        // A further calendar the person shares must not hide their own.
+        assert!(!is_main_calendar_of(&shared("GYM"), addr));
+        assert!(!is_main_calendar_of(&shared("Tobias Fieberling"), "someone@else.de"));
+    }
 }

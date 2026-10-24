@@ -8,7 +8,7 @@ import { state, loadCategories, loadLanes, lanesOf } from './state.js';
 import { LANE_NAME_RE } from './categories.js';
 import { DEFAULT_SNOOZE, parseRule, formatRule, computeSnooze, fmtSnoozeTarget, snoozeOptions, BASE_LABELS } from './snooze.js';
 import { signaturesPanel } from './signatures.js';
-import { chooseAccountKind, imapWizard, googleLogin, accountDetail, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
+import { chooseAccountKind, imapWizard, googleLogin, waitForLogin, accountDetail, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
 
 export const hooks = { onConfigSaved: () => {}, onAccountsChanged: () => {} };
 
@@ -201,7 +201,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const panels = {
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
-      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden'))),
+      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
       h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null),
     reading: h('div.set-panel',
@@ -316,6 +316,7 @@ function accountsPanel({ initialAccountId }) {
         onRemoved: async (x) => { if (await removeAccount(x)) render(); },
         onSaved: async () => { hooks.onAccountsChanged(); await reloadAccounts(); render(); },
         onAvatar: () => render(),
+        onRelogin: async () => { await loginWithWait(); await reloadAccounts(); render(); },
         onLook: (x) => {
           // state.accounts may already be a reloaded copy (accounts-changed).
           const cur = state.accounts.find((a) => a.id === x.id);
@@ -570,17 +571,13 @@ export async function addAccountFlow() {
 }
 
 async function loginWithWait() {
-  const waiting = h('div.confirm-body', h('span', { html: icon('user', 32) }), h('div',
-    h('div', { style: { fontWeight: '600', marginBottom: '4px' } }, 'Anmeldung im Browser…'),
-    h('div', 'Bitte melden Sie sich im geöffneten Browserfenster bei Microsoft 365 an. Dieses Fenster schließt sich automatisch.')));
-  const overlay = h('div.modal-overlay', h('div.modal', { style: { width: '420px' } }, h('div.modal-title', h('span', 'Konto hinzufügen')), h('div.modal-body', waiting)));
-  document.body.appendChild(overlay);
-  try {
-    const acc = await call('add_account', {});
-    toast(`Konto ${acc.email} wurde hinzugefügt.`);
-    hooks.onAccountsChanged();
-    return acc;
-  } finally { overlay.remove(); }
+  const acc = await waitForLogin(
+    { title: 'Konto hinzufügen', ic: 'user', text: 'Bitte melden Sie sich im geöffneten Browserfenster bei Microsoft 365 an. Dieses Fenster schließt sich automatisch.' },
+    () => call('add_account', {}));
+  if (!acc) return null;
+  toast(`Konto ${acc.email} wurde hinzugefügt.`);
+  hooks.onAccountsChanged();
+  return acc;
 }
 
 export async function welcomeDialog({ o365Only = false } = {}) {

@@ -31,6 +31,11 @@ pub const SCOPES: &[&str] = &[
     "People.Read",
 ];
 
+/// Access to shared and delegated mailboxes. Requested at sign-in only: a
+/// refresh asking for a scope the user never consented to would fail and
+/// lock out accounts signed in before these were added.
+pub const SHARED_SCOPES: &[&str] = &["Mail.ReadWrite.Shared", "Mail.Send.Shared"];
+
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     /// e.g. `https://login.microsoftonline.com`
@@ -51,6 +56,10 @@ impl OAuthConfig {
 
     fn scope_string() -> String {
         SCOPES.join(" ")
+    }
+
+    fn login_scope_string() -> String {
+        SCOPES.iter().chain(SHARED_SCOPES).copied().collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -113,7 +122,7 @@ pub fn authorize_url(cfg: &OAuthConfig, redirect_uri: &str, state: &str, challen
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", redirect_uri)
         .append_pair("response_mode", "query")
-        .append_pair("scope", &OAuthConfig::scope_string())
+        .append_pair("scope", &OAuthConfig::login_scope_string())
         .append_pair("state", state)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
@@ -200,7 +209,7 @@ pub async fn exchange_code(
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<TokenSet> {
-    let scope = OAuthConfig::scope_string();
+    let scope = OAuthConfig::login_scope_string();
     token_request(
         http,
         cfg,
@@ -260,7 +269,7 @@ pub async fn start_device_code(http: &reqwest::Client, cfg: &OAuthConfig) -> Res
     if cfg.client_id.trim().is_empty() {
         return Err(Error::Auth("Keine Client-ID konfiguriert.".into()));
     }
-    let scope = OAuthConfig::scope_string();
+    let scope = OAuthConfig::login_scope_string();
     let resp = http
         .post(cfg.endpoint("devicecode"))
         .form(&[("client_id", cfg.client_id.as_str()), ("scope", scope.as_str())])

@@ -1237,3 +1237,35 @@ async fn today_view_and_focus_time() {
     assert!(g["until"].is_null());
     assert!(ctx.host.events.lock().unwrap().iter().filter(|(e, _)| e == "focus-changed").count() >= 2);
 }
+
+#[tokio::test]
+async fn shared_mailbox_add_sync_remove() {
+    let ctx = setup().await;
+    const SHARED: &str = "datenschutz@contoso.example";
+    let err = call_err(&ctx.svc, "add_shared_mailbox", json!({"accountId": ctx.account, "address": "niemand@contoso.example"})).await;
+    assert!(err.contains("nicht gefunden"), "{err}");
+
+    let mb: Mailbox = call(&ctx.svc, "add_shared_mailbox", json!({"accountId": ctx.account, "address": " Datenschutz@Contoso.example "})).await;
+    assert_eq!(mb.kind, "shared");
+    assert_eq!(mb.address, SHARED);
+    assert_eq!(mb.display_name, "Datenschutz Contoso");
+    let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
+    assert_eq!(accounts[0].mailboxes.len(), 2);
+    let inbox = ctx
+        .folders(&mb.id)
+        .await
+        .into_iter()
+        .find(|f| f.well_known.as_deref() == Some("inbox"))
+        .expect("shared inbox synced");
+    assert!(inbox.total_count > 0);
+
+    let err = call_err(&ctx.svc, "add_shared_mailbox", json!({"accountId": ctx.account, "address": SHARED})).await;
+    assert!(err.contains("bereits"), "{err}");
+    let err = call_err(&ctx.svc, "remove_shared_mailbox", json!({"mailboxId": ctx.account})).await;
+    assert!(err.contains("Hauptpostfach"), "{err}");
+
+    let _: Value = call(&ctx.svc, "remove_shared_mailbox", json!({"mailboxId": mb.id})).await;
+    let accounts: Vec<Account> = call(&ctx.svc, "list_accounts", json!({})).await;
+    assert_eq!(accounts[0].mailboxes.len(), 1);
+    assert!(ctx.folders(&mb.id).await.is_empty());
+}

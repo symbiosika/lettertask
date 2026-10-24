@@ -111,3 +111,24 @@ test('Kalender einer Person hinzufügen und wieder entfernen', async ({ page }) 
   await page.locator('[data-testid=cal-remove]').click();
   await expect(renamed).toHaveCount(0);
 });
+
+test('Kalender einer Person erneut hinzufügen blendet einen ausgeblendeten wieder ein', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=nav-calendar]').click();
+  const add = async () => {
+    await page.locator('[data-testid=cal-add-person]').first().click();
+    await page.locator('.modal .rcpt-input').fill('erneut@contoso.example');
+    await page.locator('.modal button', { hasText: 'Hinzufügen' }).click();
+    await expect(page.locator('.modal')).toHaveCount(0);
+  };
+  await add();
+  await expect(page.locator('.toast', { hasText: 'wurde hinzugefügt' })).toBeVisible();
+  const item = page.locator('[data-testid=cal-item]', { hasText: 'erneut@contoso.example' });
+  await item.locator('input').uncheck();
+  await add();
+  await expect(page.locator('.toast', { hasText: 'schon vorhanden und wird wieder angezeigt' })).toBeVisible();
+  await expect(item.locator('input')).toBeChecked();
+  await item.click({ button: 'right' });
+  await page.locator('[data-testid=cal-remove]').click();
+  await expect(item).toHaveCount(0);
+});

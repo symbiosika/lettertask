@@ -79,6 +79,10 @@ async function load_() {
   const token = ++st.token;
   els.panel.classList.add('loading');
   try {
+    // Last known events first, the server's follow.
+    const cached = await eventsBetween(st.start, addDays(st.start, DAYS), { cached: true });
+    if (token !== st.token) return;
+    if (cached.length) { st.events = cached; render(); }
     const events = await eventsBetween(st.start, addDays(st.start, DAYS));
     if (token !== st.token) return;
     st.events = events;

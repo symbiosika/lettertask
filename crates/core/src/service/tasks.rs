@@ -253,6 +253,41 @@ impl Service {
             remind_at: None,
         }, true)
         .await?;
+        self.place_delegation(mailbox_id, subject, body_html, &to, due, thread).await
+    }
+
+    /// Delegating an existing mail: it is forwarded (`d`, mode "forward",
+    /// exactly one "An" recipient: the assignee) and followed up like a
+    /// delegated task.
+    pub(crate) async fn delegate_draft(&self, mut d: DraftInput, due: Option<&str>, todo_prefix: bool) -> Result<MessageSummary> {
+        let to = match d.to.as_slice() {
+            [one] => Address { name: one.name.trim().to_string(), address: one.address.trim().to_string() },
+            [] => return Err(Error::invalid("Bitte die Person angeben, an die delegiert wird.")),
+            _ => return Err(Error::invalid("Eine Aufgabe kann nur an genau eine Person delegiert werden (weitere bitte in Cc).")),
+        };
+        if !super::compose::valid_address(&to.address) {
+            return Err(Error::invalid(format!("Ungültige Adresse: {}", to.address)));
+        }
+        let due = parse_due(due)?;
+        d.subject = delegated_subject(&d.subject, todo_prefix);
+        // The delegation copy is the reminder; no second one.
+        d.remind_at = None;
+        let (mailbox_id, subject, body_html) = (d.mailbox_id.clone(), d.subject.clone(), d.body_html.clone());
+        let thread = self.send_draft_thread(d, true).await?;
+        self.place_delegation(&mailbox_id, subject, &body_html, &to, due, thread).await
+    }
+
+    /// The copy of a delegation for yourself: "[D_<address>]" plus the
+    /// thread marker, in "Wiedervorlage" (or the inbox without due time).
+    async fn place_delegation(
+        &self,
+        mailbox_id: &str,
+        subject: String,
+        body_html: &str,
+        to: &Address,
+        due: Option<DateTime<Utc>>,
+        thread: Option<String>,
+    ) -> Result<MessageSummary> {
         let name = if to.name.is_empty() { to.address.clone() } else { format!("{} &lt;{}&gt;", html_escape::encode_text(&to.name), to.address) };
         let header = format!(
             "<div style=\"padding:8px 12px;margin-bottom:12px;background:#f3f6fc;border-left:3px solid #2f6fe4;font-family:sans-serif;font-size:13px\">\

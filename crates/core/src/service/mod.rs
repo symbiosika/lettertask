@@ -4,6 +4,7 @@ mod calendar;
 mod categories;
 mod compose;
 mod contacts;
+mod google_cal;
 mod imap_account;
 mod imap_compose;
 mod imap_mail;
@@ -56,6 +57,8 @@ pub struct Service {
     pub(crate) imap: crate::imap::conn::Pool,
     /// Access tokens of accounts signed in with Google.
     google_tokens: std::sync::Mutex<HashMap<String, TokenSet>>,
+    /// Roots of the Google Calendar and People APIs.
+    google_api: RwLock<(String, String)>,
     /// Mails sent in the background, in order, to one worker (started on demand).
     send_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DraftInput>>>,
     /// Mails queued or being sent in the background.
@@ -207,6 +210,7 @@ impl Service {
             last_sync: RwLock::new(None),
             imap: Default::default(),
             google_tokens: Default::default(),
+            google_api: RwLock::new((crate::gapi::DEFAULT_API_BASE.into(), crate::gapi::DEFAULT_PEOPLE_BASE.into())),
             send_queue: Default::default(),
             pending_sends: Default::default(),
             reminders: Default::default(),
@@ -363,8 +367,27 @@ impl Service {
                 self.emit("accounts-changed", json!({}));
                 ok(Value::Null)
             }
+            "set_account_sync_interval" => {
+                let id: String = arg(a, "accountId")?;
+                let secs: Option<u64> = arg(a, "syncIntervalSecs")?;
+                if secs.is_some_and(|v| !(15..=3600).contains(&v)) {
+                    return Err(Error::invalid("Das Intervall muss zwischen 15 und 3600 Sekunden liegen."));
+                }
+                if !self.store.set_account_sync_interval(&id, secs)? {
+                    return Err(Error::invalid("Unbekanntes Konto."));
+                }
+                self.emit("accounts-changed", json!({}));
+                ok(Value::Null)
+            }
             "remove_account" => {
                 self.remove_account(&arg::<String>(a, "accountId")?)?;
+                ok(Value::Null)
+            }
+            "add_shared_mailbox" => ok(self
+                .add_shared_mailbox(&arg::<String>(a, "accountId")?, &arg::<String>(a, "address")?)
+                .await?),
+            "remove_shared_mailbox" => {
+                self.remove_shared_mailbox(&arg::<String>(a, "mailboxId")?)?;
                 ok(Value::Null)
             }
             "set_active_folder" => {
@@ -547,6 +570,13 @@ impl Service {
                 }
                 ok(Value::Null)
             }
+            "delegate_draft" => ok(self
+                .delegate_draft(
+                    arg(a, "draft")?,
+                    arg::<Option<String>>(a, "due")?.as_deref(),
+                    arg::<Option<bool>>(a, "todoPrefix")?.unwrap_or(true),
+                )
+                .await?),
             "discard_draft" => {
                 self.discard_draft(&arg::<String>(a, "mailboxId")?, arg::<Option<String>>(a, "draftId")?.as_deref())
                     .await?;
@@ -687,14 +717,16 @@ impl Service {
             "remove_people_calendar" => ok(self
                 .remove_people_calendar(&arg::<String>(a, "accountId")?, &arg::<String>(a, "calendarId")?)
                 .await?),
-            "list_events" => ok(self
-                .list_events(
-                    &arg::<String>(a, "accountId")?,
-                    &arg::<Vec<String>>(a, "calendarIds")?,
-                    &arg::<String>(a, "start")?,
-                    &arg::<String>(a, "end")?,
-                )
-                .await?),
+            "list_events" => {
+                let account_id = arg::<String>(a, "accountId")?;
+                let ids = arg::<Vec<String>>(a, "calendarIds")?;
+                let (start, end) = (arg::<String>(a, "start")?, arg::<String>(a, "end")?);
+                // `cached`: the last known events of the range (no Graph round trip).
+                match arg::<Option<bool>>(a, "cached")?.unwrap_or(false) {
+                    true => ok(self.cached_events(&account_id, &ids, &start, &end)?),
+                    false => ok(self.list_events(&account_id, &ids, &start, &end).await?),
+                }
+            }
             "get_event" => ok(self
                 .get_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
                 .await?),
@@ -861,7 +893,7 @@ impl Service {
             .await?
         } else {
             let host = self.host.clone();
-            auth::interactive_login(&self.http, &oauth, move |url| host.open_url(&url), Duration::from_secs(300))
+            auth::interactive_login(&self.http, &oauth, move |url| open_login_url(host.as_ref(), &url), Duration::from_secs(300))
                 .await?
         };
         self.finish_login(tokens).await
@@ -934,15 +966,88 @@ impl Service {
         Ok(())
     }
 
+    /// Adds a shared (or delegated) Exchange mailbox to a Microsoft 365
+    /// account. Graph cannot list the mailboxes a user may open, so the
+    /// address is entered by hand; access is checked on the inbox.
+    pub async fn add_shared_mailbox(self: &Arc<Self>, account_id: &str, address: &str) -> Result<Mailbox> {
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Freigegebene Postfächer gibt es nur bei Microsoft-365-Konten."));
+        }
+        let address = address.trim().to_lowercase();
+        if !address.contains('@') || address.chars().any(|c| c.is_whitespace() || c == '/') {
+            return Err(Error::invalid("Bitte eine gültige E-Mail-Adresse eingeben."));
+        }
+        let c = self.client(account_id)?;
+        let acc = self
+            .store
+            .list_accounts()?
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| Error::NotFound("Konto".into()))?;
+        if acc.mailboxes.iter().any(|m| m.address.eq_ignore_ascii_case(&address)) {
+            return Err(Error::invalid("Dieses Postfach ist bereits eingebunden."));
+        }
+        let prefix = format!("/users/{}", urlencoding::encode(&address));
+        if let Err(e) = c.get(&format!("{prefix}/mailFolders/inbox?$select=id")).await {
+            return Err(match e {
+                Error::Graph { status: 403, .. } => Error::invalid(
+                    "Kein Zugriff auf dieses Postfach. Entweder fehlt die Freigabe (Vollzugriff) in Exchange, \
+                     oder lettertask braucht die neue Berechtigung: Konto bitte einmal erneut anmelden.",
+                ),
+                Error::Graph { status: 404, .. } => Error::invalid("Dieses Postfach wurde nicht gefunden."),
+                other => other,
+            });
+        }
+        // Reading the name needs User.ReadBasic.All, which may not be granted.
+        let name = match c.get(&format!("{prefix}?$select=displayName")).await {
+            Ok(v) => v["displayName"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| address.clone());
+        let mailbox = Mailbox {
+            id: format!("{account_id}:{address}"),
+            account_id: account_id.to_string(),
+            address,
+            display_name: name,
+            kind: "shared".into(),
+        };
+        self.store.upsert_mailbox(&mailbox)?;
+        if let Err(e) = self.sync_folders(&mailbox.id).await {
+            self.store.delete_mailbox(&mailbox.id)?;
+            return Err(e);
+        }
+        if let Some(inbox) = self.store.folder_by_well_known(&mailbox.id, "inbox")? {
+            let _ = self.sync_folder(&mailbox.id, &inbox.id, true).await;
+        }
+        self.emit("accounts-changed", json!({}));
+        Ok(mailbox)
+    }
+
+    fn remove_shared_mailbox(&self, mailbox_id: &str) -> Result<()> {
+        let mb = self.store.get_mailbox(mailbox_id)?;
+        if mb.is_primary() {
+            return Err(Error::invalid("Das Hauptpostfach lässt sich nur mit dem Konto entfernen."));
+        }
+        self.store.delete_mailbox(mailbox_id)?;
+        self.active_folders.write().unwrap().remove(mailbox_id);
+        self.emit("accounts-changed", json!({}));
+        Ok(())
+    }
+
     // ---- background sync ----
 
     /// "Senden/Empfangen": folders, inbox and active folder of every mailbox.
     pub async fn sync_all(self: &Arc<Self>, background: bool) {
+        self.sync_accounts(background, |_| true).await;
+    }
+
+    /// Like `sync_all`, limited to the accounts `pick` selects.
+    async fn sync_accounts(self: &Arc<Self>, background: bool, pick: impl Fn(&Account) -> bool) {
         let Ok(_guard) = self.sync_all_lock.try_lock() else {
             return;
         };
         let accounts = match self.store.list_accounts() {
-            Ok(a) => a,
+            Ok(a) => a.into_iter().filter(|a| pick(a)).collect::<Vec<_>>(),
             Err(e) => {
                 self.emit_status("error", &e.to_string());
                 return;
@@ -1005,27 +1110,51 @@ impl Service {
             // Small delay so the UI is up before the first sync.
             tokio::time::sleep(Duration::from_secs(2)).await;
             let mut focus_active = false;
+            // Each account syncs on its own interval (default: the global one).
+            let mut last: HashMap<String, std::time::Instant> = HashMap::new();
             loop {
                 let Some(s) = svc.upgrade() else { return };
+                let global = s.config().sync_interval_secs.max(15);
+                let interval = |a: &Account| Duration::from_secs(a.sync_interval_secs.unwrap_or(global).max(15));
+                let accounts = s.store.list_accounts().unwrap_or_default();
+                let now = std::time::Instant::now();
+                let is_due = |a: &Account| last.get(&a.id).is_none_or(|t| now.duration_since(*t) >= interval(a));
                 // Fokuszeit pauses the automatic fetch; when it ends, sync once.
                 match s.focus_until() {
                     Some(_) => focus_active = true,
                     None => {
-                        if focus_active {
-                            focus_active = false;
+                        let all = std::mem::take(&mut focus_active);
+                        if all {
                             s.emit("focus-changed", json!({"until": null}));
                         }
-                        // A panicking sync must not end the loop silently.
-                        if let Err(p) = std::panic::AssertUnwindSafe(s.sync_all(true)).catch_unwind().await {
-                            let msg = format!("Interner Fehler beim Abgleich: {}", panic_text(&p));
-                            tracing::error!("{msg}");
-                            s.emit_status("error", &msg);
+                        let due: std::collections::HashSet<String> =
+                            accounts.iter().filter(|a| all || is_due(a)).map(|a| a.id.clone()).collect();
+                        if !due.is_empty() {
+                            // A panicking sync must not end the loop silently.
+                            let run = s.sync_accounts(true, |a| due.contains(&a.id));
+                            if let Err(p) = std::panic::AssertUnwindSafe(run).catch_unwind().await {
+                                let msg = format!("Interner Fehler beim Abgleich: {}", panic_text(&p));
+                                tracing::error!("{msg}");
+                                s.emit_status("error", &msg);
+                            }
+                            for id in due {
+                                last.insert(id, now);
+                            }
                         }
                     }
                 }
-                let wait = s.config().sync_interval_secs.max(15);
+                last.retain(|id, _| accounts.iter().any(|a| &a.id == id));
+                // Sleep until the next account is due (re-checked at least every 15 s
+                // so changed intervals and new accounts take effect promptly).
+                let now = std::time::Instant::now();
+                let wait = accounts
+                    .iter()
+                    .map(|a| last.get(&a.id).map_or(Duration::ZERO, |t| (*t + interval(a)).saturating_duration_since(now)))
+                    .min()
+                    .unwrap_or(Duration::from_secs(global))
+                    .clamp(Duration::from_secs(1), Duration::from_secs(15));
                 drop(s);
-                tokio::time::sleep(Duration::from_secs(wait)).await;
+                tokio::time::sleep(wait).await;
             }
         });
     }
@@ -1066,6 +1195,17 @@ impl Service {
         .await?;
         self.get_auto_reply(account_id).await
     }
+}
+
+/// Opens the sign-in page in the browser. The UI also gets the link
+/// (`login-url`): if no browser opens (seen on macOS), the user can open or
+/// copy it from the waiting dialog instead of waiting for nothing.
+pub(crate) fn open_login_url(host: &dyn Host, url: &str) -> Result<()> {
+    host.emit("login-url", json!({"url": url}));
+    if let Err(e) = host.open_url(url) {
+        tracing::warn!("Browser für die Anmeldung nicht geöffnet: {e}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

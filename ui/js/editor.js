@@ -81,6 +81,73 @@ async function embedBlobImages(doc) {
   }));
 }
 
+/**
+ * Pictures in the text can be resized: a click on one shows a frame with a
+ * corner handle (drag, aspect ratio kept) and quick sizes. The frame lives
+ * in the outer window, so it never ends up in the mail's HTML.
+ */
+function bindImageResize(frame, doc, changed) {
+  let img = null;
+  const box = h('div.img-resize', { dataset: { testid: 'img-resize' } });
+  const handle = h('div.img-resize-handle', { dataset: { testid: 'img-resize-handle' } });
+  const label = h('span.img-resize-size');
+  const sizes = h('div.img-resize-bar',
+    ...[['25 %', 0.25], ['50 %', 0.5], ['100 %', 1]].map(([l, f]) => {
+      const b = h('button', { type: 'button', dataset: { testid: 'img-size-' + Math.round(f * 100) } }, l);
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', () => setWidth(Math.round((img.naturalWidth || img.width) * f)));
+      return b;
+    }), label);
+  box.append(handle, sizes);
+  const place = () => {
+    if (!img || !img.isConnected) { hide(); return; }
+    const f = frame.getBoundingClientRect();
+    const r = img.getBoundingClientRect();
+    Object.assign(box.style, { left: f.left + r.left + 'px', top: f.top + r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    label.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
+  };
+  function show(el) {
+    img = el;
+    if (!box.isConnected) document.body.appendChild(box);
+    place();
+  }
+  function hide() { img = null; box.remove(); }
+  function setWidth(w) {
+    if (!img) return;
+    const max = doc.body.clientWidth || w;
+    w = Math.max(16, Math.min(Math.round(w), Math.max(max, 16)));
+    // Width attribute for mail programs that ignore CSS, height follows.
+    img.setAttribute('width', String(w));
+    img.removeAttribute('height');
+    img.style.width = w + 'px';
+    img.style.height = 'auto';
+    changed();
+    place();
+  }
+  doc.addEventListener('mousedown', (e) => {
+    const t = e.target && e.target.closest ? e.target.closest('img') : null;
+    if (t) show(t); else hide();
+  });
+  doc.addEventListener('keydown', () => hide());
+  doc.addEventListener('scroll', place);
+  window.addEventListener('resize', place);
+  handle.addEventListener('pointerdown', (e) => {
+    if (!img) return;
+    e.preventDefault();
+    // Captured: the drag keeps working when the pointer crosses the editor frame.
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX, startW = img.getBoundingClientRect().width;
+    const move = (m) => setWidth(startW + m.clientX - startX);
+    const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up); };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+  });
+  handle.addEventListener('mousedown', (e) => e.preventDefault());
+  // Clicks in the outer window (toolbar excepted) end the resize mode.
+  document.addEventListener('mousedown', (e) => { if (img && !box.contains(e.target)) hide(); });
+}
+
 export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
@@ -112,6 +179,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
           onDropFiles([...e.dataTransfer.files]);
         });
       }
+      bindImageResize(frame, doc, () => { onInput && onInput(); });
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {

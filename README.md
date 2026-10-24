@@ -67,8 +67,11 @@ librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev`.
 **Microsoft 365** works right away: just sign in. The default app registration is multi-tenant,
 and you can use your own with `LETTERTASK_CLIENT_ID` and `LETTERTASK_TENANT`.
 **Gmail** needs a Google OAuth client, which you set up once with `LETTERTASK_GOOGLE_CLIENT_ID`
-and `LETTERTASK_GOOGLE_CLIENT_SECRET` or under Settings › Accounts. You can also add Gmail as a
-plain IMAP account with an app password.
+and `LETTERTASK_GOOGLE_CLIENT_SECRET` or under Settings › Accounts. Enable the **Google Calendar
+API** and the **People API** in that client's Google Cloud project: the Google sign-in also brings
+in the account's calendars (read and write, Google Meet links, answering invitations) and contacts.
+Accounts signed in before this need to sign in with Google once more to grant the new permissions.
+You can also add Gmail as a plain IMAP account with an app password (mail only).
 
 ## Development
 
