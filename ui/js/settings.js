@@ -175,10 +175,11 @@ function lanesPanel(initialAccountId) {
 export async function openSettings(initialTab = 'general', { accountId = null } = {}) {
   initialTab = TAB_ALIASES[initialTab] || initialTab;
   const c = { ...state.config };
-  const clientId = h('input.input', { value: c.clientId || '', placeholder: '00000000-0000-0000-0000-000000000000', name: 'clientId' });
-  const tenant = h('input.input', { value: c.tenant || '', name: 'tenant' });
-  const googleId = h('input.input', { value: c.googleClientId || '', placeholder: '….apps.googleusercontent.com', name: 'googleClientId', spellcheck: false });
-  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', name: 'googleClientSecret', autocomplete: 'off' });
+  // OAuth fields only hold the user's own overrides; empty = built-in default (never shown).
+  const clientId = h('input.input', { value: c.clientId || '', placeholder: c.builtinClientId ? 'Standard' : '00000000-0000-0000-0000-000000000000', name: 'clientId', spellcheck: false });
+  const tenant = h('input.input', { value: c.tenant || '', placeholder: 'Standard', name: 'tenant', spellcheck: false });
+  const googleId = h('input.input', { value: c.googleClientId || '', placeholder: c.builtinGoogleClient ? 'Standard' : '….apps.googleusercontent.com', name: 'googleClientId', spellcheck: false });
+  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', placeholder: c.builtinGoogleClient ? 'Standard' : '', name: 'googleClientSecret', autocomplete: 'off' });
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
@@ -231,16 +232,16 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
         ? 'Diese Version enthält bereits eine App-Registrierung für die Anmeldung bei Microsoft 365. Eigene Werte sind nur für Sonderfälle nötig, etwa wenn Ihre Organisation eine eigene App-Registrierung vorschreibt.'
         : 'Für die Anmeldung bei Microsoft 365 wird eine App-Registrierung (Client-ID) benötigt.'),
       c.demo ? h('p.note', 'Demo-Modus: Die Anmeldung läuft gegen den eingebauten Testserver.') : null,
-      field('Anwendungs-ID (Client-ID)', clientId),
-      field('Mandant (Tenant)', tenant, '„organizations“ (Standard), „common“ oder eine Mandanten-ID/Domäne – leer = Standard'),
+      field('Anwendungs-ID (Client-ID)', overridable(clientId)),
+      field('Mandant (Tenant)', overridable(tenant), 'Mandanten-ID oder Domäne – nur für Sonderfälle, leer = Standard'),
       h('p.note', 'Änderungen gelten für neue Anmeldungen. Bereits angemeldete Konten bleiben angemeldet.')),
     google: h('div.set-panel', { dataset: { testid: 'google-panel' } },
       h('h3', 'Google'),
       c.builtinGoogleClient
         ? h('p.note', 'Diese Version enthält bereits einen Google-OAuth-Client für „Mit Google anmelden“. Eigene Werte sind nur für Sonderfälle nötig.')
         : h('div', h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp()),
-      field('Client-ID', googleId),
-      field('Clientschlüssel', googleSecret, 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'),
+      field('Client-ID', overridable(googleId, googleSecret)),
+      field('Clientschlüssel', overridable(googleSecret), 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'),
       h('p.note', 'Änderungen gelten für neue Anmeldungen. Bereits angemeldete Konten melden Sie unter Konten mit „Erneut mit Google anmelden“ neu an.')),
   };
   const nav = h('div.set-nav', { role: 'tablist' });
@@ -282,6 +283,19 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
     },
   });
   if (res === 'ok') { hooks.onConfigSaved(); toast('Einstellungen gespeichert.'); }
+}
+
+/** Input for an optional override plus a "Standard" button that empties it (= built-in default again). */
+function overridable(input, ...linked) {
+  const reset = h('button.btn.small', { type: 'button', title: 'Auf Standard zurücksetzen', dataset: { testid: 'reset-' + input.name } }, 'Standard');
+  const sync = () => { reset.style.display = input.value.trim() ? '' : 'none'; };
+  reset.addEventListener('click', () => {
+    for (const el of [input, ...linked]) { el.value = ''; el.dispatchEvent(new Event('input')); }
+    input.focus();
+  });
+  input.addEventListener('input', sync);
+  sync();
+  return h('span.inline.override', input, reset);
 }
 
 // ---------------------------------------------------------------- accounts tab
@@ -529,7 +543,7 @@ function googleClientHelp() {
 /** Asks for the Google OAuth client when none is configured. Returns true when one is set. */
 async function ensureGoogleClient() {
   const c = state.config || {};
-  if (c.googleClientId) return true;
+  if (c.googleClientId || c.builtinGoogleClient) return true;
   const id = h('input.input', { placeholder: '….apps.googleusercontent.com', style: { width: '100%' }, name: 'googleClientId', spellcheck: false });
   const secret = h('input.input', { type: 'password', style: { width: '100%' }, name: 'googleClientSecret', autocomplete: 'off' });
   const res = await modal({
@@ -583,10 +597,9 @@ async function loginWithWait() {
 export async function welcomeDialog({ o365Only = false } = {}) {
   const c = state.config || {};
   const clientId = h('input.input', { value: c.clientId || '', placeholder: 'Anwendungs-ID (GUID)', style: { width: '100%' }, name: 'clientId' });
-  const tenant = h('input.input', { value: c.tenant || '', style: { width: '100%' }, name: 'tenant' });
   const builtin = !!c.builtinClientId;
-  // With the built-in app registration the wizard asks nothing technical:
-  // App-ID and Mandant only live in Einstellungen → Konten for special cases.
+  // The wizard never asks for the Mandant: it lives in Einstellungen → Microsoft 365
+  // for special cases. With the built-in app registration it asks nothing technical.
   const adv = builtin ? null : h('details.welcome-adv.open', { open: true },
     h('summary', 'App-Registrierung'),
     h('ol',
@@ -594,8 +607,7 @@ export async function welcomeDialog({ o365Only = false } = {}) {
       h('li', { html: 'Plattform <b>Mobile und Desktop</b>, Umleitungs-URI <code>http://localhost</code>' }),
       h('li', { html: 'Delegierte Berechtigungen: <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>Calendars.ReadWrite</code>, <code>MailboxSettings.ReadWrite</code>, <code>People.Read</code>, <code>User.Read</code>, <code>offline_access</code>' }),
       h('li', '„Öffentliche Clientflows zulassen“ aktivieren und die Anwendungs-ID hier eintragen.')),
-    field('Anwendungs-ID', clientId),
-    field('Mandant', tenant));
+    field('Anwendungs-ID', clientId));
   const body = h('div.welcome',
     h('div.welcome-hero', h('span.welcome-ic', { html: icon('mail', 36) }),
       h('div', h('h2', 'Willkommen'), h('p', 'Melden Sie sich mit Ihrem Microsoft 365-Konto an. E-Mails, Kalender, Kontakte und Kategorien werden über Microsoft Graph synchronisiert. Gmail-Konten melden Sie mit Google an, andere Anbieter lassen sich per IMAP/SMTP einbinden.'))),
@@ -610,9 +622,7 @@ export async function welcomeDialog({ o365Only = false } = {}) {
       const id = clientId.value.trim();
       if (!builtin) {
         if (!builtin && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { adv.open = true; clientId.classList.add('invalid'); toast('Bitte eine gültige Anwendungs-ID (GUID) eingeben.', 'error'); return false; }
-        if (id || tenant.value.trim() !== (c.tenant || '')) {
-          state.config = await call('save_config', { config: { ...state.config, clientId: id, tenant: tenant.value.trim() } });
-        }
+        state.config = await call('save_config', { config: { ...state.config, clientId: id } });
       }
       return 'ok';
     },

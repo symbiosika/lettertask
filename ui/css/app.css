@@ -435,6 +435,8 @@ textarea.input { height: auto; min-height: 70px; resize: vertical; padding: 8px 
 .field { display: grid; grid-template-columns: 190px 1fr; align-items: center; gap: 10px; margin: 10px 0; }
 .field-label { color: var(--text-2); }
 .field-hint { grid-column: 2; color: var(--text-dim); font-size: 11.5px; margin-top: -6px; }
+.inline.override { display: flex; }
+.override > .input { flex: 1; min-width: 0; }
 .lbl { display: block; margin-bottom: 6px; color: var(--text-2); }
 .checkrow { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }

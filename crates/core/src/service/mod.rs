@@ -232,7 +232,11 @@ impl Service {
             } else {
                 c.tenant.trim().to_string()
             },
-            client_id: c.client_id.trim().to_string(),
+            client_id: if c.client_id.trim().is_empty() {
+                builtin_client_id().to_string()
+            } else {
+                c.client_id.trim().to_string()
+            },
         }
     }
 
@@ -814,24 +818,34 @@ impl Service {
 
     // ---- config & accounts ----
 
-    /// Fills values the user left empty: built-in client ID, snooze options.
+    /// Fills values the user left empty (snooze options, …). The OAuth
+    /// fields only hold the user's own overrides: empty means the built-in
+    /// default, which is resolved at sign-in and never shown in the UI.
+    /// Built-in values that earlier builds wrote into the config are cleared.
     fn apply_defaults(c: &mut Config, demo: bool) {
         let builtin = builtin_client_id();
         c.builtin_client_id = !demo && !builtin.is_empty();
         if demo && c.client_id.is_empty() {
             c.client_id = "demo-client".into();
         }
-        if c.client_id.trim().is_empty() && !builtin.is_empty() {
-            c.client_id = builtin.to_string();
+        c.client_id = c.client_id.trim().to_string();
+        if !demo && c.client_id == builtin {
+            c.client_id.clear();
         }
-        if c.tenant.trim().is_empty() || c.tenant.trim() == LEGACY_SYMBIOSIKA_TENANT_ID {
-            c.tenant = builtin_tenant().to_string();
+        c.tenant = c.tenant.trim().to_string();
+        if c.tenant == builtin_tenant() || c.tenant == LEGACY_SYMBIOSIKA_TENANT_ID {
+            c.tenant.clear();
         }
-        let (google_id, google_secret) = builtin_google_client();
+        let (google_id, _) = builtin_google_client();
         c.builtin_google_client = !demo && !google_id.is_empty();
-        if c.google_client_id.trim().is_empty() && !google_id.is_empty() {
-            c.google_client_id = google_id.to_string();
-            c.google_client_secret = google_secret.to_string();
+        c.google_client_id = c.google_client_id.trim().to_string();
+        c.google_client_secret = c.google_client_secret.trim().to_string();
+        if !google_id.is_empty() && c.google_client_id == google_id {
+            c.google_client_id.clear();
+            c.google_client_secret.clear();
+        }
+        if c.google_client_id.is_empty() {
+            c.google_client_secret.clear();
         }
         if c.snooze_options.is_empty() {
             c.snooze_options = default_snooze_options();
@@ -1213,13 +1227,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_tenant_id_is_migrated_to_multi_tenant_default() {
+    fn built_in_oauth_defaults_are_not_stored() {
         let mut c = Config {
             tenant: LEGACY_SYMBIOSIKA_TENANT_ID.into(),
             ..Config::default()
         };
         Service::apply_defaults(&mut c, false);
-        assert_eq!(c.tenant, builtin_tenant());
+        assert_eq!(c.tenant, "");
+
+        let mut stored_default = Config {
+            client_id: builtin_client_id().into(),
+            tenant: builtin_tenant().into(),
+            ..Config::default()
+        };
+        Service::apply_defaults(&mut stored_default, false);
+        assert_eq!(stored_default.client_id, "");
+        assert_eq!(stored_default.tenant, "");
 
         let mut custom = Config {
             tenant: "contoso.onmicrosoft.com".into(),

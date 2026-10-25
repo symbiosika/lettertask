@@ -92,6 +92,33 @@ test('Einstellungen › Google: OAuth-Client speichern', async ({ page }) => {
   await expect(page.locator('.modal-overlay')).toHaveCount(0);
 });
 
+test('Einstellungen › Microsoft 365: Mandant zeigt keinen Standardwert, Überschreiben und Zurücksetzen', async ({ page }) => {
+  const getConfig = () => page.evaluate(async () => (await fetch('/api/call/get_config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json());
+  const openTab = async () => {
+    await page.locator('[data-testid=app-menu]').click();
+    await page.locator('[data-testid=menu-settings]').click();
+    await page.locator('[data-testid=settings-tab-m365]').click();
+  };
+  await openApp(page);
+  await openTab();
+  const tenant = page.locator('input[name=tenant]');
+  await expect(tenant).toHaveValue('');
+  await expect(page.locator('[data-testid=reset-tenant]')).toBeHidden();
+  await tenant.fill('contoso.onmicrosoft.com');
+  await expect(page.locator('[data-testid=reset-tenant]')).toBeVisible();
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+  expect((await getConfig()).tenant).toBe('contoso.onmicrosoft.com');
+
+  await openTab();
+  await expect(tenant).toHaveValue('contoso.onmicrosoft.com');
+  await page.locator('[data-testid=reset-tenant]').click();
+  await expect(tenant).toHaveValue('');
+  await page.locator('#settings-ok').click();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+  expect((await getConfig()).tenant).toBe('');
+});
+
 test('Einstellungen › Konten zeigt das Microsoft-365-Konto', async ({ page }) => {
   await openApp(page);
   await page.locator('[data-testid=app-menu]').click();

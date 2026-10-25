@@ -508,7 +508,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             client_id: String::new(),
-            tenant: builtin_tenant().into(),
+            tenant: String::new(),
             sync_interval_secs: 60,
             load_remote_images: false,
             reading_pane: "right".into(),

@@ -12,7 +12,7 @@ use crate::google::{self, GoogleConfig};
 use crate::imap::conn::{self, Conn};
 use crate::imap::discover::{self, Discovered};
 use crate::imap::{self as imapmod, smtp, Credential, ImapAccountInput, ServerSettings};
-use crate::model::{Account, Mailbox};
+use crate::model::{builtin_google_client, Account, Mailbox};
 
 const SETTINGS_KEY: &str = "imap";
 
@@ -134,6 +134,10 @@ impl Service {
 
     pub(crate) fn google_config(&self) -> GoogleConfig {
         let c = self.config();
+        if c.google_client_id.trim().is_empty() {
+            let (id, secret) = builtin_google_client();
+            return GoogleConfig::new(id, secret);
+        }
         GoogleConfig::new(&c.google_client_id, &c.google_client_secret)
     }
 
