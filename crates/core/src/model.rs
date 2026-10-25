@@ -443,6 +443,11 @@ pub struct Config {
     pub google_client_secret: String,
     /// Read-only for the UI: a Google client was compiled into this build.
     pub builtin_google_client: bool,
+    /// "Sofort benachrichtigen": IMAP accounts listen with IDLE on the inbox.
+    pub push_enabled: bool,
+    /// Phone: minutes between syncs while the app is in the background
+    /// (0 = never, otherwise at least 15, the platform's minimum).
+    pub background_interval_mins: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -522,6 +527,8 @@ impl Default for Config {
             google_client_id: String::new(),
             google_client_secret: String::new(),
             builtin_google_client: false,
+            push_enabled: false,
+            background_interval_mins: 15,
         }
     }
 }

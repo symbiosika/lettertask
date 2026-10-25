@@ -1,5 +1,5 @@
 // Appointment / meeting window.
-import { call, params, closeWindow, isTauri } from './api.js';
+import { call, params, closeWindow, currentWindow } from './api.js';
 import {
   h, $, esc, addDays, startOfDay, toDateInput, toTimeInput, parseLocal, toLocalIso, DAY_KEYS, WEEKDAYS, MONTHS, displayName,
 } from './util.js';
@@ -214,7 +214,7 @@ function updateRecurText() {
 function updateTitle() {
   const t = f.subject.value.trim() || 'Unbenannt';
   document.title = `${t} – ${st.attendeesVisible ? 'Besprechung' : 'Termin'}`;
-  if (isTauri && window.__TAURI__.window) { try { window.__TAURI__.window.getCurrentWindow().setTitle(document.title); } catch { /* ignore */ } }
+  { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
 }
 
 // --------------------------------------------------------------- recurrence dialog
@@ -452,10 +452,11 @@ async function init() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && !st.readOnly) { e.preventDefault(); save().catch(reportError); }
     else if (e.key === 'Escape') { e.preventDefault(); tryClose(); }
   });
-  if (isTauri && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
-    const w = window.__TAURI__.window.getCurrentWindow();
+  const w = currentWindow();
+  if (w) {
     if (w.onCloseRequested) w.onCloseRequested(async (ev) => { if (st.closing || !st.dirty) return; ev.preventDefault(); if (await confirmDiscard()) { st.closing = true; await (w.destroy ? w.destroy() : w.close()); } });
   } else {
+    window.__ltBeforeClose = async () => st.closing || !st.dirty || st.readOnly || confirmDiscard();
     window.addEventListener('beforeunload', (e) => { if (st.dirty && !st.closing) { e.preventDefault(); e.returnValue = ''; } });
   }
 }

@@ -34,5 +34,15 @@ After changing `src-tauri/icons/icon.svg`:
    (16–256 px) and `icon.icns` to `src-tauri/icons/` – exactly the files listed in
    `tauri.conf.json`.
 
-Alternatively, `cargo tauri icon logo-1024.png` works; however, it also creates icons for Android,
-iOS and the Windows Store, which the project does not use.
+Alternatively, `cargo tauri icon logo-1024.png` works; it also creates icons for the Windows Store,
+which the project does not use.
+
+**Android and iOS** icons come from the same master, rendered in a browser (drop shadow) and
+generated with `cargo tauri icon`:
+- Android (`src-tauri/gen/android/app/src/main/res/`): launcher icons per density, adaptive icon
+  (`mipmap-anydpi-v26/`, gradient background, logo inside the 66 dp safe zone) with a monochrome
+  layer for themed icons (`drawable/ic_launcher_monochrome.xml`), and the white status bar icon
+  `drawable/ic_stat_mail.xml`.
+- iOS (`src-tauri/icons/ios/`): the AppIcon set, without alpha (Apple rejects transparent app
+  icons). Copy it into `Assets.xcassets/AppIcon.appiconset` once `tauri ios init` has created
+  `gen/apple`.

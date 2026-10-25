@@ -1,7 +1,7 @@
 // Hover card for e-mail addresses (message header, recipient lines, list rows):
 // name and address with copy buttons. Any element with data-addr (and
 // optionally data-name) inside a bound root gets the card.
-import { h, esc, initials, avatarColor } from './util.js';
+import { h, esc, initials, avatarColor, touchInput } from './util.js';
 import { icon } from './icons.js';
 import { toast } from './dialogs.js';
 
@@ -67,6 +67,7 @@ function show(el, opts) {
 /** Enables hover cards for [data-addr] elements inside `root`. opts: { onMail(addr) } */
 export function bindContactCards(root, opts = {}) {
   root.addEventListener('mouseover', (e) => {
+    if (touchInput()) return;
     const el = e.target.closest && e.target.closest('[data-addr]');
     if (!el || !root.contains(el)) return;
     clearTimeout(hideTimer);
@@ -79,6 +80,12 @@ export function bindContactCards(root, opts = {}) {
     if (!el || (e.relatedTarget && el.contains(e.relatedTarget))) return;
     clearTimeout(showTimer);
     if (anchor) scheduleHide();
+  });
+  // Touch has no hover: a tap on a name opens the card instead.
+  root.addEventListener('click', (e) => {
+    if (!touchInput()) return;
+    const el = e.target.closest && e.target.closest('[data-addr]');
+    if (el && root.contains(el) && el !== anchor) show(el, opts);
   });
   // Scrolling or clicking elsewhere closes the card.
   root.addEventListener('scroll', hide, true);

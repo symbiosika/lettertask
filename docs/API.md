@@ -114,7 +114,9 @@ Config {
   demo: bool /* read-only: running against the built-in demo server */,
   builtinClientId: bool /* read-only: a client ID is compiled in → welcome dialog only needs "Anmelden" (Sign in) */,
   googleClientId: string, googleClientSecret: string /* OAuth client ("Desktop app") for Gmail; empty → built-in, if any */,
-  builtinGoogleClient: bool /* read-only: a Google client is compiled in */
+  builtinGoogleClient: bool /* read-only: a Google client is compiled in */,
+  pushEnabled: bool /* "Sofort benachrichtigen": IMAP accounts keep an IDLE connection on the inbox (desktop and phone) */,
+  backgroundIntervalMins: number /* phone: minutes between syncs while the app is closed; 0 = never, otherwise ≥ 15 */
 }
 SnoozeOption { label: string, rule: string }
 // Kanban lanes are categories named "[K_<lane>]" (LANE_PREFIX "[K_", suffix "]").
@@ -233,6 +235,17 @@ MessageSummary gains `recurrence: string|null` (derived from the hidden category
 ### Fokuszeit (Focus time)
 | `get_focus` | `{}` | `{ until: ISO\|null }` |
 | `set_focus` | `{ minutes: number }` | `{ until: ISO\|null }` — 0 ends focus time. While active the background sync is paused (no auto fetch, no notifications, due snoozes are not returned); `sync_all` (manual "Senden/Empfangen") still works. Event `focus-changed` `{ until }`; when it expires the backend emits `focus-changed` `{ until: null }` and syncs once. |
+
+### Background sync and push
+Shared by all platforms (`crates/core/src/service/background.rs`, `push.rs`); only the scheduling differs.
+The desktop timer loop syncs every account on its interval and pauses while the app is not interactive
+(phone in the background). On Android, WorkManager runs `Service::background_sync` every
+`backgroundIntervalMins`, an inexact alarm wakes it for the next due Wiedervorlage (`next_snooze_due`),
+and a foreground service keeps push alive (an alarm renews IDLE every 24 minutes, as timers stop in Doze).
+
+| `push_status` | `{}` | `{ accountId, email, state: "connecting"\|"listening"\|"unsupported"\|"error", message: string\|null }[]` — one entry per IMAP account while `pushEnabled`; Microsoft 365 accounts have no IDLE and stay on the interval |
+
+`save_config` also emits `config-changed` `{}` (Android re-plans worker and push service on it).
 
 ### Signatures (per account, stored locally)
 | `get_signatures` | `{ accountId }` | `SignatureSettings` |

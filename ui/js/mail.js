@@ -1,5 +1,5 @@
 // Mail module of the main window: folder tree, message list, reading pane, mail actions.
-import { call, openWindow } from './api.js';
+import { call, openWindow, isMobile } from './api.js';
 import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
 import { isImap, isGoogle, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
@@ -89,7 +89,9 @@ export async function openInboxKanban() {
   applyReadingPaneLayout();
 }
 export function toggleView() { setView(view === 'kanban' ? 'list' : 'kanban'); }
-function kanbanPane() { return (state.config && state.config.kanbanReadingPane) || load('kanbanPane', 'bottom'); }
+function kanbanPane() { return isMobile ? 'right' : (state.config && state.config.kanbanReadingPane) || load('kanbanPane', 'bottom'); }
+/** Reading pane layout; on the phone the message opens as a full-screen layer. */
+function readingPaneMode() { return isMobile ? 'right' : (state.config && state.config.readingPane) || 'right'; }
 function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
 /** Mailbox the given messages belong to (the Heute view mixes accounts). */
 function mbOf(ids) {
@@ -181,7 +183,7 @@ export function applyReadingPaneLayout() {
     return;
   }
   els.board.style.width = ''; els.board.style.height = '';
-  const mode = (state.config && state.config.readingPane) || 'right';
+  const mode = readingPaneMode();
   els.mailview.classList.toggle('bottom', mode === 'bottom');
   els.mailview.classList.toggle('off', mode === 'off');
   els.split.className = 'splitter' + (mode === 'bottom' ? ' h' : '');
@@ -1028,6 +1030,21 @@ const selectionChanged = debounce(() => {
   else showReading(null);
 }, 50);
 
+/** Selects exactly these messages (phone: swipe, long press, selection mode). */
+export function selectIds(ids) {
+  list.selection = new Set(ids);
+  list.cursor = ids[0] || null; list.anchor = list.cursor;
+  paintSelection();
+  selectionChanged();
+}
+
+export function toggleSelectId(id) {
+  if (list.selection.has(id)) list.selection.delete(id); else list.selection.add(id);
+  list.cursor = id; list.anchor = id;
+  paintSelection();
+  selectionChanged();
+}
+
 export function getSelection() {
   const items = visibleItems().filter((m) => list.selection.has(m.id));
   return { mailboxId: mbOf(items.map((m) => m.id)), folderId: state.current.folderId, ids: items.map((m) => m.id), items };
@@ -1039,7 +1056,7 @@ async function showReading(m, text) {
   clearTimeout(markReadTimer);
   const token = ++readToken;
   currentDetail = null;
-  const mode = kanbanActive() ? kanbanPane() : (state.config && state.config.readingPane) || 'right';
+  const mode = kanbanActive() ? kanbanPane() : readingPaneMode();
   if (!m) {
     els.read.innerHTML = '';
     els.read.appendChild(h('div.empty.reading', h('div.empty-ic', { html: icon(text ? 'mail' : 'mailOpen', 48) }), h('div', text || 'Wählen Sie eine Nachricht aus, um sie zu lesen.')));
@@ -1415,7 +1432,7 @@ export async function showSource() {
   await modal({ title: 'Nachrichtenquelle – ' + (s.items[0].subject || ''), body: ta, width: 860, buttons: [{ label: 'Schließen', value: true, primary: true }] });
 }
 
-function moreItems(fromReadingPane) {
+export function moreItems(fromReadingPane) {
   const s = getSelection();
   const single = s.items.length === 1;
   const anyUnread = s.items.some((m) => !m.isRead);
@@ -1547,6 +1564,8 @@ function setTodayCount(n) {
   today.count = n;
   renderFolderTree();
 }
+
+export function todayCount() { return today.count; }
 
 /** Badge in the sidebar: due today + first-lane items (deduplicated). */
 export const refreshTodayCount = debounce(async () => {

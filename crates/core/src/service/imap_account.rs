@@ -256,7 +256,7 @@ impl Service {
         Ok(())
     }
 
-    async fn imap_connect(&self, account_id: &str) -> Result<Conn> {
+    pub(crate) async fn imap_connect(&self, account_id: &str) -> Result<Conn> {
         let s = self.imap_settings(account_id)?;
         let credential = self.imap_credential(account_id, false).await?;
         conn::connect_with(&s.imap, &credential).await

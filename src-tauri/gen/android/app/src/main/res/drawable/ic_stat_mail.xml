@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status bar icon: lettertask logo (envelope with check mark) as a white-on-transparent
+     silhouette, as Android requires for notification small icons. Generated from src-tauri/icons/icon.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M8.983,18.123L9.345,18.337L9.817,18.418L10.230,18.337L10.637,18.084L20.877,6.533L21.123,6.113L21.189,5.631L21.065,5.161L20.771,4.774L20.351,4.529L19.931,4.460L19.455,4.561L19.097,4.793L9.703,15.389L6.961,12.833L6.715,12.654L6.312,12.515L5.886,12.519L5.486,12.667L5.160,12.941L4.944,13.308L4.866,13.727L4.914,14.090L5.100,14.473ZM3.646,6.893L2.981,7.042L2.636,7.227L2.334,7.474L1.941,8.032L1.760,8.689L1.752,18.703L1.810,19.089L1.985,19.545L2.203,19.870L2.479,20.146L3.072,20.482L3.646,20.596L18.449,20.599L18.838,20.560L19.302,20.407L19.637,20.206L19.991,19.870L20.327,19.277L20.441,18.703L20.427,8.639L11.438,18.782L11.004,19.130L10.500,19.365L9.954,19.471L9.509,19.460L8.865,19.285L8.299,18.932L4.309,15.182L3.970,14.597L3.827,14.051L3.836,13.374L4.042,12.730L4.425,12.173L4.674,11.942L5.054,11.696L5.473,11.529L5.805,11.460L6.144,11.439L6.593,11.490L7.024,11.627L7.511,11.912L9.630,13.873L15.816,6.890Z" />
+</vector>
