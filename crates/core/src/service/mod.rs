@@ -1,5 +1,6 @@
 //! Service layer: everything the UI can do, exposed through [`Service::dispatch`].
 
+mod background;
 mod calendar;
 mod categories;
 mod compose;
@@ -10,6 +11,7 @@ mod imap_compose;
 mod imap_mail;
 mod lanes;
 mod mail;
+mod push;
 mod signatures;
 mod snooze;
 mod tasks;
@@ -18,6 +20,7 @@ mod reminders;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -64,6 +67,10 @@ pub struct Service {
     /// Mails queued or being sent in the background.
     pending_sends: std::sync::atomic::AtomicUsize,
     reminders: std::sync::Mutex<reminders::ReminderState>,
+    push: push::PushState,
+    /// See `set_interactive`.
+    interactive: AtomicBool,
+    background_started: AtomicBool,
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
@@ -214,6 +221,9 @@ impl Service {
             send_queue: Default::default(),
             pending_sends: Default::default(),
             reminders: Default::default(),
+            push: Default::default(),
+            interactive: AtomicBool::new(true),
+            background_started: AtomicBool::new(false),
         });
         svc.restore_clients()?;
         Ok(svc)
@@ -331,7 +341,14 @@ impl Service {
             // ---- app / accounts ----
             "app_info" => ok(json!({ "version": env!("CARGO_PKG_VERSION") })),
             "get_config" => ok(self.config()),
-            "save_config" => ok(self.save_config(arg(a, "config")?)?),
+            "save_config" => {
+                let c = self.save_config(arg(a, "config")?)?;
+                self.apply_push();
+                // Platforms with their own scheduler (Android) re-plan on this.
+                self.emit("config-changed", json!({}));
+                ok(c)
+            }
+            "push_status" => ok(self.push_status()),
             "list_accounts" => ok(self.list_accounts_for_ui()?),
             "add_account" => ok(self.add_account().await?),
             "add_google_account" => ok(self
@@ -865,6 +882,9 @@ impl Service {
         }
         Self::apply_defaults(&mut c, self.opts.demo);
         c.sync_interval_secs = c.sync_interval_secs.clamp(15, 3600);
+        if c.background_interval_mins != 0 {
+            c.background_interval_mins = c.background_interval_mins.clamp(15, 24 * 60);
+        }
         let changed_auth = {
             let cur = self.config.read().unwrap();
             cur.client_id != c.client_id || cur.tenant != c.tenant
@@ -1055,20 +1075,21 @@ impl Service {
         self.sync_accounts(background, |_| true).await;
     }
 
-    /// Like `sync_all`, limited to the accounts `pick` selects.
-    async fn sync_accounts(self: &Arc<Self>, background: bool, pick: impl Fn(&Account) -> bool) {
+    /// Like `sync_all`, limited to the accounts `pick` selects. False when
+    /// something failed (a pass already running counts as success).
+    async fn sync_accounts(self: &Arc<Self>, background: bool, pick: impl Fn(&Account) -> bool) -> bool {
         let Ok(_guard) = self.sync_all_lock.try_lock() else {
-            return;
+            return true;
         };
         let accounts = match self.store.list_accounts() {
             Ok(a) => a.into_iter().filter(|a| pick(a)).collect::<Vec<_>>(),
             Err(e) => {
                 self.emit_status("error", &e.to_string());
-                return;
+                return false;
             }
         };
         if accounts.is_empty() {
-            return;
+            return true;
         }
         self.emit_status("syncing", "Senden/Empfangen…");
         let mut errors = Vec::new();
@@ -1113,17 +1134,24 @@ impl Service {
         } else {
             self.emit_status("error", &errors.join("; "));
         }
+        errors.is_empty()
     }
 
-    /// Spawns the periodic sync loop.
+    /// Spawns the periodic sync loop (once; later calls do nothing). Also
+    /// starts push when it is switched on.
     pub fn start_background_sync(self: &Arc<Self>) {
+        if self.background_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
         self.start_event_reminders();
+        self.apply_push();
         let svc = Arc::downgrade(self);
         use futures::FutureExt;
         tokio::spawn(async move {
             // Small delay so the UI is up before the first sync.
             tokio::time::sleep(Duration::from_secs(2)).await;
             let mut focus_active = false;
+            let mut away = false;
             // Each account syncs on its own interval (default: the global one).
             let mut last: HashMap<String, std::time::Instant> = HashMap::new();
             loop {
@@ -1133,14 +1161,20 @@ impl Service {
                 let accounts = s.store.list_accounts().unwrap_or_default();
                 let now = std::time::Instant::now();
                 let is_due = |a: &Account| last.get(&a.id).is_none_or(|t| now.duration_since(*t) >= interval(a));
+                // New or removed IMAP accounts get or lose their push listener.
+                s.apply_push();
                 // Fokuszeit pauses the automatic fetch; when it ends, sync once.
+                // So does the app being in the background on the phone (the
+                // platform scheduler syncs then); coming back syncs at once.
                 match s.focus_until() {
                     Some(_) => focus_active = true,
+                    None if !s.is_interactive() => away = true,
                     None => {
-                        let all = std::mem::take(&mut focus_active);
-                        if all {
+                        let focus_ended = std::mem::take(&mut focus_active);
+                        if focus_ended {
                             s.emit("focus-changed", json!({"until": null}));
                         }
+                        let all = focus_ended | std::mem::take(&mut away);
                         let due: std::collections::HashSet<String> =
                             accounts.iter().filter(|a| all || is_due(a)).map(|a| a.id.clone()).collect();
                         if !due.is_empty() {

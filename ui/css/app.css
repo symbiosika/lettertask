@@ -158,6 +158,9 @@ kbd { font-family: inherit; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: #3fa66b; flex: none; }
 .dot.syncing { background: #e0a100; animation: pulse 1s ease-in-out infinite alternate; }
 .dot.offline { background: #9aa1ab; }
+.push-status { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.push-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+.push-row .push-mail { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dot.error { background: var(--danger); }
 .sb-status .st.err { color: var(--danger); cursor: pointer; }
 .err-detail { white-space: pre-wrap; word-break: break-word; background: var(--hover); padding: 10px; border-radius: var(--radius-sm); font-size: 12px; max-height: 240px; overflow: auto; margin: 0; }

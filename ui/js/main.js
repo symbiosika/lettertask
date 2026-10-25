@@ -1,5 +1,5 @@
 // Main window shell: top bar with search, action bar, sidebar, events, shortcuts.
-import { call, on, onBusy } from './api.js';
+import { call, on, onBusy, isMobile } from './api.js';
 import { h, $, load, store, fmtTime, esc, addDays, startOfDay } from './util.js';
 import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
@@ -14,6 +14,7 @@ import { initCalPanel, toggleCalPanel, calPanelOpen, showCalPanelHost, onCalPane
 import { isImap, isGoogle, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { dateTimeField } from './due.js';
+import * as mobile from './mobile.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
 const els = {
@@ -349,6 +350,7 @@ function renderToolbar() {
 }
 
 function updateActionState() {
+  if (isMobile) mobile.update();
   if (state.mode === 'contacts') {
     const c = contacts.selectedContact();
     for (const b of selDependent) b.disabled = !c;
@@ -403,6 +405,9 @@ function setMode(mode) {
   mail.renderFolderTree();
   renderStatus();
 }
+
+/** Text of the Fokuszeit button (phone drawer). */
+function focusLabel() { return focusActive() ? `Fokus bis ${fmtTime(new Date(focus.until))}` : 'Fokuszeit'; }
 
 // ------------------------------------------------------------------ status (sidebar footer)
 function renderStatus() {
@@ -612,6 +617,7 @@ async function init() {
   calendar.initCalendar({ navHost: els.calNav, contentHost: els.content, onCounts: updateActionState });
   initCalPanel(els.content, $('#mailview'));
   contacts.initContacts({ navHost: els.ctNav, contentHost: els.content, onSelection: updateActionState });
+  if (isMobile) mobile.initMobile({ appMenu, snoozeItems, focusMenu, focusLabel, setMode, syncAll, newTask });
   const navW = load('navWidth2', null);
   if (navW) document.documentElement.style.setProperty('--nav-w', navW + 'px');
   setupNavSplitter();

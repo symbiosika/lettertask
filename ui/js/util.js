@@ -187,3 +187,10 @@ export function htmlToText(html) {
   const doc = new DOMParser().parseFromString(String(html ?? ''), 'text/html');
   return (doc.body && doc.body.textContent) || '';
 }
+
+// Touch screens fire mouse events after a tap; hover-only UI must not react to them.
+let lastPointer = 'mouse';
+document.addEventListener('pointerdown', (e) => { lastPointer = e.pointerType || 'mouse'; }, true);
+document.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') lastPointer = 'mouse'; }, true);
+/** The last input came from a finger or pen, not a mouse. */
+export function touchInput() { return lastPointer !== 'mouse'; }

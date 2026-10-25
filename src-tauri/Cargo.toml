@@ -6,11 +6,15 @@ license.workspace = true
 description = "Classic Outlook-style mail & calendar client for Microsoft 365 (Graph API)"
 default-run = "lettertask"
 
+[lib]
+name = "lettertask_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-mailcore = { path = "../crates/core" }
+mailcore = { path = "../crates/core", default-features = false }
 graph-fake = { path = "../crates/graph-fake" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -25,5 +29,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
+# The keyring crate has no Android/iOS backend.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+mailcore = { path = "../crates/core", features = ["keyring"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+# Bridge to the Kotlin side (background worker, push service).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

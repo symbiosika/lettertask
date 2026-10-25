@@ -2,7 +2,7 @@
 // Created directly on the server (create_task): "Sofort" → inbox, otherwise → Wiedervorlage.
 // "Andere Person" (Delegation): the task goes out as a mail ("ToDo: …"); the copy for
 // yourself carries the hidden marker "[D_<address>]" and is followed up like a task.
-import { call, params, closeWindow, isTauri } from './api.js';
+import { call, params, closeWindow, currentWindow } from './api.js';
 import { h, $ } from './util.js';
 import { icon } from './icons.js';
 import { reportError, toast, confirmDialog, setPending } from './dialogs.js';
@@ -109,16 +109,21 @@ async function create() {
   }
 }
 
+/** Nothing typed yet: closing loses nothing worth asking about. */
+function isBlank() {
+  return !subject.value.trim() && !editor.getHtml().replace(/<[^>]*>|&nbsp;/g, '').trim();
+}
+
 async function confirmClose() {
-  if (!st.dirty || st.closing) return true;
+  if (!st.dirty || st.closing || isBlank()) return true;
   const ok = await confirmDialog('Die Aufgabe wurde noch nicht angelegt. Verwerfen?', { title: 'Aufgabe verwerfen', ok: 'Verwerfen', danger: true });
   if (ok) st.closing = true;
   return ok;
 }
 
 function setupClose() {
-  if (isTauri && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
-    const w = window.__TAURI__.window.getCurrentWindow();
+  const w = currentWindow();
+  if (w) {
     if (w.onCloseRequested) {
       w.onCloseRequested(async (event) => {
         if (st.closing || !st.dirty) return;
@@ -127,6 +132,7 @@ function setupClose() {
       });
     }
   } else {
+    window.__ltBeforeClose = confirmClose;
     window.addEventListener('beforeunload', (e) => { if (!st.closing && st.dirty) { e.preventDefault(); e.returnValue = ''; } });
   }
   window.addEventListener('keydown', (e) => {

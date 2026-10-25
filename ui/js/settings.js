@@ -1,5 +1,5 @@
 // Dialogs: settings, category manager, auto reply, welcome / account setup.
-import { call } from './api.js';
+import { call, isMobile } from './api.js';
 import { h, esc, toLocalIso, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, field, busyClick, loadingPill } from './dialogs.js';
@@ -183,6 +183,13 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
+  const push = h('input', { type: 'checkbox', checked: !!c.pushEnabled, name: 'pushEnabled', dataset: { testid: 'set-push' } });
+  const bgOpts = [['15', 'Alle 15 Minuten'], ['30', 'Alle 30 Minuten'], ['60', 'Jede Stunde'], ['240', 'Alle 4 Stunden'], ['0', 'Nie']];
+  const bgValue = String(c.backgroundIntervalMins ?? 15);
+  if (!bgOpts.some(([v]) => v === bgValue)) bgOpts.push([bgValue, `Alle ${bgValue} Minuten`]);
+  const bgInterval = select(bgOpts, bgValue);
+  bgInterval.name = 'backgroundIntervalMins';
+  bgInterval.dataset.testid = 'set-bg-interval';
   const seps = h('input', { type: 'checkbox', checked: c.showDateSeparators !== false, name: 'showDateSeparators' });
   const pane = select([['right', 'Rechts'], ['bottom', 'Unten'], ['off', 'Aus']], c.readingPane || 'right');
   pane.name = 'readingPane';
@@ -204,7 +211,15 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       h('h3', 'Allgemein'),
       field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
       h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
-      c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null),
+      c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null,
+      h('h3', 'Neue E-Mails'),
+      // Only the phone has a separate pass while the app is closed.
+      isMobile ? field('Abruf bei geschlossener App', bgInterval, 'Android ruft höchstens alle 15 Minuten ab, im Energiesparmodus auch seltener. Fällige Wiedervorlagen kommen trotzdem pünktlich zurück.') : null,
+      h('label.checkrow', push, 'Sofort benachrichtigen (Push)'),
+      h('p.note', 'Bei IMAP- und Gmail-Konten hält lettertask eine Verbindung zum Server offen und meldet neue E-Mails ohne Verzögerung. '
+        + (isMobile ? 'Android zeigt dafür eine dauerhafte Benachrichtigung, der Akkuverbrauch ist etwas höher. ' : '')
+        + 'Microsoft-365-Konten werden weiterhin im eingestellten Intervall abgerufen.'),
+      pushStatus()),
     reading: h('div.set-panel',
       h('h3', 'Lesen'),
       field('Lesebereich', pane),
@@ -272,6 +287,8 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
         readingPane: pane.value, markReadDelaySecs: parseInt(markRead.value, 10), listMode: listMode.value,
         showDateSeparators: seps.checked, snoozeOptions: snooze.get(),
         kanbanReadingPane: kbPane.value,
+        pushEnabled: push.checked,
+        backgroundIntervalMins: isMobile ? parseInt(bgInterval.value, 10) : state.config.backgroundIntervalMins,
       };
       delete config.signatureHtml;
       state.config = await call('save_config', { config });
@@ -296,6 +313,21 @@ function overridable(input, ...linked) {
   input.addEventListener('input', sync);
   sync();
   return h('span.inline.override', input, reset);
+}
+
+const PUSH_STATE = { listening: 'verbunden – meldet neue E-Mails sofort', connecting: 'verbindet…' };
+
+/** Push connection per account, while push is on. */
+function pushStatus() {
+  const el = h('div.push-status', { dataset: { testid: 'push-status' } });
+  call('push_status', {}, { silent: true }).then((list) => {
+    for (const p of list || []) {
+      const text = PUSH_STATE[p.state] || (p.state === 'error' ? `Fehler: ${p.message || ''} – neuer Versuch folgt` : p.message || p.state);
+      el.appendChild(h('div.push-row' + (p.state === 'listening' ? '.ok' : ''), h('span.dot.' + (p.state === 'listening' ? 'idle' : p.state === 'error' ? 'error' : 'syncing')),
+        h('span.push-mail', p.email), h('span.dim', text)));
+    }
+  }).catch(() => {});
+  return el;
 }
 
 // ---------------------------------------------------------------- accounts tab
