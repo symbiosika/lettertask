@@ -106,7 +106,7 @@ DraftInput = Draft (without attachments) & {
                            // body = sent text) is created directly in "Wiedervorlage", due at remindAt.
 }
 Config {
-  clientId: string, tenant: string /* empty → built-in default "organizations" (multi-tenant) */, syncIntervalSecs: number,
+  clientId: string, tenant: string /* user overrides only: empty → built-in default, never sent to the UI (also googleClientId/Secret) */, syncIntervalSecs: number,
   loadRemoteImages: bool, readingPane: "right"|"bottom"|"off",
   markReadDelaySecs: number /* -1 = never automatically */, listMode: "comfortable"|"compact",
   showDateSeparators: bool /* thin "Heute / Gestern / Älter" (Today / Yesterday / Older) separators in the list */,
