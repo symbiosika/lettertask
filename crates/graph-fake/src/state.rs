@@ -481,6 +481,8 @@ pub struct State {
     pub uploads: HashMap<String, Upload>,
     /// Injected failures: (status, remaining count).
     pub faults: VecDeque<Fault>,
+    /// Slow answers: (HTTP method, path part, delay) – a server under latency.
+    pub latency: Vec<(String, String, std::time::Duration)>,
     pub request_count: u64,
     /// Requests to the OAuth token endpoint.
     pub token_requests: u64,
@@ -581,6 +583,11 @@ impl SharedState {
     /// Incremental delta rounds return only the changed properties of a message.
     pub fn set_sparse_delta(&self, on: bool) {
         self.lock().sparse_delta = on;
+    }
+
+    /// Requests with `method` whose path contains `path_contains` answer only after `delay`.
+    pub fn set_latency(&self, method: &str, path_contains: &str, delay: std::time::Duration) {
+        self.lock().latency.push((method.to_string(), path_contains.to_string(), delay));
     }
 
     /// Queues an arbitrary failure for the next matching Graph request.

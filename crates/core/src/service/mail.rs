@@ -282,6 +282,7 @@ impl Service {
             };
             page.can_load_older = !self.store.is_fully_loaded(&q.mailbox_id, &q.folder_id)? && cached < f.total_count;
         }
+        self.hide_leaving(&mut page);
         Ok(page)
     }
 
@@ -427,6 +428,10 @@ impl Service {
                     convert::message_summary(&item, &mb.id, folder_id)
                 };
                 m.folder_id = folder_id.to_string();
+                // A local action not yet through (or just through) wins over this view.
+                if !self.pending.adjust(&mut m) {
+                    continue;
+                }
                 // Delta never carries the last action; it comes from refresh_last_verbs.
                 if m.last_verb.is_none() {
                     m.last_verb = cached.as_ref().and_then(|o| o.last_verb.clone());
@@ -572,7 +577,7 @@ impl Service {
             path.push_str(&format!("&$filter={}", enc(&format!("receivedDateTime lt {oldest}"))));
         }
         let page = c.get(&path).await?;
-        let items: Vec<MessageSummary> = page["value"]
+        let mut items: Vec<MessageSummary> = page["value"]
             .as_array()
             .map(|a| {
                 a.iter()
@@ -584,8 +589,10 @@ impl Service {
                     .collect()
             })
             .unwrap_or_default();
+        let fetched = items.len();
+        self.pending.adjust_all(&mut items);
         self.store.upsert_messages(&items)?;
-        if items.len() < PAGE_SIZE || page["@odata.nextLink"].is_null() {
+        if fetched < PAGE_SIZE || page["@odata.nextLink"].is_null() {
             self.store.set_fully_loaded(mailbox_id, folder_id, true)?;
         }
         if !items.is_empty() {
@@ -643,9 +650,12 @@ impl Service {
         };
         let fetched = self.fetch_detail(&mb, &c, message_id).await;
         match fetched {
-            Ok(d) => {
+            Ok(mut d) => {
+                if let Some(r) = self.pending.read(mailbox_id, message_id) {
+                    d.summary.is_read = r;
+                }
                 self.store.put_detail(&d)?;
-                if self.store.message_exists(mailbox_id, message_id)? {
+                if !self.pending.is_gone(mailbox_id, message_id) && self.store.message_exists(mailbox_id, message_id)? {
                     self.store.upsert_messages(std::slice::from_ref(&d.summary))?;
                 }
                 Ok(d)
@@ -865,7 +875,7 @@ impl Service {
         Ok(folders)
     }
 
-    fn emit_folders(&self, mailbox_id: &str, folders: HashSet<String>) {
+    pub(crate) fn emit_folders(&self, mailbox_id: &str, folders: HashSet<String>) {
         if folders.is_empty() {
             self.emit_mail_changed(mailbox_id, None);
         }

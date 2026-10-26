@@ -591,7 +591,7 @@ impl Service {
                         .store
                         .messages_with_category(&mb.id, &super::lanes::lane_category(first))?
                         .into_iter()
-                        .filter(|m| !excluded.contains(&m.folder_id))
+                        .filter(|m| !excluded.contains(&m.folder_id) && !self.pending.is_leaving(m))
                         .collect();
                     todo.push(json!({"accountId": acc.id, "lane": first, "items": items}));
                 }
@@ -621,7 +621,7 @@ impl Service {
                     self.store
                         .messages_due_before(&mb.id, end)?
                         .into_iter()
-                        .filter(|m| !excluded.contains(&m.folder_id)),
+                        .filter(|m| !excluded.contains(&m.folder_id) && !self.pending.is_leaving(m)),
                 );
             }
         }

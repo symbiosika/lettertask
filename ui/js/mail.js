@@ -60,6 +60,9 @@ const list = {
 };
 let readToken = 0;
 let markReadTimer = null;
+// Actions on their way to the backend (id → { read?, gone?, n }): a list answer
+// read before the backend took them must not show the old state again.
+const inFlight = new Map();
 let currentDetail = null;
 let onCountsChanged = () => {};
 let onSelectionChanged = () => {};
@@ -594,6 +597,34 @@ function setFilter(f) {
 }
 
 // ============================================================ list
+function whileInFlight(ids, change, promise) {
+  for (const id of ids) {
+    const e = inFlight.get(id) || { n: 0 };
+    Object.assign(e, change);
+    e.n++;
+    inFlight.set(id, e);
+  }
+  return promise.finally(() => {
+    for (const id of ids) {
+      const e = inFlight.get(id);
+      if (e && --e.n <= 0) inFlight.delete(id);
+    }
+  }).catch((e) => {
+    // The backend has undone it; show the mails as they are again.
+    reloadList({ ifChanged: true }).catch(() => {});
+    throw e;
+  });
+}
+
+function withInFlight(items) {
+  if (!inFlight.size) return items;
+  return items.filter((m) => !(inFlight.get(m.id) || {}).gone).map((m) => {
+    const e = inFlight.get(m.id);
+    if (e && 'read' in e) m.isRead = e.read;
+    return m;
+  });
+}
+
 // List requests run one after another: a reload started while a page is being
 // appended would otherwise come back with the old length and drop that page.
 let listChain = Promise.resolve();
@@ -623,7 +654,8 @@ async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
     text: list.text || null, offset: 0, limit,
   }, { silent: true });
   if (state.current.folderId !== folderId) return;
-  const items = res.items || [];
+  const fetched = res.items || [];
+  const items = withInFlight(fetched);
   // The Wiedervorlage view also lists mails with a due date outside the
   // Wiedervorlage folder (e.g. follow-up flags set in Outlook), as the calendar does.
   let extra = [];
@@ -642,7 +674,7 @@ async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
   // "mail-changed" events; nothing changed → keep the DOM as it is.
   const same = ifChanged && list.items.length === items.length && JSON.stringify(list.items) === JSON.stringify(items);
   list.items = items;
-  list.total = (res.total || 0) + extra.length;
+  list.total = (res.total || 0) - (fetched.length - items.length) + extra.length;
   list.unread = (res.unread || 0) + extra.filter((m) => !m.isRead).length;
   list.canLoadOlder = !!res.canLoadOlder;
   const ids = new Set(list.items.map((m) => m.id));
@@ -1190,7 +1222,7 @@ export async function applyRead(ids, isRead) {
   const f = folderById(mailboxId, folderId);
   if (f && !list.search) { f.unreadCount = Math.max(0, f.unreadCount + delta); list.unread = Math.max(0, list.unread + delta); }
   renderList(); renderFolderTree(); onCountsChanged();
-  await call('set_read', { mailboxId, ids, isRead }, { silent: true });
+  await whileInFlight(ids, { read: isRead }, call('set_read', { mailboxId, ids, isRead }, { silent: true }));
 }
 
 export async function applyFlag(ids, flag) {
@@ -1258,7 +1290,7 @@ async function deleteIds(ids, permanent) {
     permanent = true;
   }
   await removeFromList(ids);
-  await call('delete_messages', { mailboxId, ids, permanent });
+  await whileInFlight(ids, { gone: true }, call('delete_messages', { mailboxId, ids, permanent }));
   await refreshFolders(mailboxId);
   checkInboxZero();
 }
@@ -1272,7 +1304,8 @@ export async function moveOrCopy(ids, destFolderId, kind = 'move', destMailboxId
     burst(node || rowEl(ids[0]));
   }
   if (kind === 'move') await removeFromList(ids);
-  await call(kind === 'move' ? 'move_messages' : 'copy_messages', { mailboxId, ids, destFolderId });
+  const run = call(kind === 'move' ? 'move_messages' : 'copy_messages', { mailboxId, ids, destFolderId });
+  await (kind === 'move' ? whileInFlight(ids, { gone: true }, run) : run);
   toast(`${ids.length} ${ids.length === 1 ? 'Element' : 'Elemente'} ${kind === 'move' ? 'verschoben' : 'kopiert'} nach „${dest ? dest.displayName : ''}".`);
   await refreshFolders(mailboxId);
   if (kind === 'move') checkInboxZero();
@@ -1287,7 +1320,8 @@ async function transfer(ids, mailboxId, destMailboxId, destFolderId, kind) {
   toast(`${what} ${kind === 'move' ? 'werden verschoben' : 'werden kopiert'} nach ${target}…`, 'info');
   if (kind === 'move') await removeFromList(ids);
   try {
-    await call('transfer_messages', { mailboxId, ids, destMailboxId, destFolderId, copy: kind === 'copy' });
+    const run = call('transfer_messages', { mailboxId, ids, destMailboxId, destFolderId, copy: kind === 'copy' });
+    await (kind === 'move' ? whileInFlight(ids, { gone: true }, run) : run);
   } catch (e) {
     if (kind === 'move') await reloadList();
     throw e;
@@ -1307,12 +1341,14 @@ async function archiveIds(ids, { quiet = false, mailboxId = mbOf(ids) } = {}) {
   if (archive && archive.id === state.current.folderId && !list.search) { if (!quiet) toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
   burst(rowEl(ids[0]));
   await removeFromList(ids);
-  try {
-    await call('archive_messages', { mailboxId, ids });
-  } catch (e) {
-    if (!/Unbekannter Befehl/.test(e.message) || !archive) throw e;
-    await call('move_messages', { mailboxId, ids, destFolderId: archive.id });
-  }
+  await whileInFlight(ids, { gone: true }, (async () => {
+    try {
+      await call('archive_messages', { mailboxId, ids });
+    } catch (e) {
+      if (!/Unbekannter Befehl/.test(e.message) || !archive) throw e;
+      await call('move_messages', { mailboxId, ids, destFolderId: archive.id });
+    }
+  })());
   if (!quiet) toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
   await refreshFolders(mailboxId);
   checkInboxZero();
@@ -1324,7 +1360,7 @@ export async function snoozeSelected(until) {
   if (!s) return;
   if (!(until instanceof Date) || isNaN(until) || until <= new Date()) { toast('Der Zeitpunkt muss in der Zukunft liegen.', 'error'); return; }
   await removeFromList(s.ids);
-  await call('snooze_messages', { mailboxId: s.mailboxId, ids: s.ids, until: until.toISOString() });
+  await whileInFlight(s.ids, { gone: true }, call('snooze_messages', { mailboxId: s.mailboxId, ids: s.ids, until: until.toISOString() }));
   toast(`Auf Wiedervorlage bis ${fmtSnoozeTarget(until)}.`);
   await refreshFolders(s.mailboxId);
   checkInboxZero();
@@ -1334,7 +1370,7 @@ export async function unsnoozeSelected() {
   const s = requireSelection();
   if (!s) return;
   await removeFromList(s.ids);
-  await call('unsnooze_messages', { mailboxId: s.mailboxId, ids: s.ids });
+  await whileInFlight(s.ids, { gone: true }, call('unsnooze_messages', { mailboxId: s.mailboxId, ids: s.ids }));
   toast(s.ids.length === 1 ? 'Nachricht ist wieder im Posteingang.' : `${s.ids.length} Nachrichten sind wieder im Posteingang.`);
   await refreshFolders(s.mailboxId);
 }

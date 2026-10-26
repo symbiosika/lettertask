@@ -11,6 +11,7 @@ mod imap_compose;
 mod imap_mail;
 mod lanes;
 mod mail;
+mod pending;
 mod push;
 mod signatures;
 mod snooze;
@@ -54,6 +55,10 @@ pub struct Service {
     pub(crate) host: Arc<dyn Host>,
     active_folders: RwLock<HashMap<String, String>>,
     folder_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Mail actions run one after another per mailbox (see `pending`).
+    action_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Mail actions the server has not confirmed yet.
+    pub(crate) pending: pending::Pending,
     sync_all_lock: tokio::sync::Mutex<()>,
     last_sync: RwLock<Option<String>>,
     /// Cached IMAP sessions of IMAP accounts.
@@ -213,6 +218,8 @@ impl Service {
             host: Arc::new(crate::host::Guarded(host)),
             active_folders: RwLock::new(HashMap::new()),
             folder_locks: Default::default(),
+            action_locks: Default::default(),
+            pending: Default::default(),
             sync_all_lock: tokio::sync::Mutex::new(()),
             last_sync: RwLock::new(None),
             imap: Default::default(),
@@ -423,7 +430,7 @@ impl Service {
             }
 
             // ---- folders ----
-            "list_folders" => ok(self.store.list_folders(&arg::<String>(a, "mailboxId")?)?),
+            "list_folders" => ok(self.list_folders_for_ui(&arg::<String>(a, "mailboxId")?)?),
             "sync_folders" => ok(self.sync_folders(&arg::<String>(a, "mailboxId")?).await?),
             "create_folder" => ok(self
                 .create_folder(
@@ -479,83 +486,78 @@ impl Service {
             "get_message" => ok(self
                 .get_message(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)
                 .await?),
+            // Mail actions: shown at once, sent to the server in order (see `pending`).
             "set_read" => {
-                self.set_read(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?, arg(a, "isRead")?)
+                self.set_read_queued(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?, arg(a, "isRead")?)
                     .await?;
                 ok(Value::Null)
             }
             "set_flag" => {
-                self.set_flag(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?, &arg::<String>(a, "flag")?)
+                let mb: String = arg(a, "mailboxId")?;
+                self.queued(&mb, Box::pin(self.set_flag(&mb, &arg::<Vec<String>>(a, "ids")?, &arg::<String>(a, "flag")?)))
                     .await?;
                 ok(Value::Null)
             }
             "set_categories" => {
-                self.set_categories(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<Vec<String>>(a, "ids")?,
-                    &arg::<Vec<String>>(a, "categories")?,
+                let mb: String = arg(a, "mailboxId")?;
+                self.queued(
+                    &mb,
+                    Box::pin(self.set_categories(&mb, &arg::<Vec<String>>(a, "ids")?, &arg::<Vec<String>>(a, "categories")?)),
                 )
                 .await?;
                 ok(Value::Null)
             }
             "move_messages" => {
-                self.move_messages(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<Vec<String>>(a, "ids")?,
-                    &arg::<String>(a, "destFolderId")?,
-                    false,
-                )
-                .await?;
+                let (mb, ids, dest): (String, Vec<String>, String) = (arg(a, "mailboxId")?, arg(a, "ids")?, arg(a, "destFolderId")?);
+                self.remove_queued(&mb, &ids, Some(&dest), Box::pin(self.move_messages(&mb, &ids, &dest, false)))
+                    .await?;
                 ok(Value::Null)
             }
             "transfer_messages" => {
-                let n = self
-                    .transfer_messages(
-                        &arg::<String>(a, "mailboxId")?,
-                        &arg::<Vec<String>>(a, "ids")?,
-                        &arg::<String>(a, "destMailboxId")?,
-                        &arg::<String>(a, "destFolderId")?,
-                        arg::<Option<bool>>(a, "copy")?.unwrap_or(false),
-                    )
-                    .await?;
+                let (mb, ids): (String, Vec<String>) = (arg(a, "mailboxId")?, arg(a, "ids")?);
+                let (dest_mb, dest): (String, String) = (arg(a, "destMailboxId")?, arg(a, "destFolderId")?);
+                let copy = arg::<Option<bool>>(a, "copy")?.unwrap_or(false);
+                let run = Box::pin(self.transfer_messages(&mb, &ids, &dest_mb, &dest, copy));
+                let n = if copy {
+                    self.queued(&mb, run).await?
+                } else {
+                    let stays = (mb == dest_mb).then_some(dest.as_str());
+                    self.remove_queued(&mb, &ids, stays, run).await?
+                };
                 ok(json!({"count": n}))
             }
             "copy_messages" => {
-                self.move_messages(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<Vec<String>>(a, "ids")?,
-                    &arg::<String>(a, "destFolderId")?,
-                    true,
-                )
-                .await?;
+                let mb: String = arg(a, "mailboxId")?;
+                self.queued(&mb, Box::pin(self.move_messages(&mb, &arg::<Vec<String>>(a, "ids")?, &arg::<String>(a, "destFolderId")?, true)))
+                    .await?;
                 ok(Value::Null)
             }
             "archive_messages" => {
-                self.archive_messages(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?)
+                let (mb, ids): (String, Vec<String>) = (arg(a, "mailboxId")?, arg(a, "ids")?);
+                let archive = self.store.folder_by_well_known(&mb, "archive")?.map(|f| f.id);
+                self.remove_queued(&mb, &ids, archive.as_deref(), Box::pin(self.archive_messages(&mb, &ids)))
                     .await?;
                 ok(Value::Null)
             }
             "snooze_messages" => {
-                self.snooze_messages(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<Vec<String>>(a, "ids")?,
-                    &arg::<String>(a, "until")?,
-                )
-                .await?;
+                let (mb, ids): (String, Vec<String>) = (arg(a, "mailboxId")?, arg(a, "ids")?);
+                let snoozed = self.store.folder_by_well_known(&mb, "snoozed")?.map(|f| f.id);
+                self.remove_queued(&mb, &ids, snoozed.as_deref(), Box::pin(self.snooze_messages(&mb, &ids, &arg::<String>(a, "until")?)))
+                    .await?;
                 ok(Value::Null)
             }
             "unsnooze_messages" => {
-                self.unsnooze_messages(&arg::<String>(a, "mailboxId")?, &arg::<Vec<String>>(a, "ids")?)
+                let (mb, ids): (String, Vec<String>) = (arg(a, "mailboxId")?, arg(a, "ids")?);
+                let inbox = self.store.folder_by_well_known(&mb, "inbox")?.map(|f| f.id);
+                self.remove_queued(&mb, &ids, inbox.as_deref(), Box::pin(self.unsnooze_messages(&mb, &ids)))
                     .await?;
                 ok(Value::Null)
             }
             "delete_messages" => {
-                self.delete_messages(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<Vec<String>>(a, "ids")?,
-                    arg::<Option<bool>>(a, "permanent")?.unwrap_or(false),
-                )
-                .await?;
+                let (mb, ids): (String, Vec<String>) = (arg(a, "mailboxId")?, arg(a, "ids")?);
+                let permanent = arg::<Option<bool>>(a, "permanent")?.unwrap_or(false);
+                self.remove_queued(&mb, &ids, None, Box::pin(self.delete_messages(&mb, &ids, permanent)))
+                    .await?;
                 ok(Value::Null)
             }
             "download_attachment" => ok(self
@@ -648,10 +650,10 @@ impl Service {
                 .save_lanes(&arg::<String>(a, "accountId")?, &arg::<Vec<String>>(a, "lanes")?)
                 .await?),
             "set_lane" => {
-                self.set_lane(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<Vec<String>>(a, "ids")?,
-                    arg::<Option<String>>(a, "lane")?.as_deref(),
+                let mb: String = arg(a, "mailboxId")?;
+                self.queued(
+                    &mb,
+                    Box::pin(self.set_lane(&mb, &arg::<Vec<String>>(a, "ids")?, arg::<Option<String>>(a, "lane")?.as_deref())),
                 )
                 .await?;
                 ok(Value::Null)

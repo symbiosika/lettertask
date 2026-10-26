@@ -1269,3 +1269,87 @@ async fn shared_mailbox_add_sync_remove() {
     assert_eq!(accounts[0].mailboxes.len(), 1);
     assert!(ctx.folders(&mb.id).await.is_empty());
 }
+
+// ---- actions under server latency (pending changes) ----
+
+/// Waits until a dispatched action has queued itself (its local change is visible).
+async fn settle() {
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+}
+
+#[tokio::test]
+async fn read_change_shows_at_once_and_survives_a_sync_while_the_server_is_slow() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let m = page.items.iter().find(|m| !m.is_read).unwrap().clone();
+    let fake = ctx.fake.as_ref().unwrap();
+    fake.state.set_latency("PATCH", "/messages/", std::time::Duration::from_millis(1500));
+    let svc = ctx.svc.clone();
+    let args = json!({"mailboxId": ctx.account, "ids": [m.id], "isRead": true});
+    let running = tokio::spawn(async move { svc.dispatch("set_read", args).await });
+    settle().await;
+    // Shown before the server answered…
+    let now = ctx.list(&inbox.id).await;
+    assert!(now.items.iter().find(|x| x.id == m.id).unwrap().is_read);
+    assert_eq!(now.unread, page.unread - 1);
+    assert_eq!(ctx.folder("inbox").await.unread_count, inbox.unread_count - 1);
+    // …and a sync that still sees the old server state does not bring it back.
+    assert!(fake.state.update_message("me", &m.id, json!({"subject": "Geändert"})));
+    ctx.sync(&inbox.id).await;
+    let synced = ctx.list(&inbox.id).await;
+    let row = synced.items.iter().find(|x| x.id == m.id).unwrap();
+    assert_eq!(row.subject, "Geändert");
+    assert!(row.is_read);
+    running.await.unwrap().unwrap();
+    assert_eq!(fake.state.message("me", &m.id).unwrap()["isRead"], json!(true));
+    assert!(ctx.list(&inbox.id).await.items.iter().find(|x| x.id == m.id).unwrap().is_read);
+}
+
+#[tokio::test]
+async fn archived_mail_leaves_at_once_and_does_not_come_back_with_a_sync() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let archive = ctx.folder("archive").await;
+    let page = ctx.list(&inbox.id).await;
+    let m = page.items[0].clone();
+    let fake = ctx.fake.as_ref().unwrap();
+    fake.state.set_latency("POST", "/move", std::time::Duration::from_millis(1500));
+    let svc = ctx.svc.clone();
+    let args = json!({"mailboxId": ctx.account, "ids": [m.id]});
+    let running = tokio::spawn(async move { svc.dispatch("archive_messages", args).await });
+    settle().await;
+    let now = ctx.list(&inbox.id).await;
+    assert!(!now.items.iter().any(|x| x.id == m.id));
+    assert_eq!(now.total, page.total - 1);
+    assert_eq!(ctx.folder("inbox").await.total_count, inbox.total_count - 1);
+    // The server still has it in the inbox and reports a change: it stays out.
+    assert!(fake.state.update_message("me", &m.id, json!({"subject": "Geändert"})));
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|x| x.id == m.id));
+    running.await.unwrap().unwrap();
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|x| x.id == m.id));
+    assert!(ctx.list(&archive.id).await.items.iter().any(|x| x.subject == "Geändert"));
+}
+
+#[tokio::test]
+async fn failed_actions_are_undone() {
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    let m = page.items.iter().find(|m| !m.is_read).unwrap().clone();
+    let fake = ctx.fake.as_ref().unwrap();
+
+    fake.state.inject_fault(graph_fake::Fault::status(403).on_path("/messages/"));
+    call_err(&ctx.svc, "set_read", json!({"mailboxId": ctx.account, "ids": [m.id], "isRead": true})).await;
+    let after = ctx.list(&inbox.id).await;
+    assert!(!after.items.iter().find(|x| x.id == m.id).unwrap().is_read);
+    assert_eq!(after.unread, page.unread);
+    assert_eq!(ctx.folder("inbox").await.unread_count, inbox.unread_count);
+
+    fake.state.inject_fault(graph_fake::Fault::status(403).on_path("/move"));
+    call_err(&ctx.svc, "archive_messages", json!({"mailboxId": ctx.account, "ids": [m.id]})).await;
+    let after = ctx.list(&inbox.id).await;
+    assert!(after.items.iter().any(|x| x.id == m.id));
+    assert_eq!(after.total, page.total);
+}
