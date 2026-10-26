@@ -5,6 +5,8 @@ test('Link im Mailtext einfügen und bearbeiten', async ({ page }) => {
   await openApp(page);
   const popup = await popupFrom(page, () => page.locator('[data-testid=tb-new]').click());
   await expect(popup.locator('#subject')).toBeVisible();
+  // The draft loads into the editor afterwards and replaces its document.
+  await expect(popup.locator('body[data-ready="1"]')).toHaveCount(1);
   const frame = await (await popup.locator('iframe.editor-frame').elementHandle()).contentFrame();
   await frame.evaluate(() => {
     document.body.innerHTML = '<p id="p">Hier klicken bitte</p>';
