@@ -118,6 +118,8 @@ test('Dateien per Drag & Drop anfügen – auf das Fenster und in den Text', asy
   await expect(popup.locator('#subject')).toBeVisible();
   const editorBody = popup.frameLocator('iframe.editor-frame').locator('body');
   await expect(editorBody).toBeVisible();
+  // The draft loads into the editor afterwards and replaces its document.
+  await expect(popup.locator('body[data-ready="1"]')).toHaveCount(1);
   // Drops a file on the element: on the window (header) and on the text (editor frame).
   const frame = await (await popup.locator('iframe.editor-frame').elementHandle()).contentFrame();
   const drop = async (locator, name, text, ctx = popup) => {

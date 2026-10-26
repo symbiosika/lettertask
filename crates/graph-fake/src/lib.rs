@@ -192,6 +192,16 @@ async fn graph(
         }
     }
 
+    let delay = st
+        .lock()
+        .latency
+        .iter()
+        .find(|(m, p, _)| m.eq_ignore_ascii_case(method.as_str()) && raw_path.contains(p.as_str()))
+        .map(|(_, _, d)| *d);
+    if let Some(d) = delay {
+        tokio::time::sleep(d).await;
+    }
+
     let base_url = st.lock().base_url.clone();
     let req = Req { method, segs, raw_path, query, headers, body, base_url };
     match dispatch(&st, &req) {

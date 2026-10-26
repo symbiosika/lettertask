@@ -537,6 +537,8 @@ async function init() {
     reportError(e);
     applyDraft({ id: null, mailboxId: st.mailboxId, mode: 'new', to: [], cc: [], bcc: [], subject: '', bodyHtml: '', importance: 'normal', requestReadReceipt: false, attachments: [] });
   }
+  // The draft is in the editor (tests wait for this before touching the text).
+  document.body.dataset.ready = '1';
 }
 
 init().catch(reportError);

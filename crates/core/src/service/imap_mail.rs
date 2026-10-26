@@ -610,6 +610,8 @@ impl Service {
         let mut result = SyncResult::default();
         let mut migrate: Vec<(u32, String, String)> = Vec::new();
         let initial = cached_before.is_empty() || out.reset;
+        // Server unread count, corrected by local read changes not yet through.
+        let mut unseen = out.unseen as i64;
         if out.reset {
             self.store.delete_folder_messages(mb, folder)?;
             self.store.set_fully_loaded(mb, folder, false)?;
@@ -623,8 +625,17 @@ impl Service {
                         result.removed += 1;
                     }
                     Some(fl) => {
+                        if self.pending.is_gone(mb, id) {
+                            continue;
+                        }
                         if let Some(mut m) = self.store.get_summary(mb, id)? {
-                            let (r, f, cats) = (mime::has_flag(fl, "\\Seen"), mime::flag_status(fl), mime::categories(fl));
+                            let (mut r, f, cats) = (mime::has_flag(fl, "\\Seen"), mime::flag_status(fl), mime::categories(fl));
+                            if let Some(local) = self.pending.read(mb, id) {
+                                if local != r {
+                                    unseen += if local { -1 } else { 1 };
+                                }
+                                r = local;
+                            }
                             let due = match mime::due(fl) {
                                 Some(d) => Some(d),
                                 // Locally known due time: keep it, and move it onto the
@@ -649,11 +660,14 @@ impl Service {
                     }
                 }
             }
+            // Rows a running move deleted meanwhile stay out.
+            self.pending.adjust_all(&mut changed);
             result.updated = changed.len() as i64;
             self.store.upsert_messages(&changed)?;
         }
         self.store.kv_set(&uv_key(mb, folder), &out.uv.to_string())?;
-        let (new, local_due) = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
+        let (mut new, local_due) = self.summaries_from(mb, folder, out.uv, out.new_items, snoozed);
+        self.pending.adjust_all(&mut new);
         if out.keywords_ok {
             migrate.extend(local_due);
         }
@@ -665,7 +679,7 @@ impl Service {
         }
         if let Some(mut f) = self.store.get_folder(mb, folder)? {
             f.total_count = out.exists as i64;
-            f.unread_count = out.unseen as i64;
+            f.unread_count = unseen.max(0);
             self.store.upsert_folder(&f)?;
         }
         drop(guard);
@@ -724,7 +738,8 @@ impl Service {
                 let items = if take.is_empty() { vec![] } else { uid_fetch(c, &im::uid_set(&take), &summary_query()).await? };
                 Ok((sel.uid_validity.unwrap_or(0), items, more))
             })?;
-        let (list, _) = self.summaries_from(mb, folder, uv, items, snoozed);
+        let (mut list, _) = self.summaries_from(mb, folder, uv, items, snoozed);
+        self.pending.adjust_all(&mut list);
         self.store.upsert_messages(&list)?;
         if !more {
             self.store.set_fully_loaded(mb, folder, true)?;
@@ -871,9 +886,12 @@ impl Service {
             Some(s) => s,
             None => mime::summary(mb, folder, id.to_string(), &raw, None, &flags, date),
         };
-        let d = mime::detail(&raw, summary)?;
+        let mut d = mime::detail(&raw, summary)?;
+        if let Some(r) = self.pending.read(mb, id) {
+            d.summary.is_read = r;
+        }
         self.store.put_detail(&d)?;
-        if self.store.message_exists(mb, id)? {
+        if !self.pending.is_gone(mb, id) && self.store.message_exists(mb, id)? {
             self.store.upsert_messages(std::slice::from_ref(&d.summary))?;
         }
         Ok(d)

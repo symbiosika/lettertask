@@ -15,6 +15,8 @@ test('Eingefügtes Bild im Mailtext lässt sich in der Größe ändern', async (
   await openApp(page);
   const popup = await popupFrom(page, () => page.locator('[data-testid=tb-new]').click());
   await expect(popup.locator('#subject')).toBeVisible();
+  // The draft loads into the editor afterwards and replaces its document.
+  await expect(popup.locator('body[data-ready="1"]')).toHaveCount(1);
   const frame = await (await popup.locator('iframe.editor-frame').elementHandle()).contentFrame();
   const url = await pngDataUrl(popup);
   await frame.evaluate((u) => { document.body.insertAdjacentHTML('afterbegin', `<p><img id="pic" src="${u}"></p>`); }, url);
