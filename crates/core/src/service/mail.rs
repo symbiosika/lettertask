@@ -1089,6 +1089,19 @@ impl Service {
         }
         Ok(Some(path.to_string_lossy().into_owned()))
     }
+
+    /// Saves content from the page (e.g. a picture in a mail) through the save
+    /// dialog. Returns the path, or `None` if the dialog was cancelled.
+    pub(crate) async fn save_file(&self, name: &str, content_base64: &str) -> Result<Option<String>> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(content_base64.trim())
+            .map_err(|_| Error::invalid("Ungültiger Dateiinhalt"))?;
+        let Some(path) = self.host.save_dialog(&sanitize_filename(name)).await else {
+            return Ok(None);
+        };
+        std::fs::write(&path, bytes)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    }
 }
 
 /// Builds the KQL expression for `$search` (without the surrounding quotes,

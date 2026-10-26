@@ -3,6 +3,9 @@
 import { h } from './util.js';
 import { icon } from './icons.js';
 import { promptDialog, showMenuAt } from './dialogs.js';
+import { installNativeImageMenu } from './imagemenu.js';
+
+installNativeImageMenu();
 
 const COLORS = ['#000000', '#7f7f7f', '#c00000', '#ff0000', '#ffc000', '#00b050', '#0070c0', '#002060', '#7030a0'];
 // html needs a height so the body's min-height fills the editor: clicks
