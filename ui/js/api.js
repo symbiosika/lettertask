@@ -136,6 +136,16 @@ export async function call(cmd, args = {}, { silent = false } = {}) {
   }
 }
 
+/** Calls one of the app's own (non-service) commands; only in the desktop app. */
+export async function invokeNative(cmd, args = {}) {
+  if (!isTauri) throw new Error('Nur in der Desktop-App verfügbar.');
+  try {
+    return await TAURI.core.invoke(cmd, args);
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : (e && e.message) || String(e));
+  }
+}
+
 const unlistens = [];
 // A frame's listeners live in the main page's bridge: drop them with the frame.
 if (framed) window.addEventListener('pagehide', () => { for (const u of unlistens.splice(0)) Promise.resolve(u).then((f) => f && f()).catch(() => {}); });

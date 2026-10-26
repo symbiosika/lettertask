@@ -1,5 +1,5 @@
 // Renders a MessageDetail (reading pane and message window share this).
-import { h, esc, fmtDateTime, fmtAddress, displayName, initials, avatarColor, fmtSize, load, store } from './util.js';
+import { h, esc, fmtDateTime, fmtDateLong, fmtDate, fmtTime, fmtAddress, displayName, initials, avatarColor, fmtSize, load, store, sameDay, addDays, recurrenceText } from './util.js';
 import { icon } from './icons.js';
 import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
 import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
@@ -8,6 +8,7 @@ import { bindContactCards, addrAttrs } from './contactcard.js';
 import { showMenu, showMenuAt, reportError, toast, busyClick } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
 import { fmtSnoozeTarget } from './snooze.js';
+import { showImageMenu, installNativeImageMenu } from './imagemenu.js';
 
 // Mail HTML is untrusted. It is parsed with DOMParser (inert: no scripts, no
 // loads), cleaned, and rendered in a sandboxed iframe without allow-scripts and
@@ -145,39 +146,6 @@ function linkOf(target) {
   return { el: a, href: (a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '').trim() };
 }
 
-/** The picture as PNG (other formats are converted; the clipboard takes PNG). */
-async function imagePng(img) {
-  const src = img.currentSrc || img.src;
-  const toPng = (source, w, h_) => new Promise((resolve, reject) => {
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h_;
-    c.getContext('2d').drawImage(source, 0, 0);
-    c.toBlob((b) => (b ? resolve(b) : reject(new Error('Bild nicht lesbar'))), 'image/png');
-  });
-  try {
-    if (!img.complete) await img.decode();
-    return await toPng(img, img.naturalWidth, img.naturalHeight);
-  } catch {
-    // Remote picture (canvas tainted): fetch it as data instead.
-    const blob = await (await fetch(src)).blob();
-    if (blob.type === 'image/png') return blob;
-    const bmp = await createImageBitmap(blob);
-    return toPng(bmp, bmp.width, bmp.height);
-  }
-}
-
-/** Copies a picture of a mail as image (pasted as picture elsewhere, e.g. in a chat). */
-export async function copyImage(img) {
-  try {
-    if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) throw new Error('Die Zwischenablage nimmt hier keine Bilder an.');
-    // A promise inside the item keeps the user gesture (required by WebKit).
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': imagePng(img) })]);
-    toast('Bild kopiert.');
-  } catch (e) {
-    reportError(new Error('Bild konnte nicht kopiert werden: ' + (e.message || e)));
-  }
-}
-
 /** Mounts the body iframe and wires link interception. */
 export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
   host.innerHTML = '';
@@ -208,15 +176,13 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
       }
     });
     // Own menu on pictures: the WebView's "Copy image" puts a data: picture
-    // on the clipboard as its (base64) address text.
+    // on the clipboard as its (base64) address text (WebKitGTK: see imagemenu.js).
     doc.addEventListener('contextmenu', (e) => {
       const img = e.target && e.target.closest ? e.target.closest('img') : null;
       if (!img || !img.currentSrc) return;
       e.preventDefault();
       const r = frame.getBoundingClientRect();
-      showMenu([
-        { label: 'Bild kopieren', icon: 'copy', onClick: () => copyImage(img), testid: 'img-copy' },
-      ], r.left + e.clientX, r.top + e.clientY);
+      showImageMenu(img, r.left + e.clientX, r.top + e.clientY);
     });
     suppressNativeMenu(doc);
     // Middle click / other buttons never follow a link.
@@ -229,6 +195,8 @@ export function mountBody(host, bodyHtml, { allowRemote, mailboxId }) {
   host.appendChild(frame);
   return frame;
 }
+
+installNativeImageMenu();
 
 // Hover card with copy buttons on every address in reading pane and list.
 bindContactCards(document.body, { onMail: (a) => openWindow('compose', { mode: 'new', to: a.address }).catch(reportError) });
@@ -251,6 +219,41 @@ function fileIcon(a) {
 function fileExt(name) {
   const m = /\.([a-z0-9]{1,5})$/i.exec(name || '');
   return m ? m[1].toUpperCase() : '';
+}
+
+/** "Montag, 2. November 2026 · 09:00 – 09:30" (all-day events: dates only). */
+function inviteWhen(ev) {
+  if (ev.isAllDay) {
+    // All-day bounds are midnight UTC (Graph) – read the date, not the local time.
+    const day = (iso) => { const d = new Date(iso); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+    const s = day(ev.start), last = addDays(day(ev.end), -1);
+    return last > s ? `${fmtDateLong(s)} – ${fmtDateLong(last)} · ganztägig` : `${fmtDateLong(s)} · ganztägig`;
+  }
+  const s = new Date(ev.start), e = new Date(ev.end);
+  const m = Math.round((e - s) / 60000);
+  const dur = m < 60 ? `${m} Min.` : m % 60 ? `${Math.floor(m / 60)} Std. ${m % 60} Min.` : `${m / 60} Std.`;
+  const range = sameDay(s, e) ? `${fmtDateLong(s)} · ${fmtTime(s)} – ${fmtTime(e)}` : `${fmtDateLong(s)} ${fmtTime(s)} – ${fmtDateLong(e)} ${fmtTime(e)}`;
+  return `${range} (${dur})`;
+}
+
+/** Date, series, place and organizer of a meeting request. */
+function renderInvite(host, ev) {
+  const row = (ic, html, testid) => h('div.inv-row', { dataset: testid ? { testid } : {}, html: icon(ic, 15) + `<span>${html}</span>` });
+  host.innerHTML = '';
+  host.appendChild(row('clock', esc(inviteWhen(ev)), 'invite-when'));
+  if (ev.recurrence) {
+    const from = ev.recurrence.startDate ? ` <span class="dim">· ab ${esc(fmtDate(new Date(ev.recurrence.startDate + 'T00:00:00')))}</span>` : '';
+    host.appendChild(row('recurrence', `<b>Serie:</b> ${esc(recurrenceText(ev.recurrence) || 'Serientermin')}${from}`, 'invite-series'));
+  } else if (ev.type === 'occurrence' || ev.type === 'exception') {
+    host.appendChild(row('recurrence', 'Einzeltermin einer Serie', 'invite-series'));
+  }
+  if (ev.location && !/^Microsoft Teams/i.test(ev.location)) host.appendChild(row('location', esc(ev.location)));
+  else if (ev.isOnlineMeeting || /^Microsoft Teams/i.test(ev.location || '')) host.appendChild(row('teams', 'Microsoft Teams-Besprechung'));
+  const people = (ev.attendees || []).filter((a) => a.type !== 'resource');
+  if (ev.organizer) {
+    const others = people.filter((a) => a.address !== ev.organizer.address).length;
+    host.appendChild(row('people', `<span class="addr"${addrAttrs(ev.organizer)}>${esc(displayName(ev.organizer))}</span> <span class="dim">organisiert${others ? ` · ${others} Teilnehmer` : ''}</span>`));
+  }
 }
 
 const FLAG_TEXT = { flagged: 'Zur Nachverfolgung gekennzeichnet', complete: 'Als erledigt markiert' };
@@ -393,6 +396,12 @@ export function renderMessage(container, msg, opts) {
     });
     bar.append(mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline'));
     bars.appendChild(bar);
+    // When, how long, how often: the mail body (e.g. a bare Teams link) rarely says.
+    const details = h('div.rp-invite', { dataset: { testid: 'invite-details' } });
+    bars.appendChild(details);
+    call('get_event', { accountId, eventId: msg.eventId }, { silent: true })
+      .then((ev) => { if (ev) renderInvite(details, ev); else details.remove(); })
+      .catch(() => details.remove());
   }
   if (opts.delegation && opts.onDelegationDone) {
     const d = opts.delegation;

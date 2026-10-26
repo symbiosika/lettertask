@@ -85,6 +85,26 @@ export function fmtDateShort(d) { return `${pad(d.getDate())}.${pad(d.getMonth()
 export function fmtDateLong(d) { return `${WEEKDAYS[d.getDay()]}, ${d.getDate()}. ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; }
 export function fmtDateTime(d) { return `${WEEKDAYS_SHORT[d.getDay()]} ${fmtDate(d)} ${fmtTime(d)}`; }
 
+const WEEK_INDEX = { first: 'ersten', second: 'zweiten', third: 'dritten', fourth: 'vierten', last: 'letzten' };
+
+/** Series rule in words, e.g. "Wöchentlich am Montag bis 31.12.2026". */
+export function recurrenceText(r) {
+  if (!r) return '';
+  const every = r.interval > 1 ? `alle ${r.interval} ` : 'jede(n) ';
+  const days = (r.daysOfWeek || []).map((d) => WEEKDAYS[DAY_KEYS.indexOf(d)]).join(', ');
+  const nth = `am ${WEEK_INDEX[r.index] || 'ersten'} ${days}`;
+  let s = '';
+  if (r.pattern === 'daily') s = r.interval > 1 ? `Alle ${r.interval} Tage` : 'Täglich';
+  else if (r.pattern === 'weekly') s = (r.interval > 1 ? `Alle ${r.interval} Wochen am ` : 'Wöchentlich am ') + days;
+  else if (r.pattern === 'absoluteMonthly') s = `Am ${r.dayOfMonth}. ${every}Monat${r.interval > 1 ? 'e' : ''}`;
+  else if (r.pattern === 'relativeMonthly') s = (r.interval > 1 ? `Alle ${r.interval} Monate ` : 'Monatlich ') + nth;
+  else if (r.pattern === 'absoluteYearly') s = `Jährlich am ${r.dayOfMonth}. ${MONTHS[(r.month || 1) - 1]}`;
+  else if (r.pattern === 'relativeYearly') s = `Jährlich ${nth} im ${MONTHS[(r.month || 1) - 1]}`;
+  if (r.endDate) s += ` bis ${r.endDate.split('-').reverse().join('.')}`;
+  else if (r.occurrences) s += `, ${r.occurrences} Termine`;
+  return s;
+}
+
 /** Local wall time without zone, "YYYY-MM-DDTHH:MM:SS". */
 export function toLocalIso(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;

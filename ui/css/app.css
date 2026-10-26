@@ -366,6 +366,11 @@ kbd { font-family: inherit; }
 .cc-btn:hover { background: var(--hover); border-color: var(--border-strong); }
 .infobar.meeting .btn { height: 28px; }
 .infobar.meeting .ib-done { font-weight: 600; }
+.rp-invite { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--accent-weak); font-size: 13px; color: var(--text); }
+.rp-invite:empty { display: none; }
+.rp-invite .inv-row { display: flex; align-items: center; gap: 8px; }
+.rp-invite .inv-row svg { flex: none; color: var(--text-2); }
+.rp-invite .dim { color: var(--text-2); }
 .infobar.delegation { background: #eaf6ec; color: #1e5b2a; }
 .infobar.delegation { flex-wrap: wrap; }
 .infobar.delegation .ib-text { flex: 1 1 220px; min-width: 0; }

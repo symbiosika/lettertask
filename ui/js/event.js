@@ -1,7 +1,7 @@
 // Appointment / meeting window.
 import { call, params, closeWindow, currentWindow } from './api.js';
 import {
-  h, $, esc, addDays, startOfDay, toDateInput, toTimeInput, parseLocal, toLocalIso, DAY_KEYS, WEEKDAYS, MONTHS, displayName,
+  h, $, esc, addDays, startOfDay, toDateInput, toTimeInput, parseLocal, toLocalIso, DAY_KEYS, WEEKDAYS, MONTHS, displayName, recurrenceText,
 } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, field, loadingPill } from './dialogs.js';
@@ -192,19 +192,6 @@ function renderCats() {
     const bg = categoryHex(st.accountId, c);
     f.catRow.appendChild(h('span.cat-chip', { style: { background: bg, color: textOn(bg) } }, c));
   }
-}
-
-function recurrenceText(r) {
-  if (!r) return '';
-  const every = r.interval > 1 ? `alle ${r.interval} ` : 'jede(n) ';
-  let s = '';
-  if (r.pattern === 'daily') s = r.interval > 1 ? `Alle ${r.interval} Tage` : 'Täglich';
-  else if (r.pattern === 'weekly') s = (r.interval > 1 ? `Alle ${r.interval} Wochen am ` : 'Wöchentlich am ') + (r.daysOfWeek || []).map((d) => WEEKDAYS[DAY_KEYS.indexOf(d)]).join(', ');
-  else if (r.pattern === 'absoluteMonthly') s = `Am ${r.dayOfMonth}. ${every}Monat${r.interval > 1 ? 'e' : ''}`;
-  else if (r.pattern === 'absoluteYearly') s = `Jährlich am ${r.dayOfMonth}. ${MONTHS[(r.month || 1) - 1]}`;
-  if (r.endDate) s += ` bis ${r.endDate.split('-').reverse().join('.')}`;
-  else if (r.occurrences) s += `, ${r.occurrences} Termine`;
-  return s;
 }
 
 function updateRecurText() {

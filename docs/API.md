@@ -185,6 +185,7 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)" (task as mail): a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" (immediately) → Posteingang (inbox, unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
 | `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
+| `save_file` | `{ name, contentBase64 }` | `string\|null` saved path (save dialog; null if cancelled), e.g. "Bild speichern unter…" |
 | `get_message_source` | `{ mailboxId, messageId }` | `string` (MIME source, for "Quelltext anzeigen" (View source)) |
 
 ### Compose

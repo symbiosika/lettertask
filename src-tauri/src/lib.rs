@@ -78,12 +78,13 @@ impl Host for TauriHost {
         } else {
             format!("{kind}.html?{query}")
         };
-        WebviewWindowBuilder::new(&self.app, label, WebviewUrl::App(url.into()))
+        let win = WebviewWindowBuilder::new(&self.app, label, WebviewUrl::App(url.into()))
             .title(title)
             .inner_size(w, h)
             .min_inner_size(600.0, 450.0)
             .build()
             .map_err(|e| mailcore::Error::Other(e.to_string()))?;
+        setup_webview(&win);
         Ok(())
     }
 
@@ -151,6 +152,42 @@ async fn call(state: tauri::State<'_, Arc<Service>>, cmd: String, args: Option<V
     svc.dispatch(&cmd, args.unwrap_or(Value::Object(Default::default())))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Puts a picture (PNG) on the clipboard as image, for the app's image menu
+/// (ui/js/imagemenu.js) where the WebView's clipboard API takes no pictures.
+#[tauri::command]
+async fn copy_image(app: tauri::AppHandle, png_base64: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(png_base64.trim())
+        .map_err(|e| e.to_string())?;
+    clipboard_image(&app, bytes).await
+}
+
+#[cfg(target_os = "linux")]
+async fn clipboard_image(app: &tauri::AppHandle, png: Vec<u8>) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // GTK objects live on the main thread only.
+    app.run_on_main_thread(move || {
+        let set = || -> Result<(), String> {
+            use gtk::prelude::*;
+            let loader = gtk::gdk_pixbuf::PixbufLoader::new();
+            loader.write(&png).map_err(|e| e.to_string())?;
+            loader.close().map_err(|e| e.to_string())?;
+            let pixbuf = loader.pixbuf().ok_or("Bild nicht lesbar")?;
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_image(&pixbuf);
+            Ok(())
+        };
+        let _ = tx.send(set());
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn clipboard_image(_: &tauri::AppHandle, _: Vec<u8>) -> Result<(), String> {
+    Err("Bilder in die Zwischenablage: nur unter Linux über die App".into())
 }
 
 /// Keeps every webview on the app's own pages. A web link that would navigate
@@ -228,7 +265,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(navigation_guard())
-        .invoke_handler(tauri::generate_handler![call])
+        .invoke_handler(tauri::generate_handler![call, copy_image])
         .on_window_event(on_window_event)
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -274,7 +311,7 @@ pub fn run() {
             tauri::async_runtime::block_on(async move { bg.start_background_sync() });
             app.manage(svc);
             if let Some(w) = app.get_webview_window("main") {
-                disable_pinch_zoom(&w);
+                setup_webview(&w);
             }
             Ok(())
         })
@@ -297,6 +334,39 @@ pub fn run() {
             }
         });
 }
+
+/// Per-window WebView tweaks (main window and every window opened later).
+fn setup_webview(w: &tauri::WebviewWindow) {
+    disable_pinch_zoom(w);
+    image_context_menu(w);
+}
+
+/// A right click on a picture opens the app's own image menu (ui/js/imagemenu.js)
+/// via "image-menu" `{ label, uri, x, y }`: WebKitGTK delivers no events from the
+/// sandboxed mail frame to the page, and its own menu copies a data: picture
+/// as (base64) text and cannot save it.
+#[cfg(target_os = "linux")]
+fn image_context_menu(w: &tauri::WebviewWindow) {
+    let app = w.app_handle().clone();
+    let label = w.label().to_string();
+    let _ = w.with_webview(move |wv| {
+        use webkit2gtk::{HitTestResultExt, WebViewExt};
+        wv.inner().connect_context_menu(move |_, _, event, hit| {
+            if !hit.context_is_image() {
+                return false;
+            }
+            let Some(uri) = hit.image_uri() else { return false };
+            // A menu opened by keyboard has no position.
+            let (x, y) = event.coords().unwrap_or((40.0, 40.0));
+            let payload = serde_json::json!({ "label": label, "uri": uri.as_str(), "x": x, "y": y });
+            let _ = app.emit_to(&label, "image-menu", payload);
+            true
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn image_context_menu(_: &tauri::WebviewWindow) {}
 
 /// WebKitGTK zooms the whole page on a touchpad pinch, which is never wanted
 /// in the app: a zoom gesture on the webview is claimed before WebKit sees it.
