@@ -63,8 +63,10 @@ cargo build --release -p lettertask
 cd src-tauri && cargo tauri build   # MSI / DMG / deb / AppImage
 ```
 
-On Linux you also need `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
-librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev`.
+On Linux you also need Webkit GTK (>= 2.48) with its API 4.1 (API 6 is non comptabile).
+On Ubuntu this means the following:
+`libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+libsoup-3.0-dev libssl-dev libdbus-1-dev`.
 
 **Microsoft 365** works right away: just sign in. The default app registration is multi-tenant,
 and you can use your own with `LETTERTASK_CLIENT_ID` and `LETTERTASK_TENANT`.
