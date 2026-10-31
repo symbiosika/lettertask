@@ -277,6 +277,7 @@ and a foreground service keeps push alive (an alarm renews IDLE every 24 minutes
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |
 | `update_event` | `{ accountId, eventId, input: EventInput }` | `Event` |
+| `move_event` | `{ accountId, eventId, start, end (RFC3339), sendUpdates?: bool }` — only start/end (drag & drop, resize); organizer only, not all-day. Microsoft 365 always notifies attendees, Google only with `sendUpdates` | `Event` |
 | `delete_event` | `{ accountId, eventId }` | `null` (organizer with attendees: sends cancellation) |
 | `respond_event` | `{ accountId, eventId, response: "accept"\|"tentativelyAccept"\|"decline", comment: string, sendResponse: bool, proposedNewTime?: { start, end } (RFC3339; not with accept, Microsoft 365 only) }` | `null` |
 

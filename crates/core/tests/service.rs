@@ -536,6 +536,28 @@ async fn calendar_events_lifecycle() {
     assert_eq!(up.subject, "Projektmeeting (verschoben)");
     assert_eq!(up.start, "2027-01-15T13:00:00Z");
 
+    // Drag & drop / resize: only the time changes, body and meeting stay.
+    let moved: Event = call(
+        &ctx.svc,
+        "move_event",
+        json!({"accountId": ctx.account, "eventId": ev.id, "start": "2027-01-16T08:00:00Z", "end": "2027-01-16T10:15:00Z"}),
+    )
+    .await;
+    assert_eq!(moved.start, "2027-01-16T08:00:00Z");
+    assert_eq!(moved.end, "2027-01-16T10:15:00Z");
+    assert_eq!(moved.subject, "Projektmeeting (verschoben)");
+    assert_eq!(moved.attendees.len(), 1);
+    assert!(moved.online_meeting_url.is_some());
+    let detail: EventDetail = call(&ctx.svc, "get_event", json!({"accountId": ctx.account, "eventId": ev.id})).await;
+    assert!(detail.body_html.contains("Agenda"));
+    let bad = call_err(
+        &ctx.svc,
+        "move_event",
+        json!({"accountId": ctx.account, "eventId": ev.id, "start": "2027-01-16T10:00:00Z", "end": "2027-01-16T09:00:00Z"}),
+    )
+    .await;
+    assert!(bad.contains("Ende"), "{bad}");
+
     // Weekly series every Monday and Wednesday, 4 occurrences.
     let mut series = input.clone();
     series["subject"] = json!("Serie");

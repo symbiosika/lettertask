@@ -684,6 +684,50 @@ impl Service {
         Ok(ev)
     }
 
+    /// New start/end only (drag & drop, resize in the calendar view): body,
+    /// attendees and online meeting stay untouched. Microsoft 365 always
+    /// informs attendees of a changed time; Google only with `send_updates`.
+    pub(crate) async fn move_event(&self, account_id: &str, event_id: &str, start: &str, end: &str, send_updates: bool) -> Result<Event> {
+        let parse = |t: &str| {
+            chrono::DateTime::parse_from_rfc3339(t)
+                .map(|d| d.with_timezone(&chrono::Utc))
+                .map_err(|_| Error::invalid("Ungültige Zeitangabe"))
+        };
+        let (s, e) = (parse(start)?, parse(end)?);
+        if e <= s {
+            return Err(Error::invalid("Das Ende muss nach dem Beginn liegen."));
+        }
+        let fmt = |d: chrono::DateTime<chrono::Utc>| d.format("%Y-%m-%dT%H:%M:%S").to_string();
+        if self.is_google_account(account_id) {
+            return self.google_move_event(account_id, event_id, &s.to_rfc3339(), &e.to_rfc3339(), send_updates).await;
+        }
+        if crate::imap::is_imap_id(account_id) {
+            return Err(Error::invalid("Kalender sind für IMAP-Konten nicht verfügbar."));
+        }
+        let c = self.client(account_id)?;
+        let (_, existing) = self.fetch_event(&c, account_id, event_id).await?;
+        if !existing.is_organizer {
+            return Err(Error::invalid("Nur der Organisator kann die Zeit einer Besprechung ändern."));
+        }
+        if existing.is_all_day {
+            return Err(Error::invalid("Ganztägige Termine lassen sich hier nicht verschieben."));
+        }
+        let body = json!({
+            "start": {"dateTime": fmt(s), "timeZone": "UTC"},
+            "end": {"dateTime": fmt(e), "timeZone": "UTC"},
+        });
+        let updated = c
+            .request_json(reqwest::Method::PATCH, &format!("/me/events/{}", seg(event_id)), Some(&body), &utc_header())
+            .await?;
+        let ev = if updated.is_object() && updated["id"].is_string() {
+            self.event_from_response(&c, account_id, &existing.calendar_id, &updated).await?
+        } else {
+            self.fetch_event(&c, account_id, event_id).await?.1
+        };
+        self.emit("calendar-changed", json!({"accountId": account_id}));
+        Ok(ev)
+    }
+
     pub(crate) async fn delete_event(&self, account_id: &str, event_id: &str) -> Result<()> {
         if self.is_google_account(account_id) {
             return self.google_delete_event(account_id, event_id).await;

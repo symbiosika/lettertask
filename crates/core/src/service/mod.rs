@@ -762,6 +762,15 @@ impl Service {
             "update_event" => ok(self
                 .update_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?, arg(a, "input")?)
                 .await?),
+            "move_event" => ok(self
+                .move_event(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "eventId")?,
+                    &arg::<String>(a, "start")?,
+                    &arg::<String>(a, "end")?,
+                    arg::<Option<bool>>(a, "sendUpdates")?.unwrap_or(true),
+                )
+                .await?),
             "delete_event" => {
                 self.delete_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
                     .await?;
