@@ -688,16 +688,25 @@ impl Service {
         let is_meeting = odata_type.ends_with("eventMessageRequest")
             || (odata_type.contains("eventMessage") && v["meetingMessageType"].as_str() == Some("meetingRequest"));
         let mut event_id = None;
-        if is_meeting {
+        let mut invite = None;
+        if odata_type.contains("eventMessage") {
+            // No $select: the derived properties (startDateTime, location,
+            // previousStartDateTime …) only come back on the full entity.
             if let Ok(ev) = c
-                .get(&format!(
-                    "{prefix}/messages/{}?$select=id&$expand={}",
-                    seg(message_id),
-                    enc("microsoft.graph.eventMessage/event($select=id)")
-                ))
+                .get_h(
+                    &format!(
+                        "{prefix}/messages/{}?$expand={}",
+                        seg(message_id),
+                        enc("microsoft.graph.eventMessage/event($select=id)")
+                    ),
+                    &[("Prefer", "outlook.timezone=\"UTC\"".to_string())],
+                )
                 .await
             {
-                event_id = ev["event"]["id"].as_str().map(str::to_string);
+                if is_meeting {
+                    event_id = ev["event"]["id"].as_str().map(str::to_string);
+                }
+                invite = convert::invite_info(&ev);
             }
         }
 
@@ -757,6 +766,7 @@ impl Service {
             web_link: v["webLink"].as_str().map(str::to_string),
             is_meeting_request: is_meeting,
             event_id,
+            invite,
             signed: false,
         };
         Ok(self.unwrap_smime(c, &prefix, message_id, d).await)
@@ -936,7 +946,9 @@ impl Service {
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let action = if copy { "copy" } else { "move" };
-        let results: Vec<(String, Value)> = stream::iter(ids.to_vec())
+        // Every finished move is recorded, even when another one fails: a
+        // moved mail that stays in the local source list looks duplicated.
+        let outcomes: Vec<Result<(String, Value)>> = stream::iter(ids.to_vec())
             .map(|id| {
                 let c = c.clone();
                 let p = format!("{prefix}/messages/{}/{action}", seg(&id));
@@ -952,8 +964,18 @@ impl Service {
                 }
             })
             .buffer_unordered(PARALLEL)
-            .try_collect()
-            .await?;
+            .collect()
+            .await;
+        let mut results = Vec::new();
+        let mut first_err = None;
+        for o in outcomes {
+            match o {
+                Ok(x) => results.push(x),
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
         let mut folders = HashSet::from([dest.to_string()]);
         let mut mapping = Vec::new();
         for (old_id, v) in results {
@@ -981,7 +1003,10 @@ impl Service {
             }
         }
         self.emit_folders(mailbox_id, folders);
-        Ok(mapping)
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(mapping),
+        }
     }
 
     pub(crate) async fn delete_messages(&self, mailbox_id: &str, ids: &[String], permanent: bool) -> Result<()> {
@@ -1049,6 +1074,34 @@ impl Service {
         if crate::imap::is_imap_id(mailbox_id) {
             return self.imap_download_attachment(mailbox_id, message_id, attachment_id, action).await;
         }
+        let (name, bytes) = self.attachment_file(mailbox_id, message_id, attachment_id).await?;
+        let path = if action == "save" {
+            match self.host.save_dialog(&name).await {
+                Some(p) => p,
+                None => return Ok(None),
+            }
+        } else {
+            let dir = std::env::temp_dir()
+                .join("lettertask")
+                .join(uuid::Uuid::new_v4().to_string());
+            std::fs::create_dir_all(&dir)?;
+            dir.join(&name)
+        };
+        std::fs::write(&path, bytes)?;
+        // "temp": only saved (for dragging it out of the window), not opened.
+        if action == "open" {
+            self.host.open_path(&path)?;
+        }
+        Ok(Some(path.to_string_lossy().into_owned()))
+    }
+
+    /// Name and content of an attachment (Graph or IMAP).
+    pub(crate) async fn attachment_file(&self, mailbox_id: &str, message_id: &str, attachment_id: &str) -> Result<(String, Vec<u8>)> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            let (raw, _, _) = self.imap_raw(mailbox_id, message_id).await?;
+            let (name, _, bytes) = crate::imap::mime::attachment_by_id(&raw, attachment_id)?;
+            return Ok((sanitize_filename(&name), bytes));
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let (name, bytes) = match attachment_id.split_once(crate::imap::mime::SMIME_SEP) {
@@ -1071,23 +1124,17 @@ impl Service {
                 (name, self.attachment_bytes(&c, &prefix, message_id, attachment_id).await?)
             }
         };
-        let path = if action == "save" {
-            match self.host.save_dialog(&name).await {
-                Some(p) => p,
-                None => return Ok(None),
-            }
-        } else {
-            let dir = std::env::temp_dir()
-                .join("lettertask")
-                .join(uuid::Uuid::new_v4().to_string());
-            std::fs::create_dir_all(&dir)?;
-            dir.join(&name)
-        };
-        std::fs::write(&path, bytes)?;
-        if action != "save" {
-            self.host.open_path(&path)?;
-        }
-        Ok(Some(path.to_string_lossy().into_owned()))
+        Ok((name, bytes))
+    }
+
+    /// Attachment as base64 for the page (e.g. dragged into a new mail).
+    pub(crate) async fn attachment_content(&self, mailbox_id: &str, message_id: &str, attachment_id: &str) -> Result<serde_json::Value> {
+        let (name, bytes) = self.attachment_file(mailbox_id, message_id, attachment_id).await?;
+        Ok(json!({
+            "name": name,
+            "size": bytes.len(),
+            "contentBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        }))
     }
 
     /// Saves content from the page (e.g. a picture in a mail) through the save

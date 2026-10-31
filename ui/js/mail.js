@@ -25,6 +25,31 @@ const SYNC_TIMEOUT = 30000;
 export function isDelegated() { return state.current.folderId === DELEGATED; }
 /** Views built from several accounts instead of one folder. */
 export function isVirtual() { return isToday() || isDelegated(); }
+/** Pseudo folder id of the "Geteilter Posteingang": the inboxes of all mailboxes in one list. */
+export const ALLINBOX = '__allinbox__';
+export function isAllInbox() { return state.current.folderId === ALLINBOX; }
+/** Rows of several mailboxes (virtual views, shared inbox). */
+function isMixed() { return isVirtual() || isAllInbox(); }
+/** Colour of a mailbox: its account badge colour, else the avatar colour of the address. */
+export function mailboxColor(mbId) {
+  const mb = mailboxById(mbId);
+  if (!mb) return '#9aa1ab';
+  const acc = state.accounts.find((a) => a.id === mb.accountId);
+  return (mb.kind === 'primary' && acc && acc.badge && acc.badge.color) || avatarColor(mb.address || mb.displayName);
+}
+/** Max. mails per mailbox in the shared inbox (grows with "load more"). */
+const allInbox = { limit: 200, more: false };
+/** Groups message ids by their mailbox (mixed views may select several). */
+function byMailbox(ids) {
+  const out = new Map();
+  for (const id of ids) {
+    const m = findItem(id);
+    const mb = (m && m.mailboxId) || mbOf([id]);
+    if (!out.has(mb)) out.set(mb, []);
+    out.get(mb).push(id);
+  }
+  return out;
+}
 const delegations = { items: [], person: null };
 /** Assignee address of a delegated task (hidden "[D_<address>]" category). */
 export function delegateOf(m) {
@@ -70,7 +95,7 @@ let view = load('mailView', 'list'); // 'list' | 'kanban'
 let board = null;
 
 /** Kanban is shown for the folder unless server search results are displayed. */
-export function kanbanActive() { return view === 'kanban' && !list.search && !isVirtual(); }
+export function kanbanActive() { return view === 'kanban' && !list.search && !isMixed(); }
 export function getView() { return view; }
 export function setView(v) {
   if (v !== 'list' && v !== 'kanban') return;
@@ -98,7 +123,7 @@ function readingPaneMode() { return isMobile ? 'right' : (state.config && state.
 function currentAccount() { return accountOfMailbox(state.current.mailboxId); }
 /** Mailbox the given messages belong to (the Heute view mixes accounts). */
 function mbOf(ids) {
-  if (!isVirtual() && !list.search) return state.current.mailboxId;
+  if (!isMixed() && !list.search) return state.current.mailboxId;
   const m = ids && ids.length ? findItem(ids[0]) : null;
   return (m && m.mailboxId) || state.current.mailboxId;
 }
@@ -293,18 +318,21 @@ function folderNode(f, depth, opts = {}) {
   node.addEventListener('dragover', (e) => {
     if (!e.dataTransfer.types.includes('application/x-oc-messages')) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
+    const copy = isCopyDrag(e);
+    e.dataTransfer.dropEffect = copy ? 'copy' : 'move';
     node.classList.add('drop-target');
+    node.classList.toggle('drop-copy', copy);
   });
-  node.addEventListener('dragleave', () => node.classList.remove('drop-target'));
+  node.addEventListener('dragleave', () => node.classList.remove('drop-target', 'drop-copy'));
   node.addEventListener('drop', (e) => {
-    node.classList.remove('drop-target');
+    node.classList.remove('drop-target', 'drop-copy');
     const raw = e.dataTransfer.getData('application/x-oc-messages');
     if (!raw) return;
     e.preventDefault();
     const data = JSON.parse(raw);
     if (data.folderId === f.id && data.mailboxId === f.mailboxId) return;
-    moveOrCopy(data.ids, f.id, e.ctrlKey ? 'copy' : 'move', f.mailboxId).catch(reportError);
+    // Moving is the default; only a held Ctrl key (Option on macOS) copies.
+    moveOrCopy(data.ids, f.id, isCopyDrag(e) ? 'copy' : 'move', f.mailboxId).catch(reportError);
   });
   const frag = [node];
   if (open) {
@@ -344,6 +372,7 @@ export function renderFolderTree() {
       h('span.twisty'), h('span.fic', { html: icon('people', 18) }), h('span.fname', 'Delegiert'), h('span.fcount'));
     dnode.addEventListener('click', () => selectFolder(state.current.mailboxId || mailboxes()[0].id, DELEGATED));
     favSec.appendChild(dnode);
+    if (mailboxes().length > 1) favSec.appendChild(allInboxNode());
   }
   if (isExpanded(favKey)) {
     for (const f of favs) {
@@ -363,6 +392,7 @@ export function renderFolderTree() {
     const label = acc && acc.label && mb.kind === 'primary' ? acc.label : mb.address || mb.displayName;
     const root = sectionHeader(key, label, av, { title: mb.address });
     root.classList.add('account');
+    if (mailboxes().length > 1) root.prepend(h('span.mb-bar', { style: { background: mailboxColor(mb.id) }, dataset: { testid: 'mb-bar' } }));
     if (acc) root.appendChild(h('span.kind-badge.sm.' + kindClass(acc), { title: isGoogle(acc) ? 'Google-Konto (IMAP/SMTP)' : isImap(acc) ? 'IMAP/SMTP-Konto' : 'Microsoft-365-Konto' }, kindLabel(acc)));
     root.addEventListener('contextmenu', (e) => { e.preventDefault(); mailboxContextMenu(mb, e.clientX, e.clientY); });
     sec.appendChild(root);
@@ -375,6 +405,19 @@ export function renderFolderTree() {
     els.nav.appendChild(sec);
   }
   els.nav.scrollTop = scroll;
+}
+
+/** "Geteilter Posteingang": all inboxes; also a drop target is not offered (which inbox?). */
+function allInboxNode() {
+  const sel = state.mode === 'mail' && isAllInbox();
+  const unread = mailboxes().reduce((n, mb) => n + ((wellKnown(mb.id, 'inbox') || {}).unreadCount || 0), 0);
+  const node = h('div.tree-node.today-node' + (sel ? '.selected' : '') + (unread ? '.has-unread' : ''), {
+    style: { paddingLeft: '8px' }, dataset: { testid: 'allinbox-node', folderId: ALLINBOX }, role: 'treeitem', 'aria-selected': sel ? 'true' : 'false',
+    title: 'Posteingänge aller Postfächer in einer Liste – der Farbbalken links zeigt das Postfach',
+  }, h('span.twisty'), h('span.fic', { html: icon('inbox', 18) }), h('span.fname', 'Geteilter Posteingang'),
+  h('span.fcount', { html: unread ? `<span class="count" data-testid="allinbox-count">${unread}</span>` : '' }));
+  node.addEventListener('click', () => selectFolder(state.current.mailboxId || mailboxes()[0].id, ALLINBOX));
+  return node;
 }
 
 function mailboxContextMenu(mb, x, y) {
@@ -457,11 +500,19 @@ export async function selectFolder(mailboxId, folderId) {
   renderFolderTree();
   renderListHead();
   onSelectionChanged();
-  if (folderId === TODAY || folderId === DELEGATED) {
+  if (folderId === TODAY || folderId === DELEGATED || folderId === ALLINBOX) {
     if (!mailboxById(mailboxId)) state.current.mailboxId = mailboxes()[0] && mailboxes()[0].id;
+    if (changed) allInbox.limit = PAGE;
     applyReadingPaneLayout();
     if (changed) renderList();
-    try { await reloadList(); } finally { if (isVirtual()) { list.fetching = false; paintLoadingState(); } }
+    try { await reloadList(); } finally { if (isMixed()) { list.fetching = false; paintLoadingState(); } }
+    if (folderId === ALLINBOX) {
+      // Fresh data of every inbox in the background.
+      Promise.all(mailboxes().map((mb) => {
+        const inbox = wellKnown(mb.id, 'inbox');
+        return inbox ? call('sync_folder', { mailboxId: mb.id, folderId: inbox.id }, { silent: true }).catch(() => {}) : null;
+      })).then(() => (isAllInbox() ? reloadList({ ifChanged: true }) : null)).catch(() => {});
+    }
     return;
   }
   applyReadingPaneLayout();
@@ -501,7 +552,7 @@ function renderListHead() {
   const f = currentFolder();
   const title = els.head.querySelector('.folder-name');
   const count = els.head.querySelector('.lh-count');
-  title.textContent = list.search ? 'Suchergebnisse' : isToday() ? 'Heute' : isDelegated() ? 'Delegiert' : (f ? f.displayName : '');
+  title.textContent = list.search ? 'Suchergebnisse' : isToday() ? 'Heute' : isDelegated() ? 'Delegiert' : isAllInbox() ? 'Geteilter Posteingang' : (f ? f.displayName : '');
   // The local cache of a large folder (e.g. Archiv) holds only the newest part:
   // without a filter the folder's server total is the honest number.
   const fl = list.filter;
@@ -515,7 +566,7 @@ function renderListHead() {
   const busy = els.head.querySelector('.lh-busy');
   if (busy) busy.classList.toggle('on', !!listLoading());
   const mb = mailboxById(state.current.mailboxId);
-  document.title = isToday() ? 'Heute' : isDelegated() ? 'Delegiert' : `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
+  document.title = isToday() ? 'Heute' : isDelegated() ? 'Delegiert' : isAllInbox() ? 'Geteilter Posteingang' : `${f ? f.displayName : 'Mail'}${mb ? ' – ' + mb.address : ''}`;
 
   const tools = els.head.querySelector('.lh-tools');
   tools.innerHTML = '';
@@ -553,11 +604,12 @@ function renderListHead() {
         ...getCategories(accountId).map((c) => ({ label: c.displayName, iconHtml: swatchHtml(presetHex(c.color), 10), checked: fl.category === c.displayName, onClick: () => setFilter({ ...fl, category: c.displayName }) })),
       ]);
     });
-    tools.appendChild(catBtn);
+    // Categories belong to one account: no category filter across mailboxes.
+    if (!isAllInbox()) tools.appendChild(catBtn);
   }
   const sortHost = els.head.querySelector('.lh-sort');
   sortHost.innerHTML = '';
-  if (!list.search && !isVirtual()) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
+  if (!list.search && !isMixed()) sortHost.appendChild(viewToggle('list', (v) => setView(v), { compact: true }));
   const sortBtn = h('button.chip.sort', { type: 'button', title: 'Sortieren', dataset: { testid: 'sort-menu' }, html: `${icon('sort', 14)}<span>${esc(SORT_LABELS[list.sortBy] || 'Datum')}</span>` });
   sortBtn.addEventListener('click', () => showMenuAt(sortBtn, [
     { header: 'Sortieren nach' },
@@ -643,6 +695,7 @@ async function reloadListNow({ keepCount = true, ifChanged = false } = {}) {
   if (list.search) { renderList(); return; }
   if (folderId === TODAY) { await loadToday(); return; }
   if (folderId === DELEGATED) { await loadDelegations(); return; }
+  if (folderId === ALLINBOX) { await loadAllInbox({ ifChanged }); return; }
   const kb = kanbanActive();
   // Event-driven reloads keep exactly what is shown; growing the list is loadMore's job.
   const limit = kb ? KANBAN_LIMIT : !keepCount ? PAGE : ifChanged && list.items.length ? list.items.length : Math.max(PAGE, list.items.length);
@@ -705,7 +758,14 @@ async function fetchNextPageNow(mailboxId, folderId) {
 
 /** Lazy loading at the end of the list: next cached page, else older mails from the server. */
 async function loadMore() {
-  if (list.loading || list.search || kanbanActive() || isVirtual()) return;
+  if (isAllInbox() && !list.loading && !list.search && allInbox.more) {
+    list.loading = true;
+    paintListFooter();
+    allInbox.limit += PAGE;
+    try { await reloadList(); } finally { list.loading = false; paintListFooter(); }
+    return;
+  }
+  if (list.loading || list.search || kanbanActive() || isMixed()) return;
   const { mailboxId, folderId } = state.current;
   if (list.items.length < list.total) {
     list.loading = true;
@@ -770,7 +830,7 @@ function buildRows(items, from, ctx) {
         frag.appendChild(h('div.m-sep', { dataset: { group: g.key } }, g.label));
       }
     }
-    frag.appendChild(msgRow(m, isVirtual() ? accountOfMailbox(m.mailboxId) : ctx.accountId, ctx.toMode, ctx.snoozedView || (isVirtual() && m._due)));
+    frag.appendChild(msgRow(m, isMixed() || list.search ? accountOfMailbox(m.mailboxId || state.current.mailboxId) : ctx.accountId, ctx.toMode, ctx.snoozedView || (isVirtual() && m._due)));
   }
   return frag;
 }
@@ -852,6 +912,8 @@ function msgRow(m, accountId, toMode, snoozedView) {
   const sel = list.selection.has(m.id);
   const cls = 'div.msg' + (m.isRead ? '' : '.unread') + (sel ? '.selected' : '') + (list.cursor === m.id ? '.cursor' : '') + (m.flag === 'flagged' ? '.flagged' : '');
   const el = h(cls, { draggable: 'true', dataset: { id: m.id }, role: 'option', 'aria-selected': sel ? 'true' : 'false' });
+  // Mixed lists: a bar on the far left in the colour of the source mailbox.
+  const srcBar = isMixed() && m.mailboxId && mailboxes().length > 1;
   const flagIc = snoozedView ? '' : m.flag === 'flagged' ? icon('flag', 15, 'flagged') : m.flag === 'complete' ? icon('check', 15, 'done') : icon('flag', 15, 'ghost');
   const overdue = isVirtual() && m._due && m.dueAt && new Date(m.dueAt) < new Date();
   const time = isVirtual() && m._due && m.dueAt
@@ -861,6 +923,7 @@ function msgRow(m, accountId, toMode, snoozedView) {
     : esc(fmtListDate(m.receivedAt));
   const cats = visibleCats(m.categories).map((c) => chipHtml(accountId, c)).join('');
   el.innerHTML =
+    (srcBar ? `<span class="m-src" data-testid="m-src" style="background:${mailboxColor(m.mailboxId)}" title="${esc((mailboxById(m.mailboxId) || {}).address || '')}"></span>` : '') +
     `<span class="m-dot readcell" title="${m.isRead ? 'Als ungelesen markieren' : 'Als gelesen markieren'}"></span>` +
     `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
     `<div class="m-main">` +
@@ -995,7 +1058,7 @@ function setupListEvents() {
     const id = rowId(e.target);
     if (!id) return;
     if (!list.selection.has(id)) { list.selection = new Set([id]); paintSelection(); selectionChanged(); }
-    e.dataTransfer.setData('application/x-oc-messages', JSON.stringify({ mailboxId: state.current.mailboxId, folderId: state.current.folderId, ids: [...list.selection] }));
+    e.dataTransfer.setData('application/x-oc-messages', JSON.stringify({ mailboxId: mbOf([...list.selection]), folderId: state.current.folderId, ids: [...list.selection] }));
     e.dataTransfer.effectAllowed = 'copyMove';
   });
   L.addEventListener('scroll', () => {
@@ -1215,6 +1278,10 @@ function localUpdate(ids, fn) {
 }
 
 export async function applyRead(ids, isRead) {
+  if (isMixed()) {
+    const groups = byMailbox(ids);
+    if (groups.size > 1) { await Promise.all([...groups.values()].map((g) => applyRead(g, isRead))); return; }
+  }
   const { folderId } = state.current;
   const mailboxId = mbOf(ids);
   let delta = 0;
@@ -1229,7 +1296,7 @@ export async function applyFlag(ids, flag) {
   if (flag === 'complete') burst(rowEl(ids[0]));
   localUpdate(ids, (m) => { m.flag = flag; });
   renderList();
-  await call('set_flag', { mailboxId: mbOf(ids), ids, flag }, { silent: true });
+  await Promise.all([...byMailbox(ids)].map(([mailboxId, g]) => call('set_flag', { mailboxId, ids: g, flag }, { silent: true })));
   if (currentDetail && ids.includes(currentDetail.id)) refreshReading();
 }
 
@@ -1282,6 +1349,17 @@ export async function deleteSelected(permanent = false) {
 }
 
 async function deleteIds(ids, permanent) {
+  const groups = byMailbox(ids);
+  if (groups.size > 1) {
+    if (permanent && !(await confirmDialog(`${ids.length} Elemente werden endgültig gelöscht. Fortfahren?`, { danger: true, ok: 'Endgültig löschen', cancel: 'Abbrechen', title: 'Endgültig löschen' }))) return;
+    await removeFromList(ids);
+    await Promise.all([...groups].map(async ([mailboxId, g]) => {
+      await whileInFlight(g, { gone: true }, call('delete_messages', { mailboxId, ids: g, permanent }));
+      await refreshFolders(mailboxId);
+    }));
+    checkInboxZero();
+    return;
+  }
   const mailboxId = mbOf(ids);
   const f = currentFolder();
   if (permanent || (f && f.wellKnown === 'deleteditems' && !list.search)) {
@@ -1295,7 +1373,20 @@ async function deleteIds(ids, permanent) {
   checkInboxZero();
 }
 
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
+/** Ctrl held at this moment of the drag (also Option on macOS, like Finder) → copy. */
+function isCopyDrag(e) {
+  return !!e.ctrlKey || (IS_MAC && !!e.altKey);
+}
+
 export async function moveOrCopy(ids, destFolderId, kind = 'move', destMailboxId = null) {
+  // Mixed views: each mailbox moves its own mails (into another one: transfer).
+  const groups = isMixed() || list.search ? byMailbox(ids) : null;
+  if (groups && groups.size > 1) {
+    const dest = destMailboxId || mbOf(ids);
+    await Promise.all([...groups.values()].map((g) => moveOrCopy(g, destFolderId, kind, dest)));
+    return;
+  }
   const mailboxId = mbOf(ids);
   if (destMailboxId && destMailboxId !== mailboxId) return transfer(ids, mailboxId, destMailboxId, destFolderId, kind);
   const dest = folderById(mailboxId, destFolderId);
@@ -1336,11 +1427,26 @@ export async function archiveSelected() {
   if (s) await archiveIds(s.ids);
 }
 
-async function archiveIds(ids, { quiet = false, mailboxId = mbOf(ids) } = {}) {
+async function archiveIds(ids, opts = {}) {
+  const groups = byMailbox(ids);
+  if (groups.size > 1 && !opts.mailboxId) {
+    burst(rowEl(ids[0]));
+    await removeFromList(ids);
+    await Promise.all([...groups].map(([mailboxId, g]) => archiveOne(g, { ...opts, quiet: true, mailboxId, removed: true })));
+    if (!opts.quiet) toast(`${ids.length} Nachrichten archiviert.`);
+    checkInboxZero();
+    return;
+  }
+  return archiveOne(ids, opts);
+}
+
+async function archiveOne(ids, { quiet = false, mailboxId = mbOf(ids), removed = false } = {}) {
   const archive = wellKnown(mailboxId, 'archive');
   if (archive && archive.id === state.current.folderId && !list.search) { if (!quiet) toast('Die Nachricht befindet sich bereits im Archiv.'); return; }
-  burst(rowEl(ids[0]));
-  await removeFromList(ids);
+  if (!removed) {
+    burst(rowEl(ids[0]));
+    await removeFromList(ids);
+  }
   await whileInFlight(ids, { gone: true }, (async () => {
     try {
       await call('archive_messages', { mailboxId, ids });
@@ -1351,7 +1457,7 @@ async function archiveIds(ids, { quiet = false, mailboxId = mbOf(ids) } = {}) {
   })());
   if (!quiet) toast(ids.length === 1 ? 'Nachricht archiviert.' : `${ids.length} Nachrichten archiviert.`);
   await refreshFolders(mailboxId);
-  checkInboxZero();
+  if (!removed) checkInboxZero();
 }
 
 /** Auf Wiedervorlage bis `until` (Date). */
@@ -1360,9 +1466,10 @@ export async function snoozeSelected(until) {
   if (!s) return;
   if (!(until instanceof Date) || isNaN(until) || until <= new Date()) { toast('Der Zeitpunkt muss in der Zukunft liegen.', 'error'); return; }
   await removeFromList(s.ids);
-  await whileInFlight(s.ids, { gone: true }, call('snooze_messages', { mailboxId: s.mailboxId, ids: s.ids, until: until.toISOString() }));
+  const groups = byMailbox(s.ids);
+  await Promise.all([...groups].map(([mailboxId, g]) => whileInFlight(g, { gone: true }, call('snooze_messages', { mailboxId, ids: g, until: until.toISOString() }))));
   toast(`Auf Wiedervorlage bis ${fmtSnoozeTarget(until)}.`);
-  await refreshFolders(s.mailboxId);
+  await Promise.all([...groups.keys()].map((mb) => refreshFolders(mb)));
   checkInboxZero();
 }
 
@@ -1448,7 +1555,9 @@ async function setCategoriesFor(changes) {
     groups.get(k).push(m.id);
   }
   renderList();
-  for (const [k, ids] of groups) await call('set_categories', { mailboxId: mbOf(ids), ids, categories: JSON.parse(k) }, { silent: true });
+  for (const [k, ids] of groups) {
+    for (const [mailboxId, g] of byMailbox(ids)) await call('set_categories', { mailboxId, ids: g, categories: JSON.parse(k) }, { silent: true });
+  }
 }
 
 export function flagMenuItems() {
@@ -1528,6 +1637,10 @@ export async function onMailChanged(p) {
   const tasks = [];
   if (p && p.mailboxId) tasks.push(refreshFolders(p.mailboxId));
   if (isVirtual()) tasks.push(reloadList());
+  else if (isAllInbox()) {
+    const inbox = p && p.mailboxId && wellKnown(p.mailboxId, 'inbox');
+    if (!p || !p.folderId || (inbox && inbox.id === p.folderId)) tasks.push(reloadList({ ifChanged: true }));
+  }
   else if (p && p.mailboxId === state.current.mailboxId && (!p.folderId || p.folderId === state.current.folderId)) tasks.push(reloadList({ ifChanged: !kanbanActive() }));
   refreshTodayCount();
   await Promise.all(tasks);
@@ -1559,6 +1672,46 @@ async function loadToday() {
   const ids = new Set(items.map((m) => m.id));
   for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
   if (list.cursor && !ids.has(list.cursor)) list.cursor = null;
+  renderList();
+  onCountsChanged();
+}
+
+// ============================================================ Geteilter Posteingang
+/** Inboxes of all mailboxes, merged in the chosen order. */
+async function loadAllInbox({ ifChanged = false } = {}) {
+  const parts = await Promise.all(mailboxes().map(async (mb) => {
+    const inbox = wellKnown(mb.id, 'inbox');
+    if (!inbox) return null;
+    try {
+      const res = await call('list_messages', {
+        mailboxId: mb.id, folderId: inbox.id, sortBy: list.sortBy, sortDesc: list.sortDesc,
+        unreadOnly: list.filter.unreadOnly, flaggedOnly: list.filter.flaggedOnly, category: null,
+        text: list.text || null, offset: 0, limit: allInbox.limit,
+      }, { silent: true });
+      return { mb, res };
+    } catch (e) { console.warn(e); return null; }
+  }));
+  if (!isAllInbox()) return;
+  let items = [];
+  let total = 0, unread = 0, more = false;
+  for (const p of parts) {
+    if (!p) continue;
+    items.push(...(p.res.items || []).map((m) => ({ ...m, mailboxId: m.mailboxId || p.mb.id })));
+    total += p.res.total || 0;
+    unread += p.res.unread || 0;
+    if ((p.res.items || []).length < (p.res.total || 0)) more = true;
+  }
+  items = withInFlight(items).sort(localComparator());
+  allInbox.more = more;
+  const same = ifChanged && list.items.length === items.length && JSON.stringify(list.items) === JSON.stringify(items);
+  list.items = items;
+  list.total = total;
+  list.unread = unread;
+  list.canLoadOlder = false;
+  const ids = new Set(items.map((m) => m.id));
+  for (const id of [...list.selection]) if (!ids.has(id)) list.selection.delete(id);
+  if (list.cursor && !ids.has(list.cursor)) list.cursor = null;
+  if (same) { paintListFooter(); renderListHead(); onCountsChanged(); return; }
   renderList();
   onCountsChanged();
 }

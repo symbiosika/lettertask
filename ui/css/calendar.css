@@ -47,6 +47,15 @@
 .ev.cancelled .ev-subj { text-decoration: line-through; }
 .ev.unanswered { background-image: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255,255,255,.45) 6px 9px); }
 .ev.selected { box-shadow: 0 0 0 2px var(--accent); z-index: 3; }
+.ev.movable { cursor: grab; }
+.ev.dragging { cursor: grabbing; z-index: 5; opacity: .92; box-shadow: 0 0 0 2px var(--accent), var(--shadow-lg); transition: none; }
+.ev .ev-rs { position: absolute; left: 0; right: 0; height: 6px; cursor: ns-resize; z-index: 1; }
+.ev .ev-rs.top { top: 0; }
+.ev .ev-rs.bottom { bottom: 0; }
+.ev.selected .ev-rs::after { content: ''; position: absolute; left: 50%; width: 18px; margin-left: -9px; height: 3px; border-radius: 2px; background: var(--accent); }
+.ev.selected .ev-rs.top::after { top: 1px; }
+.ev.selected .ev-rs.bottom::after { bottom: 1px; }
+.ev .ev-dragtime { position: absolute; right: 4px; top: 2px; font-size: 11px; font-weight: 600; background: rgba(255,255,255,.85); border-radius: 4px; padding: 0 4px; }
 .ev .ev-subj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .ev .ev-loc { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
 .ev .ev-icons { position: absolute; right: 4px; bottom: 2px; display: flex; gap: 2px; color: var(--text-2); }

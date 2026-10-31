@@ -286,6 +286,121 @@ pub fn dt_tz(v: &Value) -> String {
     }
 }
 
+/// Time and place of the first VEVENT of an iCalendar invitation
+/// (`text/calendar` part of IMAP/Gmail mails).
+pub fn invite_from_ics(ics: &str) -> Option<InviteInfo> {
+    // Unfold continuation lines (RFC 5545 3.1).
+    let mut lines: Vec<String> = Vec::new();
+    for l in ics.split('\n') {
+        let l = l.trim_end_matches('\r');
+        if (l.starts_with(' ') || l.starts_with('\t')) && !lines.is_empty() {
+            lines.last_mut().expect("non-empty").push_str(&l[1..]);
+        } else {
+            lines.push(l.to_string());
+        }
+    }
+    let unescape = |v: &str| v.replace("\\n", " ").replace("\\N", " ").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\");
+    let mut method = String::new();
+    let mut in_event = false;
+    let mut seen_event = false;
+    let mut out = InviteInfo::default();
+    let mut status = String::new();
+    for l in &lines {
+        let Some((head, value)) = l.split_once(':') else { continue };
+        let mut parts = head.split(';');
+        let name = parts.next().unwrap_or("").to_ascii_uppercase();
+        let params: Vec<(String, String)> = parts
+            .filter_map(|p| p.split_once('=').map(|(k, v)| (k.to_ascii_uppercase(), v.trim_matches('"').to_string())))
+            .collect();
+        let param = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        match name.as_str() {
+            "METHOD" if !in_event => method = value.trim().to_ascii_uppercase(),
+            "BEGIN" if value.eq_ignore_ascii_case("VEVENT") => {
+                if seen_event {
+                    break; // only the first event (later ones are exceptions)
+                }
+                in_event = true;
+                seen_event = true;
+            }
+            "END" if value.eq_ignore_ascii_case("VEVENT") => in_event = false,
+            _ if !in_event => {}
+            "DTSTART" | "DTEND" => {
+                let v = value.trim();
+                let date_only = param("VALUE") == Some("DATE") || v.len() == 8;
+                let ts = if date_only {
+                    chrono::NaiveDate::parse_from_str(v, "%Y%m%d").ok().map(|d| {
+                        out.is_all_day = true;
+                        Utc.from_utc_datetime(&d.and_time(chrono::NaiveTime::MIN))
+                    })
+                } else {
+                    let utc = v.ends_with('Z');
+                    NaiveDateTime::parse_from_str(v.trim_end_matches('Z'), "%Y%m%dT%H%M%S").ok().map(|n| {
+                        if utc {
+                            Utc.from_utc_datetime(&n)
+                        } else {
+                            let tz = param("TZID").and_then(resolve_tz).unwrap_or(chrono_tz::UTC);
+                            local_to_utc(n, tz)
+                        }
+                    })
+                };
+                let ts = ts.map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true));
+                if name == "DTSTART" { out.start = ts } else { out.end = ts }
+            }
+            "LOCATION" => out.location = unescape(value).trim().to_string(),
+            "UID" => out.uid = value.trim().to_string(),
+            "STATUS" => status = value.trim().to_ascii_uppercase(),
+            "ORGANIZER" => {
+                let address = value.trim().trim_start_matches("mailto:").trim_start_matches("MAILTO:").to_string();
+                out.organizer = Some(Address { name: param("CN").unwrap_or("").to_string(), address });
+            }
+            _ => {}
+        }
+    }
+    if !seen_event || out.start.is_none() {
+        return None;
+    }
+    out.message_type = match method.as_str() {
+        "CANCEL" => "meetingCancelled",
+        "REPLY" => "meetingResponse",
+        _ if status == "CANCELLED" => "meetingCancelled",
+        _ => "meetingRequest",
+    }
+    .to_string();
+    Some(out)
+}
+
+/// Time and place of a Graph `eventMessage` (request, update, cancellation).
+pub fn invite_info(v: &Value) -> Option<InviteInfo> {
+    if !v["@odata.type"].as_str().unwrap_or("").contains("eventMessage") {
+        return None;
+    }
+    let is_all_day = v["isAllDay"].as_bool().unwrap_or(false);
+    let when = |key: &str| {
+        let x = &v[key];
+        if s(x, "dateTime").is_empty() {
+            return None;
+        }
+        Some(if is_all_day { dt_floating(x) } else { dt_tz(x) })
+    };
+    let (start, end) = (when("startDateTime"), when("endDateTime"));
+    let (previous_start, previous_end) = (when("previousStartDateTime"), when("previousEndDateTime"));
+    let location = s(&v["location"], "displayName");
+    let previous_location = s(&v["previousLocation"], "displayName");
+    Some(InviteInfo {
+        message_type: s(v, "meetingMessageType"),
+        // An unchanged value is no change worth showing.
+        previous_start: previous_start.filter(|p| Some(p) != start.as_ref()),
+        previous_end: previous_end.filter(|p| Some(p) != end.as_ref()),
+        previous_location: if previous_location == location { String::new() } else { previous_location },
+        start,
+        end,
+        is_all_day,
+        location,
+        is_out_of_date: v["isOutOfDate"].as_bool().unwrap_or(false),
+        ..Default::default()
+    })
+}
+
 /// All-day events are floating: midnight to midnight in whatever zone Graph
 /// labels them with. The date must not shift, so the wall time is kept.
 fn dt_floating(v: &Value) -> String {

@@ -189,6 +189,28 @@ impl Service {
         Ok(ev)
     }
 
+    pub(crate) async fn google_move_event(&self, account_id: &str, event_id: &str, start: &str, end: &str, send_updates: bool) -> Result<Event> {
+        let api = self.gapi(account_id).await?;
+        let (_, existing) = self.google_fetch_event(&api, account_id, event_id).await?;
+        if !existing.is_organizer {
+            return Err(Error::invalid("Nur der Organisator kann die Zeit einer Besprechung ändern."));
+        }
+        if existing.is_all_day {
+            return Err(Error::invalid("Ganztägige Termine lassen sich hier nicht verschieben."));
+        }
+        let (cid, gid) = gapi::split_event_id(event_id)?;
+        let v = api
+            .request(
+                Method::PATCH,
+                &format!("{}/{}?sendUpdates={}", events_path(cid), seg(gid), if send_updates { "all" } else { "none" }),
+                Some(&json!({"start": {"dateTime": start}, "end": {"dateTime": end}})),
+            )
+            .await?;
+        let ev = gapi::event(&v, account_id, cid, self.default_reminders(account_id).get(cid).copied());
+        self.emit("calendar-changed", json!({"accountId": account_id}));
+        Ok(ev)
+    }
+
     pub(crate) async fn google_delete_event(&self, account_id: &str, event_id: &str) -> Result<()> {
         let api = self.gapi(account_id).await?;
         let (cid, gid) = gapi::split_event_id(event_id)?;
@@ -569,7 +591,7 @@ mod tests {
             "attendees": [{"email": "boss@x.de", "organizer": true, "responseStatus": "accepted"},
                           {"email": "me@gmail.com", "self": true, "responseStatus": "needsAction"}]
         }));
-        svc.respond_event(&acc, "me@gmail.com|inv", "accept", "", false).await.unwrap();
+        svc.respond_event(&acc, "me@gmail.com|inv", "accept", "", false, None).await.unwrap();
         let inv = svc.get_event(&acc, "me@gmail.com|inv").await.unwrap().event;
         assert_eq!(inv.response_status, "accepted");
         assert!(!inv.is_organizer);

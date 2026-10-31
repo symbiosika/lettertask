@@ -155,6 +155,7 @@ const btn = (ic, label, onClick, testid, extra = '') => {
 function folderTitle() {
   if (mail.isToday()) return 'Heute';
   if (mail.isDelegated()) return 'Delegiert';
+  if (mail.isAllInbox()) return 'Geteilter Posteingang';
   const f = mail.currentFolder();
   return f ? f.displayName : 'Mail';
 }

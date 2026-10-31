@@ -463,7 +463,9 @@ function renderTimeGrid() {
       if (e.target.closest('.ev')) return;
       const s = Math.floor(e.offsetY / SLOT_PX);
       if (!(e.target.classList.contains('tg-slot'))) return;
-      selectSlot(d, Number(e.target.dataset.slot ?? s), col);
+      const s0 = Number(e.target.dataset.slot ?? s);
+      selectSlot(d, s0, col);
+      if (e.button === 0 && !isMobile) rangeSelect(d, s0, col, e);
     });
     col.addEventListener('dblclick', (e) => {
       if (e.target.closest('.ev')) return;
@@ -518,6 +520,31 @@ function renderTimeGrid() {
     const col = cols.querySelector(`.tg-col[data-date="${toLocalIso(cal.slot.start).slice(0, 10)}"]`);
     if (col) selectSlot(cal.slot.start, (cal.slot.start.getHours() * 60 + cal.slot.start.getMinutes()) / 30, col, true);
   }
+}
+
+/** Drag over free slots: selects a longer range and opens a new event for it. */
+function rangeSelect(day, s0, col, down) {
+  let last = s0, moved = false;
+  const slotAt = (y) => Math.max(0, Math.min(47, Math.floor((y - col.getBoundingClientRect().top) / SLOT_PX)));
+  const paint = () => {
+    const a = Math.min(s0, last), b = Math.max(s0, last);
+    col.querySelectorAll('.tg-slot').forEach((x) => { const n = Number(x.dataset.slot); x.classList.toggle('sel', n >= a && n <= b); });
+    const st = addMinutes(startOfDay(day), a * 30);
+    cal.slot = { start: st, end: addMinutes(startOfDay(day), (b + 1) * 30) };
+  };
+  const move = (e) => {
+    const s = slotAt(e.clientY);
+    if (s === last) return;
+    moved = true; last = s; paint();
+  };
+  const up = () => {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    if (moved && last !== s0) newEvent({ start: cal.slot.start, end: cal.slot.end });
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  down.preventDefault(); // no text selection while dragging
 }
 
 function selectSlot(day, s, col, keep) {
@@ -576,11 +603,134 @@ function eventBlock(ev, kind) {
     el.innerHTML = `${ev.isAllDay ? '' : `<span class="ev-time">${fmtTime(s)}</span> `}<span class="ev-subj">${esc(eventTitle(ev))}</span>`;
   }
   el.addEventListener('mousedown', (x) => x.stopPropagation());
+  if (kind === 'timed' && canReschedule(ev)) {
+    el.classList.add('movable');
+    el.append(h('div.ev-rs.top', { dataset: { testid: 'ev-resize-top' } }), h('div.ev-rs.bottom', { dataset: { testid: 'ev-resize-bottom' } }));
+    el.addEventListener('mousedown', (x) => dragEvent(ev, el, x));
+  }
   attachHover(el, ev);
-  el.addEventListener('click', (x) => { x.stopPropagation(); selectEvent(ev, el); });
+  el.addEventListener('click', (x) => { x.stopPropagation(); if (el._dragged) { el._dragged = false; return; } selectEvent(ev, el); });
   el.addEventListener('dblclick', (x) => { x.stopPropagation(); openEvent(ev); });
   el.addEventListener('contextmenu', (x) => { x.preventDefault(); x.stopPropagation(); selectEvent(ev, el, false); eventContextMenu(ev, x.clientX, x.clientY); });
   return el;
+}
+
+/** Own timed events in a writable calendar can be moved and resized. */
+function canReschedule(ev) {
+  if (isMobile || isAllDayLike(ev) || ev.isCancelled || !ev.isOrganizer || String(ev.id).startsWith('fb:')) return false;
+  const c = calendarById(ev.accountId, ev.calendarId);
+  if (c && c.canEdit === false) return false;
+  return sameDay(new Date(ev.start), new Date(new Date(ev.end) - 1));
+}
+
+const SNAP_MIN = 15;
+/** Drag an event (move, also to another day) or its top/bottom edge (resize). */
+function dragEvent(ev, el, down) {
+  if (down.button !== 0) return;
+  const handle = down.target.closest('.ev-rs');
+  const mode = handle ? (handle.classList.contains('top') ? 'top' : 'bottom') : 'move';
+  const s0 = new Date(ev.start), e0 = new Date(ev.end);
+  const cols = [...els.body.querySelectorAll('.tg-col')];
+  const col0 = el.parentElement;
+  const i0 = cols.indexOf(col0);
+  const x0 = down.clientX, y0 = down.clientY;
+  let active = false, ns = s0, ne = e0, label = null;
+  const place = () => {
+    const day = startOfDay(ns);
+    const col = cols.find((c) => c.dataset.date === toLocalIso(day).slice(0, 10));
+    if (!col) return;
+    if (el.parentElement !== col) col.appendChild(el);
+    const top = ((ns - day) / 60000 / 30) * SLOT_PX;
+    Object.assign(el.style, { top: top + 'px', height: Math.max(SLOT_PX / 2 - 2, ((ne - ns) / 60000 / 30) * SLOT_PX - 2) + 'px', left: '1px', width: 'calc(100% - 8px)' });
+    label.textContent = `${fmtTime(ns)} – ${fmtTime(ne)}`;
+  };
+  const move = (e) => {
+    if (!active) {
+      if (Math.abs(e.clientX - x0) < 4 && Math.abs(e.clientY - y0) < 4) return;
+      active = true;
+      hideHover(true); closePeek();
+      el.classList.add('dragging');
+      label = h('div.ev-dragtime', { dataset: { testid: 'ev-dragtime' } });
+      el.appendChild(label);
+    }
+    const dm = Math.round((e.clientY - y0) / (SLOT_PX / 2)) * SNAP_MIN;
+    if (mode === 'move') {
+      const over = cols.findIndex((c) => { const r = c.getBoundingClientRect(); return e.clientX >= r.left && e.clientX < r.right; });
+      const dd = over < 0 ? 0 : over - i0;
+      ns = addMinutes(addDays(s0, dd), dm);
+      // stay within the visible day
+      const day = startOfDay(addDays(s0, dd));
+      if (ns < day) ns = day;
+      if (addMinutes(ns, (e0 - s0) / 60000) > addDays(day, 1)) ns = addMinutes(addDays(day, 1), -(e0 - s0) / 60000);
+      ne = addMinutes(ns, (e0 - s0) / 60000);
+    } else if (mode === 'bottom') {
+      ns = s0;
+      ne = addMinutes(e0, dm);
+      const max = addDays(startOfDay(s0), 1);
+      if (ne > max) ne = max;
+      if (ne - ns < SNAP_MIN * 60000) ne = addMinutes(ns, SNAP_MIN);
+    } else {
+      ne = e0;
+      ns = addMinutes(s0, dm);
+      if (ns < startOfDay(e0 - 1)) ns = startOfDay(e0 - 1);
+      if (ne - ns < SNAP_MIN * 60000) ns = addMinutes(ne, -SNAP_MIN);
+    }
+    place();
+  };
+  const up = () => {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    if (!active) return;
+    el._dragged = true; // the click after the drag does not open the peek
+    setTimeout(() => { el._dragged = false; }, 0);
+    el.classList.remove('dragging');
+    if (label) label.remove();
+    if (+ns === +s0 && +ne === +e0) { render(); return; }
+    rescheduleEvent(ev, ns, ne).catch(reportError);
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  down.preventDefault();
+}
+
+/** Saves a new time; meetings first ask whether attendees get an update. */
+async function rescheduleEvent(ev, start, end) {
+  const acc = state.accounts.find((a) => a.id === ev.accountId);
+  const own = ((acc && acc.email) || '').toLowerCase();
+  const others = (ev.attendees || []).filter((a) => a.type !== 'resource' && (a.address || '').toLowerCase() !== own);
+  let sendUpdates = true;
+  if (others.length || ev.isOnlineMeeting) {
+    const google = acc && isGoogle(acc);
+    const when = `${fmtDateLong(start)}, ${fmtTime(start)} – ${fmtTime(end)}`;
+    const who = others.length ? `${others.length} ${others.length === 1 ? 'Teilnehmer' : 'Teilnehmer'}` : 'die Teilnehmer der Videokonferenz';
+    const choice = await modal({
+      title: 'Besprechung verschieben',
+      width: 440,
+      body: h('div', { dataset: { testid: 'reschedule-dialog' } },
+        h('p', { style: { marginTop: 0 } }, `„${eventTitle(ev)}" wird auf ${when} gelegt.`),
+        h('p', google ? `Soll eine Aktualisierung an ${who} gesendet werden?`
+          : `Eine Aktualisierung wird an ${who} gesendet (Microsoft 365 informiert bei geänderter Zeit immer).`)),
+      buttons: google
+        ? [{ label: 'Aktualisierung senden', value: 'send', primary: true }, { label: 'Nicht senden', value: 'quiet' }, { label: 'Abbrechen', value: null, cancel: true }]
+        : [{ label: 'Aktualisierung senden', value: 'send', primary: true }, { label: 'Abbrechen', value: null, cancel: true }],
+    });
+    if (!choice) { render(); return; }
+    sendUpdates = choice === 'send';
+  }
+  // Optimistic: the block stays where it was dropped.
+  const prev = { start: ev.start, end: ev.end };
+  ev.start = start.toISOString(); ev.end = end.toISOString();
+  render();
+  try {
+    const updated = await call('move_event', { accountId: ev.accountId, eventId: ev.id, start: ev.start, end: ev.end, sendUpdates });
+    if (updated && updated.id) Object.assign(ev, updated);
+    toast(sendUpdates && (others.length || ev.isOnlineMeeting) ? 'Termin verschoben, Aktualisierung gesendet.' : 'Termin verschoben.');
+  } catch (e) {
+    Object.assign(ev, prev);
+    render();
+    throw e;
+  }
+  refresh().catch(reportError);
 }
 
 function renderMonth() {

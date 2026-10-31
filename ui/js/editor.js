@@ -85,26 +85,37 @@ async function embedBlobImages(doc) {
 }
 
 /**
- * Pictures in the text can be resized: a click on one shows a frame with a
- * corner handle (drag, aspect ratio kept) and quick sizes. The frame lives
- * in the outer window, so it never ends up in the mail's HTML.
+ * Pictures in the text can be resized and moved. WebKit (macOS, Linux)
+ * delivers no events from the sandboxed editor frame, so each picture gets an
+ * invisible click area in the outer window, kept on top of it:
+ * a click shows a frame with a corner handle (drag, aspect ratio kept), quick
+ * sizes and "Entfernen"; dragging the picture moves it to the text position
+ * under the pointer. Nothing of this ends up in the mail's HTML.
  */
 function bindImageResize(frame, doc, changed) {
   let img = null;
+  const layer = h('div.img-layer', { dataset: { testid: 'img-layer' } });
   const box = h('div.img-resize', { dataset: { testid: 'img-resize' } });
   const handle = h('div.img-resize-handle', { dataset: { testid: 'img-resize-handle' } });
   const label = h('span.img-resize-size');
+  const del = h('button', { type: 'button', title: 'Bild entfernen (Entf)', dataset: { testid: 'img-remove' } }, 'Entfernen');
+  del.addEventListener('mousedown', (e) => e.preventDefault());
+  del.addEventListener('click', () => removeImg());
   const sizes = h('div.img-resize-bar',
     ...[['25 %', 0.25], ['50 %', 0.5], ['100 %', 1]].map(([l, f]) => {
       const b = h('button', { type: 'button', dataset: { testid: 'img-size-' + Math.round(f * 100) } }, l);
       b.addEventListener('mousedown', (e) => e.preventDefault());
       b.addEventListener('click', () => setWidth(Math.round((img.naturalWidth || img.width) * f)));
       return b;
-    }), label);
+    }), label, del);
   box.append(handle, sizes);
+  const caret = h('div.img-drop-caret');
+  const spots = new Map(); // <img> → click area
+
+  const frameRect = () => frame.getBoundingClientRect();
   const place = () => {
     if (!img || !img.isConnected) { hide(); return; }
-    const f = frame.getBoundingClientRect();
+    const f = frameRect();
     const r = img.getBoundingClientRect();
     Object.assign(box.style, { left: f.left + r.left + 'px', top: f.top + r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
     label.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
@@ -125,15 +136,135 @@ function bindImageResize(frame, doc, changed) {
     img.style.width = w + 'px';
     img.style.height = 'auto';
     changed();
-    place();
+    sync();
   }
+  function removeImg() {
+    if (!img) return;
+    const parent = img.parentNode;
+    img.remove();
+    dropIfEmpty(parent);
+    hide();
+    changed();
+    sync();
+  }
+  const dropIfEmpty = (el) => {
+    if (el && el !== doc.body && /^(P|DIV|SPAN|A)$/.test(el.nodeName) && !el.textContent.trim() && !el.querySelector('img,br+*,table')) el.remove();
+  };
+
+  // ---- click areas over the pictures
+  function sync() {
+    if (!frame.isConnected || frame.contentDocument !== doc) { stop(); return; }
+    const f = frameRect();
+    Object.assign(layer.style, { left: f.left + 'px', top: f.top + 'px', width: f.width + 'px', height: f.height + 'px' });
+    const imgs = [...doc.images];
+    for (const [i, el] of spots) if (!i.isConnected || !imgs.includes(i)) { el.remove(); spots.delete(i); }
+    for (const i of imgs) {
+      let el = spots.get(i);
+      if (!el) {
+        el = h('div.img-spot', { title: 'Klicken: Größe ändern · Ziehen: an eine andere Stelle verschieben', dataset: { testid: 'img-spot' } });
+        bindSpot(el, i);
+        spots.set(i, el);
+        layer.appendChild(el);
+      }
+      const r = i.getBoundingClientRect();
+      Object.assign(el.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    }
+    if (imgs.length && !layer.isConnected) document.body.appendChild(layer);
+    if (!imgs.length) layer.remove();
+    if (img) place();
+  }
+  // No scroll events from the frame either: positions are checked per frame.
+  let raf = 0, lastKey = '';
+  const tick = () => {
+    raf = 0;
+    if (!frame.isConnected || frame.contentDocument !== doc) { stop(); return; }
+    if (doc.images.length) {
+      const f = frameRect();
+      const se = doc.scrollingElement || doc.documentElement;
+      const key = `${f.left},${f.top},${f.width},${f.height},${se.scrollTop},${se.scrollLeft},${se.scrollHeight},${doc.images.length}`;
+      if (key !== lastKey) { lastKey = key; sync(); }
+    } else if (spots.size || layer.isConnected) sync();
+    raf = requestAnimationFrame(tick);
+  };
+  const stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; layer.remove(); box.remove(); caret.remove(); };
+  raf = requestAnimationFrame(tick);
+  new MutationObserver(() => { lastKey = ''; }).observe(doc.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+
+  /** Text position under a point of the outer window (null outside the text). */
+  function rangeAt(x, y) {
+    const f = frameRect();
+    const fx = x - f.left, fy = y - f.top;
+    if (fx < 0 || fy < 0 || fx > f.width || fy > f.height) return null;
+    if (doc.caretRangeFromPoint) return doc.caretRangeFromPoint(fx, fy);
+    const p = doc.caretPositionFromPoint && doc.caretPositionFromPoint(fx, fy);
+    if (!p) return null;
+    const r = doc.createRange();
+    r.setStart(p.offsetNode, p.offset);
+    r.collapse(true);
+    return r;
+  }
+
+  function bindSpot(el, picture) {
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      show(picture);
+      el.setPointerCapture(e.pointerId);
+      const x0 = e.clientX, y0 = e.clientY;
+      let dragging = false, ghost = null, target = null;
+      const move = (m) => {
+        if (!dragging) {
+          if (Math.abs(m.clientX - x0) < 5 && Math.abs(m.clientY - y0) < 5) return;
+          dragging = true;
+          hide();
+          const r = picture.getBoundingClientRect();
+          const scale = Math.min(1, 160 / Math.max(r.width, 1));
+          ghost = h('img.img-drag-ghost', { src: picture.src, style: { width: r.width * scale + 'px' } });
+          document.body.append(ghost, caret);
+        }
+        Object.assign(ghost.style, { left: m.clientX + 8 + 'px', top: m.clientY + 8 + 'px' });
+        target = rangeAt(m.clientX, m.clientY);
+        const rr = target && (target.getClientRects()[0] || target.getBoundingClientRect());
+        if (rr && (rr.height || rr.top)) {
+          const f = frameRect();
+          Object.assign(caret.style, { display: 'block', left: f.left + rr.left + 'px', top: f.top + rr.top + 'px', height: Math.max(rr.height, 16) + 'px' });
+        } else caret.style.display = 'none';
+      };
+      const up = (u) => {
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        if (!dragging) return;
+        ghost.remove(); caret.remove();
+        const r = u.type === 'pointerup' ? rangeAt(u.clientX, u.clientY) || target : null;
+        if (!r || picture.contains(r.startContainer)) { sync(); return; }
+        const parent = picture.parentNode;
+        picture.remove();
+        r.insertNode(picture);
+        if (parent !== picture.parentNode) dropIfEmpty(parent);
+        changed();
+        sync();
+        show(picture);
+      };
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+    el.addEventListener('dblclick', () => show(picture));
+  }
+
   doc.addEventListener('mousedown', (e) => {
     const t = e.target && e.target.closest ? e.target.closest('img') : null;
     if (t) show(t); else hide();
   });
   doc.addEventListener('keydown', () => hide());
-  doc.addEventListener('scroll', place);
-  window.addEventListener('resize', place);
+  window.addEventListener('resize', () => { lastKey = ''; });
+  // Focus going into the editor frame (a click into the text) ends the resize mode.
+  window.addEventListener('blur', () => hide());
+  window.addEventListener('keydown', (e) => {
+    if (img && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); removeImg(); }
+    else if (img && e.key === 'Escape') hide();
+  });
   handle.addEventListener('pointerdown', (e) => {
     if (!img) return;
     e.preventDefault();
@@ -148,10 +279,51 @@ function bindImageResize(frame, doc, changed) {
   });
   handle.addEventListener('mousedown', (e) => e.preventDefault());
   // Clicks in the outer window (toolbar excepted) end the resize mode.
-  document.addEventListener('mousedown', (e) => { if (img && !box.contains(e.target)) hide(); });
+  document.addEventListener('mousedown', (e) => { if (img && !box.contains(e.target) && !e.target.closest('.img-spot')) hide(); });
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles } = {}) {
+/** Local paths when `text` consists only of file:// addresses (one per line
+ *  or separated by blanks), else []. */
+export function fileUriPaths(text) {
+  const parts = String(text || '').split(/[\r\n]+|\s+(?=file:)/).map((x) => x.trim()).filter((x) => x && !x.startsWith('#'));
+  if (!parts.length || !parts.every((x) => /^file:\/\/[^\s]+$/i.test(x))) return [];
+  return parts.map((u) => {
+    let p = u.replace(/^file:\/\/(localhost)?/i, '');
+    try { p = decodeURIComponent(p); } catch { /* keep as is */ }
+    // Windows: file:///C:/… → C:/…
+    if (/^\/[A-Za-z]:[\\/]/.test(p)) p = p.slice(1);
+    return p;
+  });
+}
+
+/** Removes text that a paste inserted when it is nothing but file addresses;
+ *  returns their paths. */
+function takePastedFileUris(records) {
+  const out = [];
+  for (const r of records) {
+    if (r.type === 'characterData') {
+      const now = r.target.data, old = r.oldValue || '';
+      if (now.length <= old.length) continue;
+      let a = 0;
+      while (a < old.length && old[a] === now[a]) a++;
+      let b = 0;
+      while (b < old.length - a && old[old.length - 1 - b] === now[now.length - 1 - b]) b++;
+      const inserted = now.slice(a, now.length - b);
+      const paths = inserted.length > 7 ? fileUriPaths(inserted) : [];
+      if (paths.length) { r.target.data = old; out.push(...paths); }
+    } else if (r.type === 'childList') {
+      for (const n of r.addedNodes) {
+        if (!n.isConnected) continue;
+        const text = n.nodeType === 3 ? n.data : n.nodeType === 1 && !n.querySelector('img,table') ? n.textContent : '';
+        const paths = text && text.length > 7 ? fileUriPaths(text) : [];
+        if (paths.length) { n.remove(); out.push(...paths); }
+      }
+    }
+  }
+  return out;
+}
+
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles, onPasteFiles, onPastePaths } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
   let pending = html;
@@ -165,17 +337,30 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       // (WebKitGTK on Linux) dispatches no events at all from a frame sandboxed
       // without allow-scripts, so typing and pasting would go unnoticed.
       const d = doc;
-      new MutationObserver(() => {
+      new MutationObserver((records) => {
         if (d !== doc) return;
+        // WebKitGTK fires no paste event here: pasted file addresses are
+        // recognised in the inserted text, removed and attached as files.
+        if (onPastePaths) {
+          const paths = takePastedFileUris(records);
+          if (paths.length) onPastePaths(paths);
+        }
         onInput && onInput();
         // A native paste (e.g. an image in WebKit) may bring blob: images.
         if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
-      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true });
       if (onDropFiles) {
         // Files dropped onto the text become attachments (the drop lands in this frame, not the window).
         const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
-        doc.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+        const isMailAtt = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('application/x-lt-attachment');
+        doc.addEventListener('dragover', (e) => { if (hasFiles(e) || isMailAtt(e)) e.preventDefault(); });
         doc.addEventListener('drop', (e) => {
+          // An attachment of a mail: handled by the window (compose.js).
+          if (isMailAtt(e)) {
+            e.preventDefault();
+            window.document.dispatchEvent(new DragEvent('drop', { dataTransfer: e.dataTransfer, bubbles: true }));
+            return;
+          }
           if (!hasFiles(e) || !e.dataTransfer.files.length) return;
           e.preventDefault();
           window.document.body.classList.remove('dropping');
@@ -187,6 +372,12 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
         const cd = e.clipboardData;
+        // Copied files (not pictures) become attachments.
+        const other = cd ? [...cd.files].filter((f) => !/^image\//.test(f.type)) : [];
+        if (other.length && onPasteFiles) { e.preventDefault(); onPasteFiles(other); return; }
+        // Only file:// addresses (files copied in the file manager): attach them.
+        const uris = cd && !cd.files.length ? fileUriPaths(cd.getData('text/uri-list') || cd.getData('text/plain')) : [];
+        if (uris.length && onPastePaths) { e.preventDefault(); onPastePaths(uris); return; }
         const raw = cd && cd.getData('text/html');
         const files = cd ? [...cd.files].filter((f) => /^image\//.test(f.type)) : [];
         if (!raw && !files.length) return;

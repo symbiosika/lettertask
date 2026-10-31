@@ -162,9 +162,35 @@ pub struct MessageDetail {
     pub web_link: Option<String>,
     pub is_meeting_request: bool,
     pub event_id: Option<String>,
+    /// Time and place carried by a meeting message itself (request, update,
+    /// cancellation) – shown even when the event cannot be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<InviteInfo>,
     /// S/MIME-signed (shown unwrapped; the signature is not verified).
     #[serde(default)]
     pub signed: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteInfo {
+    /// meetingRequest | meetingCancelled | meetingAccepted | …
+    pub message_type: String,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub is_all_day: bool,
+    pub location: String,
+    /// Set when an update moved the meeting (Outlook shows it struck through).
+    pub previous_start: Option<String>,
+    pub previous_end: Option<String>,
+    pub previous_location: String,
+    pub is_out_of_date: bool,
+    /// From iCalendar (IMAP/Gmail); Graph mails take it from the event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organizer: Option<Address>,
+    /// iCalendar UID (IMAP/Gmail), empty for Graph.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

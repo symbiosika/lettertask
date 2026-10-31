@@ -8,7 +8,7 @@ use mail_parser::{MessageParser, MimeHeaders};
 
 use crate::convert;
 use crate::error::{Error, Result};
-use crate::model::{Address, Attachment, MessageDetail, MessageSummary};
+use crate::model::{Address, Attachment, InviteInfo, MessageDetail, MessageSummary};
 
 pub fn parse(raw: &[u8]) -> Option<mail_parser::Message<'_>> {
     MessageParser::default().parse(raw)
@@ -331,6 +331,18 @@ pub fn inline_images(msg: &mail_parser::Message<'_>, html: &str) -> Vec<(String,
         .collect()
 }
 
+/// Invitation carried as a `text/calendar` part (inline or as `.ics`).
+fn calendar_invite(msg: &mail_parser::Message<'_>) -> Option<InviteInfo> {
+    msg.parts.iter().find_map(|p| {
+        let is_cal = part_type(p) == "text/calendar"
+            || part_name(p, 0).to_ascii_lowercase().ends_with(".ics");
+        if !is_cal {
+            return None;
+        }
+        convert::invite_from_ics(&String::from_utf8_lossy(p.contents()))
+    })
+}
+
 /// Full message → MessageDetail; `cid:` images become data: URIs and are not
 /// listed as attachments.
 pub fn detail(raw: &[u8], mut summary: MessageSummary) -> Result<MessageDetail> {
@@ -376,6 +388,7 @@ pub fn detail(raw: &[u8], mut summary: MessageSummary) -> Result<MessageDetail> 
         web_link: None,
         is_meeting_request: false,
         event_id: None,
+        invite: calendar_invite(&msg),
         signed: false,
         summary,
     })

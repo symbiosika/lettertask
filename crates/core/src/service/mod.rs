@@ -568,6 +568,13 @@ impl Service {
                     &arg::<Option<String>>(a, "action")?.unwrap_or_else(|| "open".into()),
                 )
                 .await?),
+            "attachment_content" => ok(self
+                .attachment_content(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "messageId")?,
+                    &arg::<String>(a, "attachmentId")?,
+                )
+                .await?),
             "save_file" => ok(self
                 .save_file(&arg::<String>(a, "name")?, &arg::<String>(a, "contentBase64")?)
                 .await?),
@@ -762,6 +769,15 @@ impl Service {
             "update_event" => ok(self
                 .update_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?, arg(a, "input")?)
                 .await?),
+            "move_event" => ok(self
+                .move_event(
+                    &arg::<String>(a, "accountId")?,
+                    &arg::<String>(a, "eventId")?,
+                    &arg::<String>(a, "start")?,
+                    &arg::<String>(a, "end")?,
+                    arg::<Option<bool>>(a, "sendUpdates")?.unwrap_or(true),
+                )
+                .await?),
             "delete_event" => {
                 self.delete_event(&arg::<String>(a, "accountId")?, &arg::<String>(a, "eventId")?)
                     .await?;
@@ -774,6 +790,9 @@ impl Service {
                     &arg::<String>(a, "response")?,
                     &arg::<Option<String>>(a, "comment")?.unwrap_or_default(),
                     arg::<Option<bool>>(a, "sendResponse")?.unwrap_or(true),
+                    arg::<Option<Value>>(a, "proposedNewTime")?.and_then(|p| {
+                        Some((p["start"].as_str()?.to_string(), p["end"].as_str()?.to_string()))
+                    }),
                 )
                 .await?;
                 ok(Value::Null)

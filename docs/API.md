@@ -61,6 +61,8 @@ MessageDetail = MessageSummary & {
   attachments: Attachment[],   // non-inline only
   internetMessageId: string|null, webLink: string|null,
   isMeetingRequest: bool, eventId: string|null   // set for meeting invitations
+  invite?: { messageType, start, end, isAllDay, location, previousStart, previousEnd, previousLocation,
+             isOutOfDate, organizer?, uid? }   // times of a meeting mail (Graph eventMessage or text/calendar)
 }
 Category     { id: string, displayName: string, color: string /* "preset0".."preset24" or "none" */ }
 Calendar     { id, accountId, name: string, color: string|null /* hex like "#4a90d9" */, canEdit: bool, isDefault: bool,
@@ -184,7 +186,8 @@ AutoReply { status: "disabled"|"alwaysEnabled"|"scheduled", internalReplyMessage
 | `delegate_draft` | `{ draft: DraftInput, due: ISO\|null, todoPrefix?: bool }` | `MessageSummary` — "Delegieren" of an existing mail: sends the forward (exactly one "An" recipient = assignee, subject "ToDo: …" unless `todoPrefix` false) and places the delegation copy (`[D_<address>]`) like a delegated task |
 | `create_task` | `{ mailboxId, subject, bodyHtml, due: ISO\|null }` | `MessageSummary` — "Aufgabe (Mail)" (task as mail): a normal (non-draft) mail from yourself to yourself, created directly on the server: due null = "Sofort" (immediately) → Posteingang (inbox, unread); otherwise → "Wiedervorlage" with dueAt |
 | `delete_messages` | `{ mailboxId, ids, permanent: bool }` | `null` (non-permanent = move to Deleted Items; items already in Deleted Items are removed permanently) |
-| `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save" }` | `string\|null` saved path (null if save dialog cancelled) |
+| `download_attachment` | `{ mailboxId, messageId, attachmentId, action: "open"\|"save"\|"temp" }` ("temp": saved to the temp folder only, for dragging it out) | `string\|null` saved path (null if save dialog cancelled) |
+| `attachment_content` | `{ mailboxId, messageId, attachmentId }` | `{ name, size, contentBase64 }` |
 | `save_file` | `{ name, contentBase64 }` | `string\|null` saved path (save dialog; null if cancelled), e.g. "Bild speichern unter…" |
 | `get_message_source` | `{ mailboxId, messageId }` | `string` (MIME source, for "Quelltext anzeigen" (View source)) |
 
@@ -275,8 +278,9 @@ and a foreground service keeps push alive (an alarm renews IDLE every 24 minutes
 | `get_event` | `{ accountId, eventId }` | `EventDetail` |
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |
 | `update_event` | `{ accountId, eventId, input: EventInput }` | `Event` |
+| `move_event` | `{ accountId, eventId, start, end (RFC3339), sendUpdates?: bool }` — only start/end (drag & drop, resize); organizer only, not all-day. Microsoft 365 always notifies attendees, Google only with `sendUpdates` | `Event` |
 | `delete_event` | `{ accountId, eventId }` | `null` (organizer with attendees: sends cancellation) |
-| `respond_event` | `{ accountId, eventId, response: "accept"\|"tentativelyAccept"\|"decline", comment: string, sendResponse: bool }` | `null` |
+| `respond_event` | `{ accountId, eventId, response: "accept"\|"tentativelyAccept"\|"decline", comment: string, sendResponse: bool, proposedNewTime?: { start, end } (RFC3339; not with accept, Microsoft 365 only) }` | `null` |
 
 ### Mailbox settings
 | `get_auto_reply` | `{ accountId }` | `AutoReply` |

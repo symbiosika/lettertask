@@ -203,6 +203,7 @@ kbd { font-family: inherit; }
 .tree-node[data-favorite].selected::before { display: none; }
 .tree-node.selected::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: var(--accent); }
 .tree-node.drop-target { background: var(--accent-weak-2); box-shadow: inset 0 0 0 1px var(--accent); }
+.tree-node.drop-copy::after { content: "+ Kopie"; margin-left: 6px; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 18px; background: var(--accent); color: #fff; flex: none; }
 .tree-hint { padding: 4px 12px 6px 30px; color: var(--text-dim); font-size: 12px; }
 
 /* ================================================================ avatars */
@@ -257,6 +258,9 @@ kbd { font-family: inherit; }
 .msglist > .msg { content-visibility: auto; contain-intrinsic-size: auto 86px; }
 .msglist.compact > .msg { contain-intrinsic-size: auto 56px; }
 .msg:hover { background: var(--hover); }
+/* Shared inbox: source mailbox as a bar on the far left. */
+.msg .m-src { position: absolute; left: 0; top: 4px; bottom: 4px; width: 4px; border-radius: 3px; }
+.tree-root.account .mb-bar { width: 4px; height: 18px; border-radius: 2px; flex: none; margin-right: 2px; }
 .msg.selected { background: var(--sel); }
 .msglist:focus-within .msg.selected { background: var(--sel-strong); }
 .msg .m-dot { position: absolute; left: 4px; top: 22px; width: 7px; height: 7px; border-radius: 50%; cursor: pointer; }
@@ -366,6 +370,14 @@ kbd { font-family: inherit; }
 .cc-btn:hover { background: var(--hover); border-color: var(--border-strong); }
 .infobar.meeting .btn { height: 28px; }
 .infobar.meeting .ib-done { font-weight: 600; }
+.rp-respond { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 13px; }
+.rp-respond .rsp-head, .rp-respond .rsp-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rp-respond .spacer { flex: 1; }
+.rp-respond .rsp-notify { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12.5px; }
+.rp-respond .rsp-note { width: 100%; box-sizing: border-box; resize: vertical; min-height: 44px; font: inherit; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); }
+.rp-respond .rsp-propose { display: flex; gap: 10px; flex-wrap: wrap; color: var(--text-2); }
+.rp-respond .rsp-propose[hidden], .rp-respond .btn[hidden] { display: none; }
+.rp-respond input[type=datetime-local] { font: inherit; padding: 2px 4px; }
 .rp-invite { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--accent-weak); font-size: 13px; color: var(--text); }
 .rp-invite:empty { display: none; }
 .rp-invite .inv-row { display: flex; align-items: center; gap: 8px; }
@@ -386,6 +398,7 @@ kbd { font-family: inherit; }
 .rp-attachments { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 20px 0; }
 .attachment { display: inline-flex; align-items: center; gap: 8px; max-width: 280px; padding: 6px 10px 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); text-align: left; cursor: pointer; }
 .attachment:hover { border-color: var(--accent-weak-2); background: var(--accent-weak); }
+.attachment[draggable=true]:active { cursor: grabbing; }
 .att-ic { display: flex; width: 30px; height: 30px; border-radius: 6px; background: var(--canvas); align-items: center; justify-content: center; color: var(--accent); flex: none; }
 .att-text { display: flex; flex-direction: column; min-width: 0; }
 .attachment .att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
@@ -756,6 +769,11 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 
 .login-link { margin-top: 8px; font-size: 12px; }
 /* Resize frame over a picture in the editor */
+.img-layer { position: fixed; z-index: 40; overflow: hidden; pointer-events: none; }
+.img-spot { position: absolute; pointer-events: auto; cursor: pointer; touch-action: none; }
+.img-spot:hover { outline: 1px dashed var(--accent, #2f6fe4); outline-offset: -1px; cursor: grab; }
+.img-drag-ghost { position: fixed; z-index: 60; opacity: .6; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.img-drop-caret { position: fixed; z-index: 60; width: 2px; background: var(--accent, #2f6fe4); pointer-events: none; display: none; }
 .img-resize { position: fixed; z-index: 50; border: 1.5px solid var(--accent, #2f6fe4); pointer-events: none; box-sizing: border-box; }
 .img-resize-handle { position: absolute; right: -6px; bottom: -6px; width: 12px; height: 12px; background: #fff; border: 1.5px solid var(--accent, #2f6fe4); border-radius: 2px; cursor: nwse-resize; pointer-events: auto; }
 .img-resize-bar { position: absolute; left: 0; top: calc(100% + 6px); display: flex; gap: 4px; align-items: center; pointer-events: auto; background: var(--panel, #fff); border: 1px solid var(--border, #d0d7de); border-radius: 6px; padding: 3px 6px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.12); }

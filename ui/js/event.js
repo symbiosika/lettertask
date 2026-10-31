@@ -157,7 +157,7 @@ function renderForm() {
   for (const el of [f.endDate, f.endTime]) el.addEventListener('change', () => { const d = dur(); if (d > 0) lastDuration = d; dirty(); });
   f.startTime.addEventListener('focus', () => { const d = dur(); if (d > 0) lastDuration = d; });
   f.allDay.addEventListener('change', () => { syncAllDay(); dirty(); });
-  f.calendar.addEventListener('change', dirty);
+  f.calendar.addEventListener('change', () => { dirty(); onCalendarChange(); });
 
   const attLbl = (label, fld) => h('button.flabel.btn.small', { type: 'button', tabindex: '-1', onclick: () => fld.focus(), style: { justifyContent: 'flex-start' } }, label);
   f.rowsAtt = [attLbl('Erforderlich…', required), required.el, attLbl('Optional…', optional), optional.el];
@@ -269,11 +269,43 @@ async function recurrenceDialog() {
 }
 
 // --------------------------------------------------------------- load / save
-function fillCalendars(calendars, selectedId) {
+/** groups: [{ account, calendars }] – a new event may go into any writable
+ *  calendar of any account, an existing one stays in its account. */
+function fillCalendars(groups, selectedId, selectedAccount = st.accountId) {
   f.calendar.innerHTML = '';
-  for (const c of calendars.filter((c) => c.canEdit || c.id === selectedId)) {
-    f.calendar.appendChild(h('option', { value: c.id, selected: c.id === selectedId }, c.name + (c.isDefault ? ' (Standard)' : '')));
+  const many = groups.filter((g) => g.calendars.some((c) => c.canEdit)).length > 1;
+  for (const g of groups) {
+    const cals = g.calendars.filter((c) => c.canEdit || (c.id === selectedId && g.account.id === selectedAccount));
+    if (!cals.length) continue;
+    const parent = many ? h('optgroup', { label: g.account.email || g.account.displayName || g.account.id }) : f.calendar;
+    for (const c of cals) {
+      parent.appendChild(h('option', {
+        value: c.id, dataset: { account: g.account.id },
+        selected: c.id === selectedId && g.account.id === selectedAccount,
+      }, c.name + (c.isDefault ? ' (Standard)' : '')));
+    }
+    if (many) f.calendar.appendChild(parent);
   }
+}
+
+/** Account of the chosen calendar (new events may switch accounts). */
+function onCalendarChange() {
+  const opt = f.calendar.selectedOptions[0];
+  const acc = opt && opt.dataset.account;
+  if (!acc || acc === st.accountId) return;
+  st.accountId = acc;
+  // Categories belong to the account: keep only names the new one knows.
+  const known = new Set(getCategories(acc).map((c) => c.displayName));
+  st.categories = google() ? [] : st.categories.filter((c) => known.has(c));
+  renderCats();
+  renderToolbar();
+}
+
+/** Writable calendars of every account with a calendar (M365 and Google). */
+async function allCalendarGroups() {
+  const accounts = state.accounts.filter((a) => !isImap(a) || isGoogle(a));
+  const lists = await Promise.all(accounts.map((a) => call('list_calendars', { accountId: a.id, cached: true }, { silent: true }).catch(() => [])));
+  return accounts.map((account, i) => ({ account, calendars: lists[i] || [] }));
 }
 
 function fillFromEvent(ev) {
@@ -348,7 +380,10 @@ async function saveNow() {
     if (!ok) { f.subject.focus(); return; }
   }
   if (st.event && st.event.id) await call('update_event', { accountId: st.accountId, eventId: st.event.id, input });
-  else await call('create_event', { accountId: st.accountId, calendarId: f.calendar.value, input });
+  else {
+    const opt = f.calendar.selectedOptions[0];
+    await call('create_event', { accountId: (opt && opt.dataset.account) || st.accountId, calendarId: f.calendar.value, input });
+  }
   st.dirty = false;
   st.closing = true;
   await closeWindow();
@@ -392,7 +427,9 @@ async function init() {
   if (!st.accountId) { const o = state.accounts.find((a) => !isImap(a) || isGoogle(a)) || state.accounts[0]; st.accountId = o && o.id; }
   renderForm();
   // Calendar list and event load in parallel; the form is already on screen.
-  const calendarsP = call('list_calendars', { accountId: st.accountId, cached: true }, { silent: true }).catch((e) => { reportError(e); return []; });
+  const calendarsP = P.eventId
+    ? call('list_calendars', { accountId: st.accountId, cached: true }, { silent: true }).catch((e) => { reportError(e); return []; })
+    : allCalendarGroups();
   if (P.eventId) {
     const stop = loadingPill('Termin wird geladen…', 150);
     let ev, calendars;
@@ -411,7 +448,8 @@ async function init() {
     }
     st.event = ev;
     st.readOnly = !ev.isOrganizer;
-    fillCalendars(calendars || [], ev.calendarId);
+    const account = state.accounts.find((a) => a.id === st.accountId) || { id: st.accountId };
+    fillCalendars([{ account, calendars: calendars || [] }], ev.calendarId);
     fillFromEvent(ev);
     await editor.setHtml(ev.bodyHtml || '');
     if (st.readOnly) renderReadOnly(ev);
@@ -423,9 +461,11 @@ async function init() {
     f.allDay.checked = P.allDay === '1';
     if (f.allDay.checked) { f.endDate.value = toDateInput(addDays(e, -1) < s ? s : addDays(e, -1)); f.endTime.value = toTimeInput(s); st.showAs = 'free'; }
     else { f.endDate.value = toDateInput(e); f.endTime.value = toTimeInput(e); }
-    const calendars = (await calendarsP) || [];
-    const def = calendars.find((c) => c.id === P.calendarId) || calendars.find((c) => c.isDefault) || calendars[0];
-    fillCalendars(calendars, def && def.id);
+    const groups = (await calendarsP) || [];
+    const own = (groups.find((g) => g.account.id === st.accountId) || { calendars: [] }).calendars.filter((c) => c.canEdit);
+    const def = own.find((c) => c.id === P.calendarId) || own.find((c) => c.isDefault) || own[0];
+    fillCalendars(groups, def && def.id);
+    if (!def) onCalendarChange(); // first writable calendar of another account
     syncAllDay();
     if (P.attendees) { st.attendeesVisible = true; required.set(P.attendees.split(';').filter(Boolean).map((a) => ({ name: a, address: a }))); layoutRows(); }
   }
