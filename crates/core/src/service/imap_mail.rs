@@ -917,7 +917,8 @@ impl Service {
             dir.join(&name)
         };
         std::fs::write(&path, bytes)?;
-        if action != "save" {
+        // "temp": only saved (for dragging it out of the window), not opened.
+        if action == "open" {
             self.host.open_path(&path)?;
         }
         Ok(Some(path.to_string_lossy().into_owned()))

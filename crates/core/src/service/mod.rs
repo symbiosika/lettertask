@@ -568,6 +568,13 @@ impl Service {
                     &arg::<Option<String>>(a, "action")?.unwrap_or_else(|| "open".into()),
                 )
                 .await?),
+            "attachment_content" => ok(self
+                .attachment_content(
+                    &arg::<String>(a, "mailboxId")?,
+                    &arg::<String>(a, "messageId")?,
+                    &arg::<String>(a, "attachmentId")?,
+                )
+                .await?),
             "save_file" => ok(self
                 .save_file(&arg::<String>(a, "name")?, &arg::<String>(a, "contentBase64")?)
                 .await?),

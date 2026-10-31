@@ -1,5 +1,5 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
-import { call, params, closeWindow, currentWindow, isTauri, isMobile, on } from './api.js';
+import { call, params, closeWindow, currentWindow, isTauri, isMobile, on, invokeNative } from './api.js';
 import { h, $, esc, fmtSize, fileToBase64, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
@@ -138,15 +138,20 @@ function renderForm() {
   sigBtn = h('button.ed-btn.ed-sig', { type: 'button', title: 'Signatur', 'aria-label': 'Signatur', dataset: { testid: 'compose-signature' }, html: icon('signature', 18) + `<span class="ed-sig-label">Signatur</span>` + icon('chevronDown', 12) });
   sigBtn.addEventListener('mousedown', (e) => e.preventDefault());
   sigBtn.addEventListener('click', () => openSignatureMenu().catch(reportError));
-  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles });
+  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles, onPasteFiles: addFiles, onPastePaths: (p) => addPastedPaths(p).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
 
   // drag & drop files onto the window
-  document.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); document.body.classList.add('dropping'); } });
+  const dropKinds = ['Files', 'application/x-lt-attachment'];
+  document.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].some((t) => dropKinds.includes(t))) { e.preventDefault(); document.body.classList.add('dropping'); } });
   document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
   document.addEventListener('drop', async (e) => {
     document.body.classList.remove('dropping');
-    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    if (!e.dataTransfer) return;
+    // An attachment dragged out of a mail (lettertask in the browser).
+    const ref = e.dataTransfer.getData('application/x-lt-attachment');
+    if (ref) { e.preventDefault(); await addMailAttachment(JSON.parse(ref)).catch(reportError); return; }
+    if (!e.dataTransfer.files.length) return;
     e.preventDefault();
     await addFiles(e.dataTransfer.files);
   });
@@ -206,6 +211,21 @@ async function addFile(file) {
   if (file.size > 150 * 1024 * 1024) { toast(`„${file.name}" ist größer als 150 MB und kann nicht angefügt werden.`, 'error'); return; }
   const contentBase64 = await fileToBase64(file);
   addAttachment({ name: file.name, contentType: file.type || contentTypeOf(file.name), contentBase64, size: file.size });
+}
+
+/** Attachment of another mail ({ mailboxId, messageId, attachmentId, name }). */
+async function addMailAttachment(ref) {
+  const f = await call('attachment_content', { mailboxId: ref.mailboxId, messageId: ref.messageId, attachmentId: ref.attachmentId });
+  addAttachment({ name: f.name, contentType: ref.contentType || contentTypeOf(f.name), contentBase64: f.contentBase64, size: f.size });
+}
+
+/** Ctrl+V of files copied in the file manager: the page only gets their
+ *  file:// addresses, the app reads the files. */
+async function addPastedPaths(paths) {
+  if (!isTauri) { toast('Kopierte Dateien lassen sich nur in der Desktop-App einfügen – bitte per Drag & Drop anfügen.', 'error'); return; }
+  const res = await invokeNative('read_local_files', { paths });
+  for (const f of res.files || []) addAttachment({ name: f.name, contentType: contentTypeOf(f.name), contentBase64: f.contentBase64, size: f.size });
+  if ((res.skipped || []).length) toast(`Nicht angefügt (Ordner oder größer als 150 MB): ${res.skipped.join(', ')}`, 'error');
 }
 
 async function addFiles(files) {

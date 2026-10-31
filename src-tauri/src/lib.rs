@@ -122,27 +122,93 @@ fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         DragDropEvent::Drop { paths, .. } => {
             let paths = paths.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                use base64::Engine;
                 let _ = app.emit_to(&label, "files-drag", serde_json::json!({ "label": label, "over": false }));
-                let mut files = Vec::new();
-                let mut skipped = Vec::new();
-                for p in paths {
-                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let size = std::fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| m.len());
-                    match size.filter(|s| *s <= DROP_MAX).and_then(|_| std::fs::read(&p).ok()) {
-                        Some(bytes) => files.push(serde_json::json!({
-                            "name": name,
-                            "size": bytes.len(),
-                            "contentBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
-                        })),
-                        None => skipped.push(name),
-                    }
-                }
+                let (files, skipped) = read_files(paths);
                 let _ = app.emit_to(&label, "files-dropped", serde_json::json!({ "label": label, "files": files, "skipped": skipped }));
             });
         }
         _ => {}
     }
+}
+
+/// Reads local files for attaching: `[{ name, contentBase64, size }]` and the
+/// names of what was skipped (folders, unreadable, larger than DROP_MAX).
+fn read_files(paths: Vec<std::path::PathBuf>) -> (Vec<Value>, Vec<String>) {
+    use base64::Engine;
+    let mut files = Vec::new();
+    let mut skipped = Vec::new();
+    for p in paths {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let size = std::fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| m.len());
+        match size.filter(|s| *s <= DROP_MAX).and_then(|_| std::fs::read(&p).ok()) {
+            Some(bytes) => files.push(serde_json::json!({
+                "name": name,
+                "size": bytes.len(),
+                "contentBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            })),
+            None => skipped.push(name),
+        }
+    }
+    (files, skipped)
+}
+
+/// Files the user pasted (Ctrl+V of files copied in the file manager: the
+/// WebView only sees their file:// addresses). `{ files, skipped }`.
+#[tauri::command]
+async fn read_local_files(paths: Vec<String>) -> Result<Value, String> {
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).filter(|p| p.is_absolute()).collect();
+    let (files, skipped) = tauri::async_runtime::spawn_blocking(move || read_files(paths))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "files": files, "skipped": skipped }))
+}
+
+/// Starts a native drag of attachment files (saved to the temp folder by
+/// `download_attachment` with action "temp") so they can be dropped onto the
+/// desktop, a file manager or another app.
+#[cfg(desktop)]
+#[tauri::command]
+async fn drag_out(app: tauri::AppHandle, window: tauri::Window, paths: Vec<String>) -> Result<(), String> {
+    let base = std::env::temp_dir().join("lettertask");
+    let mut files = Vec::new();
+    for p in paths {
+        let p = std::fs::canonicalize(&p).map_err(|e| e.to_string())?;
+        // Only what the app itself put there.
+        if !p.starts_with(std::fs::canonicalize(&base).unwrap_or(base.clone())) || !p.is_file() {
+            return Err("Diese Datei kann nicht gezogen werden.".into());
+        }
+        files.push(p);
+    }
+    if files.is_empty() {
+        return Ok(());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        #[cfg(target_os = "linux")]
+        let target = window.gtk_window();
+        #[cfg(not(target_os = "linux"))]
+        let target = tauri::Result::Ok(window.clone());
+        let r = match target {
+            Ok(w) => drag::start_drag(
+                &w,
+                drag::DragItem::Files(files),
+                drag::Image::Raw(include_bytes!("../icons/32x32.png").to_vec()),
+                |_, _| {},
+                drag::Options::default(),
+            )
+            .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = tx.send(r);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn drag_out() -> Result<(), String> {
+    Err("Auf dem Telefon nicht verfügbar.".into())
 }
 
 /// The only command: forwards to the service layer (see docs/API.md).
@@ -265,7 +331,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(navigation_guard())
-        .invoke_handler(tauri::generate_handler![call, copy_image])
+        .invoke_handler(tauri::generate_handler![call, copy_image, read_local_files, drag_out])
         .on_window_event(on_window_event)
         .setup(move |app| {
             let handle = app.handle().clone();

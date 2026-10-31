@@ -1074,6 +1074,34 @@ impl Service {
         if crate::imap::is_imap_id(mailbox_id) {
             return self.imap_download_attachment(mailbox_id, message_id, attachment_id, action).await;
         }
+        let (name, bytes) = self.attachment_file(mailbox_id, message_id, attachment_id).await?;
+        let path = if action == "save" {
+            match self.host.save_dialog(&name).await {
+                Some(p) => p,
+                None => return Ok(None),
+            }
+        } else {
+            let dir = std::env::temp_dir()
+                .join("lettertask")
+                .join(uuid::Uuid::new_v4().to_string());
+            std::fs::create_dir_all(&dir)?;
+            dir.join(&name)
+        };
+        std::fs::write(&path, bytes)?;
+        // "temp": only saved (for dragging it out of the window), not opened.
+        if action == "open" {
+            self.host.open_path(&path)?;
+        }
+        Ok(Some(path.to_string_lossy().into_owned()))
+    }
+
+    /// Name and content of an attachment (Graph or IMAP).
+    pub(crate) async fn attachment_file(&self, mailbox_id: &str, message_id: &str, attachment_id: &str) -> Result<(String, Vec<u8>)> {
+        if crate::imap::is_imap_id(mailbox_id) {
+            let (raw, _, _) = self.imap_raw(mailbox_id, message_id).await?;
+            let (name, _, bytes) = crate::imap::mime::attachment_by_id(&raw, attachment_id)?;
+            return Ok((sanitize_filename(&name), bytes));
+        }
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let (name, bytes) = match attachment_id.split_once(crate::imap::mime::SMIME_SEP) {
@@ -1096,23 +1124,17 @@ impl Service {
                 (name, self.attachment_bytes(&c, &prefix, message_id, attachment_id).await?)
             }
         };
-        let path = if action == "save" {
-            match self.host.save_dialog(&name).await {
-                Some(p) => p,
-                None => return Ok(None),
-            }
-        } else {
-            let dir = std::env::temp_dir()
-                .join("lettertask")
-                .join(uuid::Uuid::new_v4().to_string());
-            std::fs::create_dir_all(&dir)?;
-            dir.join(&name)
-        };
-        std::fs::write(&path, bytes)?;
-        if action != "save" {
-            self.host.open_path(&path)?;
-        }
-        Ok(Some(path.to_string_lossy().into_owned()))
+        Ok((name, bytes))
+    }
+
+    /// Attachment as base64 for the page (e.g. dragged into a new mail).
+    pub(crate) async fn attachment_content(&self, mailbox_id: &str, message_id: &str, attachment_id: &str) -> Result<serde_json::Value> {
+        let (name, bytes) = self.attachment_file(mailbox_id, message_id, attachment_id).await?;
+        Ok(json!({
+            "name": name,
+            "size": bytes.len(),
+            "contentBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        }))
     }
 
     /// Saves content from the page (e.g. a picture in a mail) through the save

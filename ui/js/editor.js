@@ -151,7 +151,48 @@ function bindImageResize(frame, doc, changed) {
   document.addEventListener('mousedown', (e) => { if (img && !box.contains(e.target)) hide(); });
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles } = {}) {
+/** Local paths when `text` consists only of file:// addresses (one per line
+ *  or separated by blanks), else []. */
+export function fileUriPaths(text) {
+  const parts = String(text || '').split(/[\r\n]+|\s+(?=file:)/).map((x) => x.trim()).filter((x) => x && !x.startsWith('#'));
+  if (!parts.length || !parts.every((x) => /^file:\/\/[^\s]+$/i.test(x))) return [];
+  return parts.map((u) => {
+    let p = u.replace(/^file:\/\/(localhost)?/i, '');
+    try { p = decodeURIComponent(p); } catch { /* keep as is */ }
+    // Windows: file:///C:/… → C:/…
+    if (/^\/[A-Za-z]:[\\/]/.test(p)) p = p.slice(1);
+    return p;
+  });
+}
+
+/** Removes text that a paste inserted when it is nothing but file addresses;
+ *  returns their paths. */
+function takePastedFileUris(records) {
+  const out = [];
+  for (const r of records) {
+    if (r.type === 'characterData') {
+      const now = r.target.data, old = r.oldValue || '';
+      if (now.length <= old.length) continue;
+      let a = 0;
+      while (a < old.length && old[a] === now[a]) a++;
+      let b = 0;
+      while (b < old.length - a && old[old.length - 1 - b] === now[now.length - 1 - b]) b++;
+      const inserted = now.slice(a, now.length - b);
+      const paths = inserted.length > 7 ? fileUriPaths(inserted) : [];
+      if (paths.length) { r.target.data = old; out.push(...paths); }
+    } else if (r.type === 'childList') {
+      for (const n of r.addedNodes) {
+        if (!n.isConnected) continue;
+        const text = n.nodeType === 3 ? n.data : n.nodeType === 1 && !n.querySelector('img,table') ? n.textContent : '';
+        const paths = text && text.length > 7 ? fileUriPaths(text) : [];
+        if (paths.length) { n.remove(); out.push(...paths); }
+      }
+    }
+  }
+  return out;
+}
+
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles, onPasteFiles, onPastePaths } = {}) {
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
   let pending = html;
@@ -165,17 +206,30 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       // (WebKitGTK on Linux) dispatches no events at all from a frame sandboxed
       // without allow-scripts, so typing and pasting would go unnoticed.
       const d = doc;
-      new MutationObserver(() => {
+      new MutationObserver((records) => {
         if (d !== doc) return;
+        // WebKitGTK fires no paste event here: pasted file addresses are
+        // recognised in the inserted text, removed and attached as files.
+        if (onPastePaths) {
+          const paths = takePastedFileUris(records);
+          if (paths.length) onPastePaths(paths);
+        }
         onInput && onInput();
         // A native paste (e.g. an image in WebKit) may bring blob: images.
         if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
-      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true });
       if (onDropFiles) {
         // Files dropped onto the text become attachments (the drop lands in this frame, not the window).
         const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
-        doc.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+        const isMailAtt = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('application/x-lt-attachment');
+        doc.addEventListener('dragover', (e) => { if (hasFiles(e) || isMailAtt(e)) e.preventDefault(); });
         doc.addEventListener('drop', (e) => {
+          // An attachment of a mail: handled by the window (compose.js).
+          if (isMailAtt(e)) {
+            e.preventDefault();
+            window.document.dispatchEvent(new DragEvent('drop', { dataTransfer: e.dataTransfer, bubbles: true }));
+            return;
+          }
           if (!hasFiles(e) || !e.dataTransfer.files.length) return;
           e.preventDefault();
           window.document.body.classList.remove('dropping');
@@ -187,6 +241,12 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
         const cd = e.clipboardData;
+        // Copied files (not pictures) become attachments.
+        const other = cd ? [...cd.files].filter((f) => !/^image\//.test(f.type)) : [];
+        if (other.length && onPasteFiles) { e.preventDefault(); onPasteFiles(other); return; }
+        // Only file:// addresses (files copied in the file manager): attach them.
+        const uris = cd && !cd.files.length ? fileUriPaths(cd.getData('text/uri-list') || cd.getData('text/plain')) : [];
+        if (uris.length && onPastePaths) { e.preventDefault(); onPastePaths(uris); return; }
         const raw = cd && cd.getData('text/html');
         const files = cd ? [...cd.files].filter((f) => /^image\//.test(f.type)) : [];
         if (!raw && !files.length) return;

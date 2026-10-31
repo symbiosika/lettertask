@@ -3,7 +3,7 @@ import { h, esc, fmtDateTime, fmtDateLong, fmtDate, fmtTime, fmtAddress, display
 import { icon } from './icons.js';
 import { pillHtml, visibleCats, hiddenCats, isHiddenCategory } from './categories.js';
 import { recurrenceOf, recurrenceBadgeHtml, recurrenceMenuItems, recurrenceCategory, isRecurrenceCategory } from './recurrence.js';
-import { call, openUrl, openWindow, suppressNativeMenu } from './api.js';
+import { call, openUrl, openWindow, suppressNativeMenu, isTauri, isMobile, invokeNative } from './api.js';
 import { bindContactCards, addrAttrs } from './contactcard.js';
 import { showMenu, showMenuAt, reportError, toast, busyClick } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
@@ -284,6 +284,33 @@ function renderInviteRest(host, ev, row) {
   }
 }
 
+/** Attachments can be dragged out of the mail: in the app as real files
+ *  (desktop, file manager, another app, a new mail), in the browser into a
+ *  new mail of lettertask. */
+function bindAttachmentDrag(el, msg, a) {
+  if (isMobile) return;
+  el.draggable = true;
+  el.dataset.testid = 'rp-attachment';
+  const ref = { mailboxId: msg.mailboxId, messageId: msg.id, attachmentId: a.id };
+  let temp = null; // Promise<path> of the copy in the temp folder
+  const fetchTemp = () => (temp ||= call('download_attachment', { ...ref, action: 'temp' }, { silent: true }).catch((e) => { temp = null; throw e; }));
+  // The file is fetched on press, so it is there when the drag starts.
+  if (isTauri) el.addEventListener('mousedown', (e) => { if (e.button === 0) fetchTemp().catch(() => {}); });
+  el.addEventListener('dragstart', (e) => {
+    if (isTauri) {
+      // A native drag carries real files; the HTML one is cancelled.
+      e.preventDefault();
+      fetchTemp()
+        .then((path) => path && invokeNative('drag_out', { paths: [path] }))
+        .catch(reportError);
+      return;
+    }
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('application/x-lt-attachment', JSON.stringify({ ...ref, name: a.name, contentType: a.contentType, size: a.size }));
+    e.dataTransfer.setData('text/plain', a.name);
+  });
+}
+
 const FLAG_TEXT = { flagged: 'Zur Nachverfolgung gekennzeichnet', complete: 'Als erledigt markiert' };
 
 /**
@@ -528,6 +555,7 @@ export function renderMessage(container, msg, opts) {
         .then((p) => { if (p && action === 'save') toast('Gespeichert: ' + p); })
         .catch(reportError);
       el.addEventListener('click', () => dl('open'));
+      bindAttachmentDrag(el, msg, a);
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         showMenu([

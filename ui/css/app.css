@@ -395,6 +395,7 @@ kbd { font-family: inherit; }
 .rp-attachments { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 20px 0; }
 .attachment { display: inline-flex; align-items: center; gap: 8px; max-width: 280px; padding: 6px 10px 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); text-align: left; cursor: pointer; }
 .attachment:hover { border-color: var(--accent-weak-2); background: var(--accent-weak); }
+.attachment[draggable=true]:active { cursor: grabbing; }
 .att-ic { display: flex; width: 30px; height: 30px; border-radius: 6px; background: var(--canvas); align-items: center; justify-content: center; color: var(--accent); flex: none; }
 .att-text { display: flex; flex-direction: column; min-width: 0; }
 .attachment .att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
