@@ -705,8 +705,12 @@ impl Service {
         response: &str,
         comment: &str,
         send_response: bool,
+        proposed: Option<(String, String)>,
     ) -> Result<()> {
         if self.is_google_account(account_id) {
+            if proposed.is_some() {
+                return Err(Error::invalid("Google Kalender unterstützt keine Zeitvorschläge."));
+            }
             return self.google_respond_event(account_id, event_id, response, comment, send_response).await;
         }
         if crate::imap::is_imap_id(account_id) {
@@ -716,11 +720,29 @@ impl Service {
             return Err(Error::invalid("Ungültige Antwort"));
         }
         let c = self.client(account_id)?;
-        c.post(
-            &format!("/me/events/{}/{response}", seg(event_id)),
-            &json!({"comment": comment, "sendResponse": send_response}),
-        )
-        .await?;
+        let mut body = json!({"comment": comment, "sendResponse": send_response});
+        if let Some((start, end)) = proposed {
+            if response == "accept" {
+                return Err(Error::invalid("Eine andere Zeit lässt sich nur mit Vorbehalt oder Ablehnen vorschlagen."));
+            }
+            if !send_response {
+                return Err(Error::invalid("Ein Zeitvorschlag muss an den Organisator gesendet werden."));
+            }
+            let utc = |t: &str| -> Result<String> {
+                chrono::DateTime::parse_from_rfc3339(t)
+                    .map(|d| d.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%S").to_string())
+                    .map_err(|_| Error::invalid("Ungültige Zeit im Vorschlag"))
+            };
+            let (s, e) = (utc(&start)?, utc(&end)?);
+            if e <= s {
+                return Err(Error::invalid("Das Ende liegt vor dem Beginn."));
+            }
+            body["proposedNewTime"] = json!({
+                "start": {"dateTime": s, "timeZone": "UTC"},
+                "end": {"dateTime": e, "timeZone": "UTC"},
+            });
+        }
+        c.post(&format!("/me/events/{}/{response}", seg(event_id)), &body).await?;
         self.emit("calendar-changed", json!({"accountId": account_id}));
         // The server usually removes the invitation from the inbox.
         if let Some(inbox) = self.store.folder_by_well_known(account_id, "inbox")? {

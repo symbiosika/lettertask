@@ -569,7 +569,7 @@ mod tests {
             "attendees": [{"email": "boss@x.de", "organizer": true, "responseStatus": "accepted"},
                           {"email": "me@gmail.com", "self": true, "responseStatus": "needsAction"}]
         }));
-        svc.respond_event(&acc, "me@gmail.com|inv", "accept", "", false).await.unwrap();
+        svc.respond_event(&acc, "me@gmail.com|inv", "accept", "", false, None).await.unwrap();
         let inv = svc.get_event(&acc, "me@gmail.com|inv").await.unwrap().event;
         assert_eq!(inv.response_status, "accepted");
         assert!(!inv.is_organizer);

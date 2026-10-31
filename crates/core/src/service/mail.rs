@@ -688,16 +688,25 @@ impl Service {
         let is_meeting = odata_type.ends_with("eventMessageRequest")
             || (odata_type.contains("eventMessage") && v["meetingMessageType"].as_str() == Some("meetingRequest"));
         let mut event_id = None;
-        if is_meeting {
+        let mut invite = None;
+        if odata_type.contains("eventMessage") {
+            // No $select: the derived properties (startDateTime, location,
+            // previousStartDateTime …) only come back on the full entity.
             if let Ok(ev) = c
-                .get(&format!(
-                    "{prefix}/messages/{}?$select=id&$expand={}",
-                    seg(message_id),
-                    enc("microsoft.graph.eventMessage/event($select=id)")
-                ))
+                .get_h(
+                    &format!(
+                        "{prefix}/messages/{}?$expand={}",
+                        seg(message_id),
+                        enc("microsoft.graph.eventMessage/event($select=id)")
+                    ),
+                    &[("Prefer", "outlook.timezone=\"UTC\"".to_string())],
+                )
                 .await
             {
-                event_id = ev["event"]["id"].as_str().map(str::to_string);
+                if is_meeting {
+                    event_id = ev["event"]["id"].as_str().map(str::to_string);
+                }
+                invite = convert::invite_info(&ev);
             }
         }
 
@@ -757,6 +766,7 @@ impl Service {
             web_link: v["webLink"].as_str().map(str::to_string),
             is_meeting_request: is_meeting,
             event_id,
+            invite,
             signed: false,
         };
         Ok(self.unwrap_smime(c, &prefix, message_id, d).await)
@@ -936,7 +946,9 @@ impl Service {
         let (mb, c) = self.mailbox(mailbox_id)?;
         let prefix = mb.graph_prefix();
         let action = if copy { "copy" } else { "move" };
-        let results: Vec<(String, Value)> = stream::iter(ids.to_vec())
+        // Every finished move is recorded, even when another one fails: a
+        // moved mail that stays in the local source list looks duplicated.
+        let outcomes: Vec<Result<(String, Value)>> = stream::iter(ids.to_vec())
             .map(|id| {
                 let c = c.clone();
                 let p = format!("{prefix}/messages/{}/{action}", seg(&id));
@@ -952,8 +964,18 @@ impl Service {
                 }
             })
             .buffer_unordered(PARALLEL)
-            .try_collect()
-            .await?;
+            .collect()
+            .await;
+        let mut results = Vec::new();
+        let mut first_err = None;
+        for o in outcomes {
+            match o {
+                Ok(x) => results.push(x),
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
         let mut folders = HashSet::from([dest.to_string()]);
         let mut mapping = Vec::new();
         for (old_id, v) in results {
@@ -981,7 +1003,10 @@ impl Service {
             }
         }
         self.emit_folders(mailbox_id, folders);
-        Ok(mapping)
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(mapping),
+        }
     }
 
     pub(crate) async fn delete_messages(&self, mailbox_id: &str, ids: &[String], permanent: bool) -> Result<()> {

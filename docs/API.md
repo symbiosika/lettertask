@@ -61,6 +61,8 @@ MessageDetail = MessageSummary & {
   attachments: Attachment[],   // non-inline only
   internetMessageId: string|null, webLink: string|null,
   isMeetingRequest: bool, eventId: string|null   // set for meeting invitations
+  invite?: { messageType, start, end, isAllDay, location, previousStart, previousEnd, previousLocation,
+             isOutOfDate, organizer?, uid? }   // times of a meeting mail (Graph eventMessage or text/calendar)
 }
 Category     { id: string, displayName: string, color: string /* "preset0".."preset24" or "none" */ }
 Calendar     { id, accountId, name: string, color: string|null /* hex like "#4a90d9" */, canEdit: bool, isDefault: bool,
@@ -276,7 +278,7 @@ and a foreground service keeps push alive (an alarm renews IDLE every 24 minutes
 | `create_event` | `{ accountId, calendarId, input: EventInput }` | `Event` |
 | `update_event` | `{ accountId, eventId, input: EventInput }` | `Event` |
 | `delete_event` | `{ accountId, eventId }` | `null` (organizer with attendees: sends cancellation) |
-| `respond_event` | `{ accountId, eventId, response: "accept"\|"tentativelyAccept"\|"decline", comment: string, sendResponse: bool }` | `null` |
+| `respond_event` | `{ accountId, eventId, response: "accept"\|"tentativelyAccept"\|"decline", comment: string, sendResponse: bool, proposedNewTime?: { start, end } (RFC3339; not with accept, Microsoft 365 only) }` | `null` |
 
 ### Mailbox settings
 | `get_auto_reply` | `{ accountId }` | `AutoReply` |

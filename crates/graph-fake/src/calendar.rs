@@ -769,7 +769,10 @@ fn event_action(mb: &mut Mailbox, id: &str, action: &str, req: &Req) -> GResult 
         "dismissReminder" | "snoozeReminder" => return crate::util::accepted(),
         _ => return Err(GErr::new(StatusCode::BAD_REQUEST, "BadRequest", format!("Unsupported action '{action}'"))),
     };
-    let _ = req.json()?;
+    let body = req.json()?;
+    if !body["proposedNewTime"].is_null() && response == "accepted" {
+        return Err(GErr::new(StatusCode::BAD_REQUEST, "ErrorInvalidRequest", "proposedNewTime is not allowed with accept."));
+    }
     let (master, key) = match split_occ(id) {
         Some((m, k)) => (m, Some(k)),
         None => (id, None),

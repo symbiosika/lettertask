@@ -293,18 +293,21 @@ function folderNode(f, depth, opts = {}) {
   node.addEventListener('dragover', (e) => {
     if (!e.dataTransfer.types.includes('application/x-oc-messages')) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
+    const copy = isCopyDrag(e);
+    e.dataTransfer.dropEffect = copy ? 'copy' : 'move';
     node.classList.add('drop-target');
+    node.classList.toggle('drop-copy', copy);
   });
-  node.addEventListener('dragleave', () => node.classList.remove('drop-target'));
+  node.addEventListener('dragleave', () => node.classList.remove('drop-target', 'drop-copy'));
   node.addEventListener('drop', (e) => {
-    node.classList.remove('drop-target');
+    node.classList.remove('drop-target', 'drop-copy');
     const raw = e.dataTransfer.getData('application/x-oc-messages');
     if (!raw) return;
     e.preventDefault();
     const data = JSON.parse(raw);
     if (data.folderId === f.id && data.mailboxId === f.mailboxId) return;
-    moveOrCopy(data.ids, f.id, e.ctrlKey ? 'copy' : 'move', f.mailboxId).catch(reportError);
+    // Moving is the default; only a held Ctrl key (Option on macOS) copies.
+    moveOrCopy(data.ids, f.id, isCopyDrag(e) ? 'copy' : 'move', f.mailboxId).catch(reportError);
   });
   const frag = [node];
   if (open) {
@@ -1293,6 +1296,12 @@ async function deleteIds(ids, permanent) {
   await whileInFlight(ids, { gone: true }, call('delete_messages', { mailboxId, ids, permanent }));
   await refreshFolders(mailboxId);
   checkInboxZero();
+}
+
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
+/** Ctrl held at this moment of the drag (also Option on macOS, like Finder) → copy. */
+function isCopyDrag(e) {
+  return !!e.ctrlKey || (IS_MAC && !!e.altKey);
 }
 
 export async function moveOrCopy(ids, destFolderId, kind = 'move', destMailboxId = null) {

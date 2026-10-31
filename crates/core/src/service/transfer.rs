@@ -31,15 +31,26 @@ impl Service {
             .find(|f| f.id == dest_folder_id)
             .ok_or_else(|| Error::NotFound("Zielordner".into()))?;
         let mut done = Vec::new();
+        let mut failed = None;
         for id in ids {
-            let seen = self.store.get_summary(mailbox_id, id)?.is_none_or(|m| m.is_read);
-            let raw = self.raw_message(mailbox_id, id).await?;
-            if crate::imap::is_imap_id(dest_mailbox_id) {
-                self.imap_import(dest_mailbox_id, &dest_folder.id, &raw, seen).await?;
-            } else {
-                self.graph_import(dest_mailbox_id, &dest_folder.id, &raw, seen).await?;
+            let step = async {
+                let seen = self.store.get_summary(mailbox_id, id)?.is_none_or(|m| m.is_read);
+                let raw = self.raw_message(mailbox_id, id).await?;
+                if crate::imap::is_imap_id(dest_mailbox_id) {
+                    self.imap_import(dest_mailbox_id, &dest_folder.id, &raw, seen).await
+                } else {
+                    self.graph_import(dest_mailbox_id, &dest_folder.id, &raw, seen).await
+                }
+            };
+            match step.await {
+                Ok(()) => done.push(id.clone()),
+                Err(e) => {
+                    // Stop here, but the mails already copied must still leave
+                    // the source – otherwise a move leaves duplicates behind.
+                    failed = Some(e);
+                    break;
+                }
             }
-            done.push(id.clone());
         }
         // Only what arrived in the target leaves the source (into its trash).
         if !copy && !done.is_empty() {
@@ -52,6 +63,9 @@ impl Service {
         }
         self.emit_mail_changed(dest_mailbox_id, Some(&dest_folder.id));
         self.emit_mail_changed(mailbox_id, None);
+        if let Some(e) = failed {
+            return Err(e);
+        }
         Ok(done.len())
     }
 
@@ -101,7 +115,11 @@ impl Service {
             .await?;
         let new_id = created["id"].as_str().unwrap_or_default().to_string();
         for (_, name, content_type, bytes, cid) in mime::all_attachments(raw) {
-            Self::upload_attachment(&c, &prefix, &new_id, &name, &content_type, &bytes, cid.as_deref()).await?;
+            if let Err(e) = Self::upload_attachment(&c, &prefix, &new_id, &name, &content_type, &bytes, cid.as_deref()).await {
+                // No half copy in the target: the source keeps the mail.
+                let _ = c.delete(&format!("{prefix}/messages/{}", seg(&new_id))).await;
+                return Err(e);
+            }
         }
         Ok(())
     }

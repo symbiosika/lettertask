@@ -510,3 +510,30 @@ fn due_and_category_keywords_are_robust() {
         assert_eq!(keyword_category(&k).as_deref(), Some(name));
     }
 }
+
+#[test]
+fn invitation_shows_time_and_place_from_text_calendar() {
+    let raw = "From: Yvonne <yvonne@example.com>\r\nTo: max@example.org\r\nSubject: Symbiosika x WISAG\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHallo zusammen\r\n--b\r\nContent-Type: text/calendar; charset=utf-8; method=REQUEST\r\n\r\nBEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:abc-123\r\nORGANIZER;CN=Yvonne Karolus:mailto:yvonne@example.com\r\nDTSTART;TZID=W. Europe Standard Time:20261102T100000\r\nDTEND;TZID=W. Europe Standard Time:20261102T110000\r\nLOCATION:https://wisag.zoom.us/j/7537235111?pwd=abc\\,\r\n  def\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n--b--\r\n";
+    let d = detail(raw);
+    let inv = d.invite.expect("invite");
+    assert_eq!(inv.message_type, "meetingRequest");
+    assert_eq!(inv.start.as_deref(), Some("2026-11-02T09:00:00Z"));
+    assert_eq!(inv.end.as_deref(), Some("2026-11-02T10:00:00Z"));
+    assert_eq!(inv.location, "https://wisag.zoom.us/j/7537235111?pwd=abc, def");
+    assert_eq!(inv.uid, "abc-123");
+    assert_eq!(inv.organizer.expect("organizer").name, "Yvonne Karolus");
+}
+
+#[test]
+fn cancelled_all_day_invitation() {
+    let raw = "From: a@example.com\r\nSubject: Abgesagt\r\nContent-Type: text/calendar; method=CANCEL\r\n\r\nBEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261105\r\nDTEND;VALUE=DATE:20261106\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let inv = detail(raw).invite.expect("invite");
+    assert_eq!(inv.message_type, "meetingCancelled");
+    assert!(inv.is_all_day);
+    assert_eq!(inv.start.as_deref(), Some("2026-11-05T00:00:00Z"));
+}
+
+#[test]
+fn plain_mail_has_no_invite() {
+    assert!(detail("From: a@example.com\r\nSubject: x\r\n\r\nHallo").invite.is_none());
+}

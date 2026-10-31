@@ -236,18 +236,46 @@ function inviteWhen(ev) {
   return `${range} (${dur})`;
 }
 
-/** Date, series, place and organizer of a meeting request. */
-function renderInvite(host, ev) {
+/** "Montag, 2. November 2026 · 10:00 – 11:00" for the times of a meeting message. */
+function inviteRange(start, end, allDay) {
+  return inviteWhen({ start, end: end || start, isAllDay: allDay });
+}
+
+/** Date, series, place and organizer of a meeting request.
+ *  inv: the times the mail itself carries (always there, also for moved or
+ *  cancelled meetings); ev: the calendar event (may be unreadable). */
+function renderInvite(host, ev, inv) {
+  ev = ev || {};
   const row = (ic, html, testid) => h('div.inv-row', { dataset: testid ? { testid } : {}, html: icon(ic, 15) + `<span>${html}</span>` });
   host.innerHTML = '';
-  host.appendChild(row('clock', esc(inviteWhen(ev)), 'invite-when'));
+  const start = (inv && inv.start) || ev.start;
+  const end = (inv && inv.end) || ev.end;
+  const allDay = inv && inv.start ? inv.isAllDay : ev.isAllDay;
+  if (start) {
+    let html = `<b>${esc(inviteRange(start, end, allDay))}</b>`;
+    if (inv && inv.previousStart) {
+      html += ` <s class="dim" data-testid="invite-previous">${esc(inviteRange(inv.previousStart, inv.previousEnd || inv.previousStart, allDay))}</s>`;
+    }
+    host.appendChild(row('clock', html, 'invite-when'));
+  }
+  ev = { ...ev, location: (inv && inv.location) || ev.location };
+  if (inv && inv.previousLocation && inv.previousLocation !== ev.location) {
+    host.appendChild(row('location', `${esc(ev.location || '(kein Ort)')} <s class="dim">${esc(inv.previousLocation)}</s>`, 'invite-location'));
+    ev.location = '';
+    ev._locDone = true;
+  }
+  renderInviteRest(host, ev, row);
+}
+
+function renderInviteRest(host, ev, row) {
   if (ev.recurrence) {
     const from = ev.recurrence.startDate ? ` <span class="dim">· ab ${esc(fmtDate(new Date(ev.recurrence.startDate + 'T00:00:00')))}</span>` : '';
     host.appendChild(row('recurrence', `<b>Serie:</b> ${esc(recurrenceText(ev.recurrence) || 'Serientermin')}${from}`, 'invite-series'));
   } else if (ev.type === 'occurrence' || ev.type === 'exception') {
     host.appendChild(row('recurrence', 'Einzeltermin einer Serie', 'invite-series'));
   }
-  if (ev.location && !/^Microsoft Teams/i.test(ev.location)) host.appendChild(row('location', esc(ev.location)));
+  if (ev.location && !/^Microsoft Teams/i.test(ev.location)) host.appendChild(row('location', esc(ev.location), 'invite-location'));
+  else if (ev._locDone) { /* shown above with the old place */ }
   else if (ev.isOnlineMeeting || /^Microsoft Teams/i.test(ev.location || '')) host.appendChild(row('teams', 'Microsoft Teams-Besprechung'));
   const people = (ev.attendees || []).filter((a) => a.type !== 'resource');
   if (ev.organizer) {
@@ -379,29 +407,76 @@ export function renderMessage(container, msg, opts) {
   }
   if (msg.signed) bars.appendChild(h('div.infobar.signed', { dataset: { testid: 'rp-signed' }, title: 'Die Signatur selbst wird von lettertask nicht geprüft.', html: icon('lock', 16) + ` Diese Nachricht wurde${from.address ? ' von ' + esc(from.address) : ''} digital signiert.` }));
   if (msg.importance === 'high') bars.appendChild(h('div.infobar.important', { html: icon('important', 16) + ' Diese Nachricht wurde mit hoher Wichtigkeit gesendet.' }));
-  if (msg.isMeetingRequest && msg.eventId) {
-    const bar = h('div.infobar.meeting', h('span.ib-text', { html: icon('calendar', 16) + ' Besprechungsanfrage' }), h('span.spacer'));
+  const inv = msg.invite || null;
+  const cancelled = inv && inv.messageType === 'meetingCancelled';
+  const response = inv && /^meeting(Accepted|TenativelyAccepted|TentativelyAccepted|Declined|Response)/.test(inv.messageType);
+  if (msg.isMeetingRequest || inv) {
+    const title = cancelled ? 'Termin abgesagt' : response ? 'Antwort auf eine Besprechung'
+      : inv && inv.previousStart ? 'Besprechungsanfrage – Termin verschoben' : 'Besprechungsanfrage';
+    const bar = h('div.infobar.meeting', { dataset: { testid: 'meeting-bar' } }, h('span.ib-text', { html: icon('calendar', 16) + ' ' + esc(title) }), h('span.spacer'));
     const DONE = { accept: 'Zugesagt', tentativelyAccept: 'Mit Vorbehalt zugesagt', decline: 'Abgelehnt' };
+    // Outlook-like answer panel: note to the organizer, notify on/off, other time.
+    const canAnswer = msg.isMeetingRequest && msg.eventId;
+    const note = h('textarea.rsp-note', { rows: 2, placeholder: 'Optionale Nachricht an Organisator', dataset: { testid: 'meeting-note' } });
+    const notify = h('input', { type: 'checkbox', checked: true, dataset: { testid: 'meeting-notify' } });
+    const toLocalInput = (iso) => { const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+    const propStart = h('input', { type: 'datetime-local', dataset: { testid: 'propose-start' } });
+    const propEnd = h('input', { type: 'datetime-local', dataset: { testid: 'propose-end' } });
+    const propose = h('div.rsp-propose', { hidden: true },
+      h('label', 'Beginn ', propStart), h('label', 'Ende ', propEnd));
+    let panel = null;
+    const answer = async (response, proposal) => {
+      // Answered once is answered: the buttons do not come back.
+      if (bar.dataset.answered) return;
+      const args = { accountId, eventId: msg.eventId, response, comment: note.value.trim(), sendResponse: notify.checked };
+      if (proposal) args.proposedNewTime = proposal;
+      await call('respond_event', args);
+      bar.dataset.answered = response;
+      for (const b of bar.querySelectorAll('.btn')) b.remove();
+      if (panel) panel.remove();
+      bar.appendChild(h('span.ib-done', { dataset: { testid: 'meeting-answered' } }, DONE[response] + (proposal ? ' · andere Zeit vorgeschlagen' : '')));
+      if (opts.onResponded) await opts.onResponded(response);
+      else { toast('Antwort gesendet.'); opts.onChanged && opts.onChanged(); }
+    };
     const mk = (label, ic, response) => h('button.btn.small', {
-      onclick: busyClick(async () => {
-        // Answered once is answered: the buttons do not come back.
-        if (bar.dataset.answered) return;
-        await call('respond_event', { accountId, eventId: msg.eventId, response, comment: '', sendResponse: true });
-        bar.dataset.answered = response;
-        for (const b of bar.querySelectorAll('.btn')) b.remove();
-        bar.appendChild(h('span.ib-done', { dataset: { testid: 'meeting-answered' } }, DONE[response]));
-        if (opts.onResponded) await opts.onResponded(response);
-        else { toast('Antwort gesendet.'); opts.onChanged && opts.onChanged(); }
-      }, bar), html: icon(ic, 15) + ' ' + esc(label),
+      onclick: busyClick(() => answer(response), bar), html: icon(ic, 15) + ' ' + esc(label),
     });
-    bar.append(mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline'));
+    if (canAnswer) {
+      bar.append(mk('Annehmen', 'accept', 'accept'), mk('Mit Vorbehalt', 'tentative', 'tentativelyAccept'), mk('Ablehnen', 'decline', 'decline'));
+      const sendProposal = h('button.btn.small.primary', { type: 'button', hidden: true, dataset: { testid: 'propose-send' } }, 'Vorschlag senden (mit Vorbehalt)');
+      sendProposal.addEventListener('click', busyClick(async () => {
+        const s = new Date(propStart.value), e = new Date(propEnd.value);
+        if (isNaN(s) || isNaN(e) || e <= s) { toast('Bitte Beginn und Ende des Vorschlags prüfen.'); return; }
+        notify.checked = true;
+        await answer('tentativelyAccept', { start: s.toISOString(), end: e.toISOString() });
+      }, sendProposal));
+      const proposeBtn = h('button.btn.small', { type: 'button', dataset: { testid: 'propose-toggle' }, html: icon('clock', 15) + ' Andere Zeit vorschlagen' });
+      proposeBtn.addEventListener('click', () => {
+        const open = propose.hidden;
+        propose.hidden = !open; sendProposal.hidden = !open;
+        if (open && !propStart.value) {
+          const st = inv && inv.start, en = inv && inv.end;
+          if (st) { propStart.value = toLocalInput(st); propEnd.value = toLocalInput(en || st); }
+        }
+      });
+      panel = h('div.rp-respond', { dataset: { testid: 'meeting-respond' } },
+        h('div.rsp-head', h('b', 'Auf dieses Ereignis antworten'), h('span.spacer'),
+          h('label.rsp-notify', { title: 'Antwort per Mail an den Organisator senden' }, notify, ' Organisator benachrichtigen')),
+        note,
+        h('div.rsp-foot', propose, h('span.spacer'), sendProposal, proposeBtn));
+    }
     bars.appendChild(bar);
     // When, how long, how often: the mail body (e.g. a bare Teams link) rarely says.
+    // The mail's own times show at once; the event adds series, organizer, attendees.
     const details = h('div.rp-invite', { dataset: { testid: 'invite-details' } });
     bars.appendChild(details);
-    call('get_event', { accountId, eventId: msg.eventId }, { silent: true })
-      .then((ev) => { if (ev) renderInvite(details, ev); else details.remove(); })
-      .catch(() => details.remove());
+    if (panel) bars.appendChild(panel);
+    if (inv) renderInvite(details, null, inv);
+    if (msg.eventId) {
+      call('get_event', { accountId, eventId: msg.eventId }, { silent: true })
+        .then((ev) => { if (ev) renderInvite(details, ev, inv); })
+        .catch(() => {});
+    }
   }
   if (opts.delegation && opts.onDelegationDone) {
     const d = opts.delegation;

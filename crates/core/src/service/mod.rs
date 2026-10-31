@@ -774,6 +774,9 @@ impl Service {
                     &arg::<String>(a, "response")?,
                     &arg::<Option<String>>(a, "comment")?.unwrap_or_default(),
                     arg::<Option<bool>>(a, "sendResponse")?.unwrap_or(true),
+                    arg::<Option<Value>>(a, "proposedNewTime")?.and_then(|p| {
+                        Some((p["start"].as_str()?.to_string(), p["end"].as_str()?.to_string()))
+                    }),
                 )
                 .await?;
                 ok(Value::Null)
