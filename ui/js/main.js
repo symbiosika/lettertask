@@ -483,6 +483,7 @@ async function selectInitialFolder() {
   const last = load('lastFolder', null);
   if (last && last.folderId === mail.TODAY && mailboxes().length) return mail.selectFolder(mailboxes()[0].id, mail.TODAY);
   if (last && last.folderId === mail.DELEGATED && mailboxes().length) return mail.selectFolder(mailboxes()[0].id, mail.DELEGATED);
+  if (last && last.folderId === mail.ALLINBOX && mailboxes().length > 1) return mail.selectFolder(mailboxes()[0].id, mail.ALLINBOX);
   if (last && folderById(last.mailboxId, last.folderId)) return mail.selectFolder(last.mailboxId, last.folderId);
   const mb = mailboxes()[0];
   if (!mb) { mail.renderFolderTree(); await mail.reloadList(); return; }

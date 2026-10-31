@@ -258,6 +258,9 @@ kbd { font-family: inherit; }
 .msglist > .msg { content-visibility: auto; contain-intrinsic-size: auto 86px; }
 .msglist.compact > .msg { contain-intrinsic-size: auto 56px; }
 .msg:hover { background: var(--hover); }
+/* Shared inbox: source mailbox as a bar on the far left. */
+.msg .m-src { position: absolute; left: 0; top: 4px; bottom: 4px; width: 4px; border-radius: 3px; }
+.tree-root.account .mb-bar { width: 4px; height: 18px; border-radius: 2px; flex: none; margin-right: 2px; }
 .msg.selected { background: var(--sel); }
 .msglist:focus-within .msg.selected { background: var(--sel-strong); }
 .msg .m-dot { position: absolute; left: 4px; top: 22px; width: 7px; height: 7px; border-radius: 50%; cursor: pointer; }
