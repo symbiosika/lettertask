@@ -84,8 +84,9 @@ test('Geteilter Posteingang: Aktionen gehen an das jeweilige Postfach', async ({
   await expect(page.locator('.rp-subject')).toHaveText('Zweites Postfach: ganz neu');
   // Mixed selection: one mail of each mailbox.
   await row(page, 'Rechnung 2026-1043').locator('.m-subj').click({ modifiers: ['Control'] });
+  // Recorded, not executed: the demo data stays as it is for the other tests.
   const sent = [];
-  page.on('request', (r) => { if (r.url().endsWith('/archive_messages')) sent.push(r.postDataJSON()); });
+  await page.route('**/api/call/archive_messages', async (route) => { sent.push(route.request().postDataJSON()); await route.fulfill({ json: null }); });
   await page.keyboard.press('e');
   await expect(row(page, 'Zweites Postfach: ganz neu')).toHaveCount(0);
   await expect(row(page, 'Rechnung 2026-1043')).toHaveCount(0);
