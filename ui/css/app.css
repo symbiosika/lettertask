@@ -766,6 +766,11 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 
 .login-link { margin-top: 8px; font-size: 12px; }
 /* Resize frame over a picture in the editor */
+.img-layer { position: fixed; z-index: 40; overflow: hidden; pointer-events: none; }
+.img-spot { position: absolute; pointer-events: auto; cursor: pointer; touch-action: none; }
+.img-spot:hover { outline: 1px dashed var(--accent, #2f6fe4); outline-offset: -1px; cursor: grab; }
+.img-drag-ghost { position: fixed; z-index: 60; opacity: .6; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.img-drop-caret { position: fixed; z-index: 60; width: 2px; background: var(--accent, #2f6fe4); pointer-events: none; display: none; }
 .img-resize { position: fixed; z-index: 50; border: 1.5px solid var(--accent, #2f6fe4); pointer-events: none; box-sizing: border-box; }
 .img-resize-handle { position: absolute; right: -6px; bottom: -6px; width: 12px; height: 12px; background: #fff; border: 1.5px solid var(--accent, #2f6fe4); border-radius: 2px; cursor: nwse-resize; pointer-events: auto; }
 .img-resize-bar { position: absolute; left: 0; top: calc(100% + 6px); display: flex; gap: 4px; align-items: center; pointer-events: auto; background: var(--panel, #fff); border: 1px solid var(--border, #d0d7de); border-radius: 6px; padding: 3px 6px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
