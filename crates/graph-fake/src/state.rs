@@ -254,6 +254,8 @@ pub struct Mailbox {
     pub contact_tombstones: Vec<(u64, String)>,
     /// Delta tokens below this change number are expired (410 syncStateNotFound).
     pub delta_floor: u64,
+    /// Folder id → reported unreadItemCount, overriding the real one.
+    pub stale_unread: HashMap<String, usize>,
 }
 
 impl Mailbox {
@@ -308,6 +310,7 @@ impl Mailbox {
             contacts: Vec::new(),
             contact_tombstones: Vec::new(),
             delta_floor: 0,
+            stale_unread: HashMap::new(),
         }
     }
 
@@ -349,7 +352,11 @@ impl Mailbox {
     pub fn render_folder(&self, f: &Folder) -> Value {
         let child = self.folders.iter().filter(|c| c.parent_id == f.id).count();
         let total = self.messages.values().filter(|m| m.folder_id == f.id).count();
-        let unread = self.messages.values().filter(|m| m.folder_id == f.id && !m.is_read()).count();
+        let unread = self
+            .stale_unread
+            .get(&f.id)
+            .copied()
+            .unwrap_or_else(|| self.messages.values().filter(|m| m.folder_id == f.id && !m.is_read()).count());
         json!({
             "id": f.id,
             "displayName": f.display_name,
@@ -649,6 +656,19 @@ impl SharedState {
         let st = self.lock();
         let idx = st.mailbox_idx(mailbox)?;
         st.mailboxes[idx].folder_id(folder)
+    }
+
+    /// Makes the folder report a fixed `unreadItemCount` (like Exchange lagging
+    /// behind a read change); `None` goes back to the real count.
+    pub fn set_stale_unread_count(&self, mailbox: &str, folder: &str, count: Option<usize>) {
+        let mut st = self.lock();
+        let Some(idx) = st.mailbox_idx(mailbox) else { return };
+        let mb = &mut st.mailboxes[idx];
+        let Some(id) = mb.folder_id(folder) else { return };
+        match count {
+            Some(n) => mb.stale_unread.insert(id, n),
+            None => mb.stale_unread.remove(&id),
+        };
     }
 
     /// Folder id by display name (first match).

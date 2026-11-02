@@ -5,6 +5,8 @@ const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const SLOT = 24; // px per 30 minutes (calendar.js)
 
+/** Creates an event today. Called before openApp: the calendar-changed push
+ *  of a running app re-renders the grid and detaches the elements under test. */
 async function createToday(page, subject, from, to, extra = {}) {
   const accounts = await api(page, 'list_accounts');
   const accountId = accounts.find((a) => a.kind !== 'imap').id;
@@ -20,12 +22,20 @@ async function openDay(page) {
   await page.locator('[data-testid=nav-calendar]').click();
   await page.locator('[data-testid=tb-view-day]').click();
   await expect(page.locator('.tg-col')).toHaveCount(1);
+  await settled(page);
+}
+
+/** Waits for the second render (server events after the cached ones), which
+ *  would otherwise replace the elements under test. */
+async function settled(page) {
+  await expect(page.locator('#calview[data-busy]')).toHaveCount(0);
 }
 
 const block = (page, subject) => page.locator('.timegrid .ev', { hasText: subject });
 
 /** Drags with the real mouse from the center of `loc` (or a point in it) by dy pixels. */
 async function drag(page, loc, dy, { at = 'center', dx = 0 } = {}) {
+  await settled(page); // a previous move reloads the grid
   const b = await loc.boundingBox();
   const x = b.x + b.width / 2;
   const y = at === 'center' ? b.y + Math.min(b.height / 2, 10) : at === 'bottom' ? b.y + b.height - 2 : b.y + 2;
@@ -39,18 +49,19 @@ test('Bereich im Kalender ziehen legt einen längeren Termin an', async ({ page 
   await openApp(page);
   await openDay(page);
   const col = page.locator('.tg-col').first();
-  const slot10 = col.locator('.tg-slot[data-slot="20"]');
-  await slot10.scrollIntoViewIfNeeded();
-  const popup = await popupFrom(page, () => drag(page, slot10, 3 * SLOT + 4)); // 10:00 … 11:59 → 10:00–12:00
-  await expect(popup.locator('input[name=startTime]')).toHaveValue('10:00');
-  await expect(popup.locator('input[name=endTime]')).toHaveValue('12:00');
+  // 06:00 is free on every weekday of the demo data (10:00 is not: Monday's Jour fixe).
+  const slot6 = col.locator('.tg-slot[data-slot="12"]');
+  await slot6.scrollIntoViewIfNeeded();
+  const popup = await popupFrom(page, () => drag(page, slot6, 3 * SLOT + 4)); // 06:00 … 07:59 → 06:00–08:00
+  await expect(popup.locator('input[name=startTime]')).toHaveValue('06:00');
+  await expect(popup.locator('input[name=endTime]')).toHaveValue('08:00');
   await popup.close();
 });
 
 test('Termin per Drag & Drop verschieben und am Rand verlängern', async ({ page }) => {
   const subject = `Fokuszeit ${Date.now()}`;
-  await openApp(page);
   await createToday(page, subject, '09:00', '10:00');
+  await openApp(page);
   await openDay(page);
   const ev = block(page, subject);
   await ev.scrollIntoViewIfNeeded();
@@ -74,8 +85,8 @@ test('Termin per Drag & Drop verschieben und am Rand verlängern', async ({ page
 
 test('Besprechung verschieben fragt nach der Aktualisierung für die Teilnehmer', async ({ page }) => {
   const subject = `Abstimmung ${Date.now()}`;
-  await openApp(page);
   await createToday(page, subject, '13:00', '13:30', { attendees: [{ name: 'Erika', address: 'erika@contoso.example', type: 'required' }] });
+  await openApp(page);
   await openDay(page);
   const ev = block(page, subject);
   await ev.scrollIntoViewIfNeeded();
@@ -98,10 +109,11 @@ test('Besprechung verschieben fragt nach der Aktualisierung für die Teilnehmer'
 
 test('Termin in der Woche auf einen anderen Tag ziehen', async ({ page }) => {
   const subject = `Tageswechsel ${Date.now()}`;
-  await openApp(page);
   await createToday(page, subject, '08:00', '08:30');
+  await openApp(page);
   await page.locator('[data-testid=nav-calendar]').click();
   await page.locator('[data-testid=tb-view-week]').click();
+  await settled(page);
   const cols = page.locator('.tg-col');
   const idx = await cols.evaluateAll((all) => all.findIndex((c) => c.classList.contains('today')));
   const target = idx > 0 ? idx - 1 : idx + 1;
@@ -121,8 +133,8 @@ test('Termin in der Woche auf einen anderen Tag ziehen', async ({ page }) => {
 
 test('Einladungen anderer lassen sich nicht ziehen', async ({ page }) => {
   const subject = `Fremde Einladung ${Date.now()}`;
-  await openApp(page);
   await createToday(page, subject, '16:00', '17:00');
+  await openApp(page);
   // As if somebody else organised it.
   await page.route('**/api/call/list_events', async (route) => {
     const res = await route.fetch();
