@@ -103,11 +103,12 @@ function range() {
 
 export async function refresh() {
   const token = ++cal.loadToken;
+  els.view.dataset.busy = '1'; // until the server's events are shown (cache first, then server)
   // Pill over the grid while the events of the shown range load (only if it takes a moment).
   const slow = setTimeout(() => { if (token === cal.loadToken && cal.shownToken !== token) els.loading.classList.add('on'); }, 200);
   try { await loadRange(token); } finally {
     clearTimeout(slow);
-    if (token === cal.loadToken) els.loading.classList.remove('on');
+    if (token === cal.loadToken) { els.loading.classList.remove('on'); delete els.view.dataset.busy; }
   }
 }
 
