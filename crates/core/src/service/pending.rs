@@ -266,6 +266,17 @@ impl Service {
     /// removals are through.
     pub(crate) fn list_folders_for_ui(&self, mailbox_id: &str) -> Result<Vec<crate::model::Folder>> {
         let mut folders = self.store.list_folders(mailbox_id)?;
+        // When the cache holds the whole folder, its unread count is what the
+        // list shows: the server's count can lag behind a mail just read (and
+        // then sticks until the next change), so the cache wins.
+        let cached = self.store.folder_cache_counts(mailbox_id)?;
+        for f in folders.iter_mut() {
+            if let Some(&(total, unread, fully_loaded)) = cached.get(&f.id) {
+                if fully_loaded || total >= f.total_count {
+                    f.unread_count = unread;
+                }
+            }
+        }
         for id in self.pending.gone_ids(mailbox_id) {
             if let Some(m) = self.store.get_summary(mailbox_id, &id)?.filter(|m| self.pending.is_leaving(m)) {
                 if let Some(f) = folders.iter_mut().find(|f| f.id == m.folder_id) {

@@ -326,8 +326,12 @@ impl Service {
                 let _ = self.load_older(mailbox_id, folder_id).await;
             }
         }
-        if result.added + result.updated + result.removed > 0 {
-            self.refresh_folder_counts(&mb, &c, folder_id).await;
+        // Counts are fetched on every run: right after a change the server may
+        // still report the old unread count, a later run picks up the settled one.
+        let counts_before = self.store.get_folder(mailbox_id, folder_id)?.map(|f| (f.unread_count, f.total_count));
+        self.refresh_folder_counts(&mb, &c, folder_id).await;
+        let counts_after = self.store.get_folder(mailbox_id, folder_id)?.map(|f| (f.unread_count, f.total_count));
+        if result.added + result.updated + result.removed > 0 || counts_before != counts_after {
             self.emit_mail_changed(mailbox_id, Some(folder_id));
         }
         let is_inbox = self

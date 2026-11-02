@@ -1375,3 +1375,27 @@ async fn failed_actions_are_undone() {
     assert!(after.items.iter().any(|x| x.id == m.id));
     assert_eq!(after.total, page.total);
 }
+
+#[tokio::test]
+async fn stale_server_unread_count_does_not_stick() {
+    // Exchange may still report the old unreadItemCount right after mails were
+    // read; when every mail of the folder is cached, the cache decides.
+    let ctx = setup().await;
+    let inbox = ctx.folder("inbox").await;
+    let page = ctx.list(&inbox.id).await;
+    assert_eq!(page.total, inbox.total_count, "inbox fully cached");
+    let ids: Vec<String> = page.items.iter().filter(|m| !m.is_read).map(|m| m.id.clone()).collect();
+    assert!(!ids.is_empty());
+    let fake = ctx.fake.as_ref().unwrap();
+    fake.state.set_stale_unread_count("me", "inbox", Some(1));
+    let _: Value = call(&ctx.svc, "set_read", json!({"mailboxId": ctx.account, "ids": ids, "isRead": true})).await;
+    ctx.sync(&inbox.id).await;
+    assert_eq!(ctx.list(&inbox.id).await.unread, 0);
+    assert_eq!(ctx.folder("inbox").await.unread_count, 0);
+
+    // Once the server settles, a new unread mail counts again.
+    fake.state.set_stale_unread_count("me", "inbox", None);
+    fake.state.inject_incoming("me", "inbox", json!({"subject": "Neu", "isRead": false}));
+    ctx.sync(&inbox.id).await;
+    assert_eq!(ctx.folder("inbox").await.unread_count, 1);
+}

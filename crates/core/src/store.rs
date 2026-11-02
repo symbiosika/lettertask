@@ -448,6 +448,21 @@ impl Store {
         Ok(())
     }
 
+    /// Per folder of a mailbox: cached messages, cached unread ones, and
+    /// whether the folder is marked as fully loaded.
+    pub fn folder_cache_counts(&self, mailbox_id: &str) -> Result<std::collections::HashMap<String, (i64, i64, bool)>> {
+        let c = self.c();
+        let mut st = c.prepare(
+            "SELECT f.id, COUNT(m.id), COALESCE(SUM(m.is_read=0),0), f.fully_loaded
+             FROM folders f LEFT JOIN messages m ON m.mailbox_id=f.mailbox_id AND m.folder_id=f.id
+             WHERE f.mailbox_id=?1 GROUP BY f.id",
+        )?;
+        let rows = st.query_map(params![mailbox_id], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)? != 0)))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn is_fully_loaded(&self, mailbox_id: &str, folder_id: &str) -> Result<bool> {
         Ok(self
             .c()
