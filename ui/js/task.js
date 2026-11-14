@@ -80,7 +80,7 @@ function render() {
     fileInput.value = '';
   });
   const attachBtn = h('button.ed-btn', { type: 'button', title: 'Datei anfügen', 'aria-label': 'Datei anfügen', dataset: { testid: 'task-attach' }, html: icon('attach', 18), onclick: () => fileInput.click() });
-  editor = createEditor({ onInput: markDirty, minHeight: 180, lead: [attachBtn, fileInput], onDropFiles: addFiles, onPasteFiles: addFiles,
+  editor = createEditor({ onInput: markDirty, minHeight: 180, placeholder: 'Notizen', lead: [attachBtn, fileInput], onDropFiles: addFiles, onPasteFiles: addFiles,
     onPastePaths: (p) => readPastedPaths(p).then((list) => list.forEach(addAttachment)).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
   $('#editor').after(attList);

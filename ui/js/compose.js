@@ -147,7 +147,7 @@ function renderForm() {
   sigBtn = h('button.ed-btn.ed-sig', { type: 'button', title: 'Signatur', 'aria-label': 'Signatur', dataset: { testid: 'compose-signature' }, html: icon('signature', 18) + `<span class="ed-sig-label">Signatur</span>` + icon('chevronDown', 12) });
   sigBtn.addEventListener('mousedown', (e) => e.preventDefault());
   sigBtn.addEventListener('click', () => openSignatureMenu().catch(reportError));
-  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles, onPasteFiles: addFiles, onPastePaths: (p) => addPastedPaths(p).catch(reportError) });
+  editor = createEditor({ onInput: markDirty, placeholder: 'Nachricht schreiben …', lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles, onPasteFiles: addFiles, onPastePaths: (p) => addPastedPaths(p).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
 
   // drag & drop files onto the window (and, in the app, from the backend)

@@ -1138,3 +1138,76 @@ body.m-select .msg.selected .avatar {
 .m-appbar.contextual .m-title { padding: 0 2px; }
 .m-appbar.contextual .m-title-main { font-size: 15.5px; }
 .m-appbar.contextual .m-textbtn { padding: 0 6px; }
+
+/* ================================================================ round 7 */
+/* attendee/recipient input on its own line once there is a token */
+html.mobile .m-evform .rcpt-box { flex-wrap: wrap; }
+html.mobile .m-evform .rcpt-box:has(.rcpt-token) .rcpt-input { flex: 1 0 100%; }
+/* A–Z: bigger letters, a bubble while scrubbing */
+.m-az { width: 30px; }
+.m-az span { font-size: 13px; font-weight: 700; }
+.m-az-bubble { position: absolute; left: 50%; top: 40%; width: 84px; height: 84px; margin: -42px 0 0 -42px; border-radius: 20px; background: rgba(17, 24, 39, .78); color: #fff; font-size: 44px; font-weight: 700; display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 6; }
+.m-az-bubble.show { opacity: 1; }
+body.m-ct-detail .m-az-bubble { display: none; }
+/* contact form remove: solid, readable */
+html.mobile .ct-multirow .icon-btn { color: #6b7280; opacity: 1; }
+html.mobile .ct-multirow .icon-btn .ico { width: 20px; height: 20px; }
+/* contact detail: 16pt side margins */
+html.mobile .ct-detail .ct-card { margin: 0 !important; padding: 0 !important; }
+html.mobile .ct-body { padding: 0 16px 24px !important; margin: 0 !important; }
+html.mobile .ct-hero { padding-left: 16px; padding-right: 16px; }
+/* day view: short all-day label so the alignment shows */
+html.mobile .tg-allday .tg-gutter::after { content: 'Ganzt.'; font-size: 12px; padding: 6px 8px 0 0; }
+/* event brief: no coloured outline */
+html.mobile .peek { box-shadow: 0 -8px 30px rgba(16, 24, 40, .2) !important; outline: 0; border: 0 !important; }
+/* today: empty meetings as a normal row; date row on canvas */
+.m-agenda-head span:only-child, .m-agenda-head > span:first-child:not(:has(+ * + *)) { }
+html.mobile .list-head:has(.today-sub) { background: var(--canvas); }
+/* settings pages: no overflow – stacked fields, inputs never wider than the card */
+html.mobile .m-settings .set-panel .field { grid-template-columns: minmax(0, 1fr); }
+html.mobile .m-settings .set-panel .field:has(input[type=number]) { grid-template-columns: minmax(0, 1fr) auto; }
+html.mobile .m-settings .set-panel :is(input, select, textarea) { max-width: 100%; min-width: 0; box-sizing: border-box; }
+html.mobile .m-settings .set-panel .field :is(input:not([type=number]):not([type=checkbox]), select, textarea) { width: 100%; }
+html.mobile .m-settings .set-panel .field select { max-width: 100%; }
+html.mobile .m-settings .set-panel .field-hint, html.mobile .m-settings .set-panel .note { font-size: 14px; overflow-wrap: anywhere; }
+html.mobile .m-settings .set-panel > div:not(.field):not(.checkrow) { border-radius: 12px; }
+html.mobile .m-settings .set-panel > :is(.sig-panel, .acc-panel, .lane-editor, .snooze-editor) { background: transparent; padding: 0; }
+.m-set-sep { padding: 22px 16px 6px; font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .02em; background: var(--canvas); }
+html.mobile .m-settings .set-nav:has(.m-set-sep) { background: transparent; }
+html.mobile .m-settings .set-nav .set-tab { background: var(--bg); }
+html.mobile .m-settings .set-nav .set-tab:first-child { border-radius: 12px 12px 0 0; }
+html.mobile .m-settings .set-nav .set-tab:has(+ .m-set-sep), html.mobile .m-settings .set-nav .set-tab:last-child { border-radius: 0 0 12px 12px; }
+html.mobile .m-settings .set-nav .m-set-sep + .set-tab { border-radius: 12px 12px 0 0; }
+html.mobile .m-settings .set-nav .m-set-sep + .set-tab::before { display: none; }
+/* Wiedervorlage editor: one white card per option, fields stacked */
+html.mobile .snooze-editor { display: flex; flex-direction: column; gap: 12px; }
+html.mobile .sn-row { background: var(--bg); border-radius: 12px; padding: 8px 8px 12px 16px; border: 0; display: flex; flex-direction: column; gap: 8px; }
+html.mobile .sn-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+html.mobile .sn-top .sn-label { flex: 1 1 100%; order: 0; min-height: 44px; font-size: 16px; font-weight: 600; border: 0; padding: 0; background: transparent; }
+html.mobile .sn-top .sn-preview { order: 2; flex: 1 1 auto; font-size: 14px; color: var(--text-2); }
+html.mobile .sn-top .spacer { display: none; }
+html.mobile .sn-top .icon-btn { order: 3; width: 44px; height: 44px; }
+html.mobile .sn-top .icon-btn:last-child { color: var(--danger); }
+html.mobile .sn-rule { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-right: 8px; }
+html.mobile .sn-rule .sn-base { flex: 1 1 100%; min-height: 44px; font-size: 16px; }
+html.mobile .sn-rule .sn-dayswrap { display: inline-flex; align-items: center; gap: 6px; }
+html.mobile .sn-rule .sn-dayswrap.hidden, html.mobile .sn-rule .hidden { display: none; }
+html.mobile .sn-rule .sn-days { width: 76px; min-height: 44px; font-size: 16px; }
+html.mobile .sn-rule .sn-time { width: 112px; min-height: 44px; font-size: 16px; }
+html.mobile .sn-rule .dim { font-size: 15px; }
+html.mobile .sn-actions { display: flex; flex-direction: column; gap: 0; background: var(--bg); border-radius: 12px; overflow: hidden; }
+html.mobile .sn-actions .btn { min-height: 48px; border: 0; border-radius: 0; background: transparent; justify-content: flex-start; padding: 0 16px; font-size: 16px; color: var(--accent); }
+html.mobile .sn-actions .btn + .btn { border-top: 1px solid var(--border); color: var(--danger); }
+/* account & lanes & signature buttons as accent rows */
+html.mobile :is(.acc-actions, .acc-avatar-edit) .btn, html.mobile .sig-side .btn, html.mobile .lane-add .btn { border: 0; background: var(--canvas); border-radius: 10px; color: var(--accent); }
+html.mobile .acc-actions .btn.danger { color: var(--danger); }
+html.mobile .lane-add { flex-direction: column; align-items: stretch; }
+html.mobile .lane-add .btn { align-self: stretch; justify-content: center; }
+html.mobile .acc-panel > *, html.mobile .acc-detail > * { max-width: 100%; }
+html.mobile .acc-detail { background: var(--bg); border-radius: 12px; padding: 16px; }
+html.mobile .acc-side { background: transparent; }
+.m-agenda-none { padding: 10px 16px 8px; font-size: 15px; color: var(--text-2); }
+.m-appbar.contextual .m-textbtn { min-width: 44px; justify-content: center; }
+html.mobile .m-settings .set-panel > div:has(.snooze-editor, .sig-panel, .acc-panel, .lane-editor) { background: transparent !important; padding: 0 !important; }
+html.mobile .sn-top .icon-btn .ico { width: 18px; height: 18px; }
+html.mobile .sn-row .sn-rule select, html.mobile .sn-row .sn-rule input { background: var(--canvas); border: 0; }

@@ -329,7 +329,9 @@ function takePastedFileUris(records) {
   return out;
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles, onPasteFiles, onPastePaths } = {}) {
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles, onPasteFiles, onPastePaths, placeholder = '' } = {}) {
+  // Phone: grey hint text while the visible text is empty.
+  const phCss = isMobile && placeholder ? `body.lt-empty::before{content:${JSON.stringify(placeholder)};position:absolute;color:#9aa1ab;pointer-events:none}` : '';
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
   let pending = html;
@@ -343,6 +345,15 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       // (WebKitGTK on Linux) dispatches no events at all from a frame sandboxed
       // without allow-scripts, so typing and pasting would go unnoticed.
       const d = doc;
+      // Phone: "Nachricht schreiben…" while the visible text is empty (the class is never sent).
+      const syncEmpty = () => {
+        if (!isMobile || !d.body) return;
+        let txt = '';
+        for (const n of d.body.childNodes) { if (n.nodeName === 'HR' && d.body.classList.contains('lt-qc')) break; txt += n.textContent || ''; if (n.querySelector && n.querySelector('img')) txt += 'x'; }
+        d.body.classList.toggle('lt-empty', !txt.trim());
+      };
+      syncEmpty();
+      new MutationObserver(syncEmpty).observe(d.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class'] });
       new MutationObserver((records) => {
         if (d !== doc) return;
         // WebKitGTK fires no paste event here: pasted file addresses are
@@ -410,7 +421,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
 
   function setContent(x) {
     const { styles, body } = splitHtml(x);
-    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}${isMobile ? MOBILE_CSS : ''}</style>${styles}</head><body>${body}</body></html>`;
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}${isMobile ? MOBILE_CSS + phCss : ''}</style>${styles}</head><body>${body}</body></html>`;
   }
 
   const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };

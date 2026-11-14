@@ -225,7 +225,7 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
       isIOS ? null : pushStatus()),
     reading: h('div.set-panel',
       h('h3', 'Lesen'),
-      field('Lesebereich', pane),
+      isMobile ? null : field('Lesebereich', pane),
       field('Als gelesen markieren', markRead),
       field('Nachrichtenliste', listMode),
       h('label.checkrow', seps, 'Datumstrenner (Heute, Gestern, …) in der Liste anzeigen'),
@@ -240,9 +240,11 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
       snooze.el),
     kanban: h('div.set-panel',
       h('h3', 'Kanban'),
-      h('p.note', 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen.' + (isMobile ? '' : ' Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.')),
+      h('p.note', isMobile
+        ? 'Lanes sind die Spalten des Kanban-Boards. Eine Mail liegt in der Lane, die ihr zugeordnet ist – das bleibt auch in anderen Mailprogrammen erhalten.'
+        : 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen. Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.'),
       lanes ? lanes.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.'),
-      field('Lesebereich im Kanban', kbPane)),
+      isMobile ? null : field('Lesebereich im Kanban', kbPane)),
     accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),
     m365: h('div.set-panel',
       h('h3', 'Microsoft 365'),
@@ -289,6 +291,8 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
   // The header exists once the dialog is in the page.
   if (isMobile) requestAnimationFrame(() => header(root.classList.contains('m-sub') ? [...nav.querySelectorAll('.set-tab.on')].map((t) => t.dataset.tab)[0] : null));
   for (const [key, label, ic] of TABS) {
+    // Phone: the OAuth client pages are for administrators – grouped under "Erweitert".
+    if (isMobile && key === 'm365') nav.appendChild(h('div.m-set-sep', { dataset: { testid: 'settings-advanced' } }, 'Erweitert (Administratoren)'));
     const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, isMobile ? 20 : 16) + `<span>${esc(label)}</span>` + (isMobile ? icon('chevronRight', 16) : '') });
     t.addEventListener('click', () => show(key));
     nav.appendChild(t);

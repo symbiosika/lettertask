@@ -248,7 +248,7 @@ function renderForm() {
       h('span', 'Ende'), h('div.inline', f.endDate, f.endTime, f.recurText = h('span.dim.hidden')),
       h('span', 'Kalender'), h('div.inline', f.calendar, f.catRow),
     );
-    editor = createEditor({ onInput: dirty, minHeight: 160 });
+    editor = createEditor({ onInput: dirty, minHeight: 160, placeholder: 'Notizen hinzufügen' });
     $('#editor').append(h('div.m-group-title', 'Notizen'), editor.toolbar, editor.area);
     layoutRows();
     return;

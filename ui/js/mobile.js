@@ -174,11 +174,12 @@ async function renderTodayAgenda() {
   const pad = (n) => String(n).padStart(2, '0');
   const time = (e) => (e.isAllDay ? 'ganztägig' : `${pad(new Date(e.start).getHours())}:${pad(new Date(e.start).getMinutes())}`);
   ui.agenda.innerHTML = '';
-  const head = h('div.m-agenda-head', h('span', evs.length ? `Termine heute (${evs.length})` : 'Keine weiteren Termine heute'));
+  const head = h('div.m-agenda-head', h('span', evs.length ? `Termine heute (${evs.length})` : 'Termine heute'));
   const all = h('button.m-agenda-all', { type: 'button' }, 'Kalender');
   all.addEventListener('click', () => { hooks.setMode('calendar'); calendar.goToday(); update(); });
   head.appendChild(all);
   ui.agenda.appendChild(head);
+  if (!evs.length) ui.agenda.appendChild(h('div.m-agenda-none', 'Keine weiteren Termine'));
   for (const e of evs.slice(0, 3)) {
     const row = h('div.m-agenda-row', { role: 'button', tabindex: '0' },
       h('span.m-agenda-time', time(e)),
@@ -690,7 +691,8 @@ function setupContacts() {
   // A–Z index on the right edge: tap or slide to jump to a letter.
   const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('');
   const idx = h('div.m-az', { dataset: { testid: 'm-az' }, 'aria-label': 'Alphabet-Index' }, ...LETTERS.map((l) => h('span', l)));
-  list.parentElement.appendChild(idx);
+  const bubble = h('div.m-az-bubble');
+  list.parentElement.append(idx, bubble);
   const jump = (y) => {
     const r = idx.getBoundingClientRect();
     const i = Math.max(0, Math.min(LETTERS.length - 1, Math.floor((y - r.top) / (r.height / LETTERS.length))));
@@ -699,11 +701,13 @@ function setupContacts() {
     const target = heads.find((el) => el.textContent.trim().toUpperCase() >= want) || heads[heads.length - 1];
     if (target) list.scrollTop = target.offsetTop - list.offsetTop;
     idx.querySelectorAll('span').forEach((s, j) => s.classList.toggle('on', j === i));
+    bubble.textContent = want;
+    bubble.classList.add('show');
   };
   let sliding = false;
   idx.addEventListener('pointerdown', (e) => { sliding = true; idx.setPointerCapture(e.pointerId); jump(e.clientY); e.preventDefault(); });
   idx.addEventListener('pointermove', (e) => { if (sliding) jump(e.clientY); });
-  const stop = () => { sliding = false; setTimeout(() => idx.querySelectorAll('span.on').forEach((s) => s.classList.remove('on')), 400); };
+  const stop = () => { sliding = false; setTimeout(() => { idx.querySelectorAll('span.on').forEach((s) => s.classList.remove('on')); bubble.classList.remove('show'); }, 500); };
   idx.addEventListener('pointerup', stop);
   idx.addEventListener('pointercancel', stop);
   ui.ctbar.append(btn('chevronLeft', 'Zurück', () => { if (st.ctDetail) st.ctDetail(); }, 'm-ct-back'), h('span.m-ctbar-title', 'Kontakt'));
