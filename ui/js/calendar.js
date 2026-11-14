@@ -517,7 +517,7 @@ function renderTimeGrid() {
   scroll.appendChild(body);
   grid.appendChild(scroll);
   els.body.appendChild(grid);
-  scroll.scrollTop = prevScroll !== null ? prevScroll : SLOT_PX * 2 * 7 - 10;
+  scroll.scrollTop = prevScroll !== null ? prevScroll : SLOT_PX * 2 * 7 - (isMobile ? 10 : 0);
   paintNowLine();
   if (cal.slot) {
     const col = cols.querySelector(`.tg-col[data-date="${toLocalIso(cal.slot.start).slice(0, 10)}"]`);
@@ -758,7 +758,7 @@ function renderMonth() {
       const s = new Date(ev.start), e = new Date(ev.end);
       return s < addDays(d, 1) && e > d && !(e.getTime() === d.getTime());
     }).sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
-    const max = 4;
+    const max = isMobile ? 3 : 4;
     evs.slice(0, evs.length > max ? max - 1 : max).forEach((ev) => cell.appendChild(eventBlock(ev, 'month')));
     if (evs.length > max) {
       cell.appendChild(h('div.mg-more', { onclick: (e) => { e.stopPropagation(); cal.date = d; setView('day'); } }, `+${evs.length - max + 1} weitere`));

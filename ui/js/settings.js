@@ -266,16 +266,28 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
   const content = h('div.set-content');
   const root = h('div.settings' + (isMobile ? '.m-settings' : ''), nav, content);
   // Phone: a list of sections like the Settings app; a section pushes its page.
-  const back = isMobile ? h('button.m-set-back', { type: 'button', dataset: { testid: 'settings-back' }, html: icon('chevronLeft', 20) + '<span>Einstellungen</span>' }) : null;
-  if (back) back.addEventListener('click', () => root.classList.remove('m-sub'));
+  // The back button replaces "Abbrechen" in the dialog header while a section is open.
+  const back = isMobile ? h('button.m-modal-back', { type: 'button', dataset: { testid: 'settings-back' }, html: icon('chevronLeft', 20) + '<span>Zurück</span>' }) : null;
+  const header = (key) => {
+    const dlg = root.closest('.modal');
+    if (!dlg || !back) return;
+    const bar = dlg.querySelector('.modal-title');
+    const t = bar.querySelector('.m-modal-title');
+    if (!back.isConnected) bar.prepend(back);
+    dlg.classList.toggle('m-sub-open', !!key);
+    if (t) t.textContent = key ? (TABS.find((x) => x[0] === key) || [0, 'Einstellungen'])[1] : 'Einstellungen';
+  };
+  if (back) back.addEventListener('click', () => { root.classList.remove('m-sub'); header(null); });
   const show = (key) => {
     nav.querySelectorAll('.set-tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === key));
     content.innerHTML = '';
-    if (back) content.appendChild(back);
     content.appendChild(panels[key]);
     root.classList.add('m-sub');
     content.scrollTop = 0;
+    header(key);
   };
+  // The header exists once the dialog is in the page.
+  if (isMobile) requestAnimationFrame(() => header(root.classList.contains('m-sub') ? [...nav.querySelectorAll('.set-tab.on')].map((t) => t.dataset.tab)[0] : null));
   for (const [key, label, ic] of TABS) {
     const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, isMobile ? 20 : 16) + `<span>${esc(label)}</span>` + (isMobile ? icon('chevronRight', 16) : '') });
     t.addEventListener('click', () => show(key));

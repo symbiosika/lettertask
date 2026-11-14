@@ -143,7 +143,7 @@ function renderMobile() {
       : mRow('Teilnehmer', 'Einladen', { icon: 'people', chevron: true, onClick: () => toggleAttendees(), testid: 'ev-invite' }),
     teams.row,
   ];
-  if (st.attendeesVisible) rows.push(mRow(isNew ? 'Teilnehmer entfernen' : 'Einladung zurückziehen', null, { className: 'm-danger', onClick: () => toggleAttendees(), testid: 'ev-invite' }));
+
   const more = [
     mSelectRow('Erinnerung', sel(REMINDERS, st.reminder, (v) => { st.reminder = Number(v); }, 'ev-reminder'), { icon: 'bell' }),
     mRow('Wiederholen', st.recurrence ? recurrenceText(st.recurrence) : 'Nie', { icon: 'recurrence', chevron: true, onClick: () => recurrenceDialog(), testid: 'ev-series' }),
@@ -156,7 +156,11 @@ function renderMobile() {
   flags.push(mSwitchRow('Privat', st.sensitivity === 'private', (v) => { st.sensitivity = v ? 'private' : 'normal'; dirty(); }, { icon: 'lock' }).row);
   if (!google()) flags.push(mSwitchRow('Wichtig', st.importance === 'high', (v) => { st.importance = v ? 'high' : 'normal'; dirty(); }, { icon: 'important' }).row);
   opts.append(mGroup(rows), mGroup(more), mGroup(flags));
-  if (!isNew) tail.append(mGroup([mDanger('Termin löschen', () => del(), { testid: 'ev-delete' })]));
+  const danger = [
+    st.attendeesVisible ? mDanger(isNew ? 'Teilnehmer entfernen' : 'Einladung zurückziehen', () => toggleAttendees(), { testid: 'ev-invite' }) : null,
+    isNew ? null : mDanger('Termin löschen', () => del(), { testid: 'ev-delete' }),
+  ].filter(Boolean);
+  if (danger.length) tail.append(mGroup(danger));
 }
 
 /** Event of a Google account (Google Meet instead of Teams, no categories). */
@@ -237,9 +241,9 @@ function renderForm() {
     f.location.placeholder = 'Ort oder Videoanruf';
     form.classList.add('m-evform');
     form.append(
-      ...f.rowsAtt,
       h('span.m-lbl-hidden', 'Titel'), f.subject,
       h('span.m-lbl-hidden', 'Ort'), f.location,
+      ...f.rowsAtt,
       h('span', 'Ganztägig'), h('label.inline.m-end', f.allDay),
       h('span', 'Beginn'), h('div.inline', f.startDate, f.startTime),
       h('span', 'Ende'), h('div.inline', f.endDate, f.endTime, f.recurText = h('span.dim.hidden')),

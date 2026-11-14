@@ -52,7 +52,7 @@ function renderHead() {
   head.append(more, titleEl, h('span.cw-flags'));
   // Phone: send as a round arrow top right, like Mail.
   if (isMobile) {
-    const s = h('button.m-send', { type: 'button', title: DELEGATE ? 'Delegieren' : 'Senden', 'aria-label': DELEGATE ? 'Delegieren' : 'Senden', dataset: { testid: 'm-compose-send' }, html: icon('send', 20) });
+    const s = h('button.m-send', { type: 'button', title: DELEGATE ? 'Delegieren' : 'Senden', dataset: { testid: 'm-compose-send' }, html: icon('send', 18) + `<span>${DELEGATE ? 'Delegieren' : 'Senden'}</span>` });
     s.addEventListener('click', () => { store('composeSendMode', 'send'); send_().catch(reportError); });
     head.appendChild(s);
   }

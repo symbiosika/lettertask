@@ -245,12 +245,13 @@ export function showSheetMenu(items, { title } = {}) {
     const body = h('div.msheet-body');
     for (const it of list) {
       if (!it) continue;
-      if (it.separator) { body.appendChild(h('div.msheet-sep')); continue; }
+      // one hairline at most, never at the start or end
+      if (it.separator) { if (body.lastChild && !body.lastChild.classList.contains('msheet-sep')) body.appendChild(h('div.msheet-sep')); continue; }
       if (it.header) { body.appendChild(h('div.msheet-header', it.header)); continue; }
       const hint = it.shortcut && !KEY_HINT.test(it.shortcut) ? it.shortcut : '';
       const row = h('button.msheet-item' + (it.disabled ? '.disabled' : '') + (it.checked ? '.checked' : '') + (it.danger ? '.danger' : ''), { type: 'button', role: 'menuitem', disabled: !!it.disabled },
         h('span.msheet-icon', { html: it.checked ? icon('check', 18) : (it.iconHtml || (it.icon ? icon(it.icon, 20) : '')) }),
-        h('span.msheet-label', it.label),
+        h('span.msheet-label', String(it.label || '').replace(/…$/, '')),
         hint ? h('span.msheet-hint', hint) : null,
         it.submenu ? h('span.msheet-arrow', { html: icon('chevronRight', 16) }) : null);
       if (it.testid) row.dataset.testid = it.testid;
@@ -267,6 +268,7 @@ export function showSheetMenu(items, { title } = {}) {
       });
       body.appendChild(row);
     }
+    if (body.lastChild && body.lastChild.classList.contains('msheet-sep')) body.lastChild.remove();
     sheet.appendChild(body);
     const cancel = h('button.msheet-item.msheet-cancel', { type: 'button', dataset: { testid: 'msheet-cancel' } }, h('span.msheet-label', 'Abbrechen'));
     cancel.addEventListener('click', (e) => { e.stopPropagation(); close(); });

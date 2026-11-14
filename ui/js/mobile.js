@@ -252,8 +252,8 @@ function accountButton(viewItem = null) {
   const b = h('button.m-avatar', { type: 'button', title: a ? a.email : 'Konto', 'aria-label': 'Konto und Einstellungen', dataset: { testid: 'm-account' } });
   if (a) b.appendChild(accountAvatar(a, 'sm')); else b.innerHTML = icon('user', 22);
   b.addEventListener('click', () => showSheetMenu([
-    ...(viewItem ? [viewItem, { separator: true }] : []),
     ...hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')),
+    ...(viewItem ? [{ separator: true }, viewItem] : []),
   ], { title: a ? a.email : 'lettertask' }));
   return b;
 }
@@ -305,9 +305,10 @@ function renderSearchRow() {
   row.classList.remove('hidden');
   const chip = (v, label) => {
     const b = h('button.m-chip' + (st.searchScope === v ? '.on' : ''), { type: 'button' }, label);
-    b.addEventListener('click', () => { st.searchScope = v; renderSearchRow(); });
+    b.addEventListener('click', () => { st.searchScope = v; mail.setMobileSearchScope(v); renderSearchRow(); });
     return b;
   };
+  mail.setMobileSearchScope(st.searchScope || 'all');
   row.append(chip('all', 'Alle Ordner'), chip('folder', 'Dieser Ordner'));
 }
 

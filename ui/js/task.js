@@ -91,10 +91,18 @@ function render() {
     : h('button.btn.primary', { type: 'button', dataset: { testid: 'task-create' }, title: 'Aufgabe anlegen (Strg+Eingabe)', html: icon('task', 16) + '<span>Aufgabe anlegen</span>' });
   createBtn.addEventListener('click', () => create().catch(reportError));
   // Phone: the action sits top right like in the event sheet; no footer.
-  if (isMobile) { $('#head').appendChild(createBtn); $('#foot').classList.add('m-hidden'); }
+  if (isMobile) {
+    $('#head').appendChild(createBtn);
+    $('#foot').classList.add('m-hidden');
+    // greyed out until there is a title (like "Hinzufügen" in iOS sheets)
+    const sync = () => { createBtn.disabled = !subject.value.trim(); };
+    subject.addEventListener('input', sync);
+    sync();
+  }
   const cancel = h('button.btn', { type: 'button', dataset: { testid: 'task-cancel' } }, 'Abbrechen');
   cancel.addEventListener('click', () => confirmClose().then((ok) => ok && closeWindow()));
-  $('#foot').append(h('span.task-kbd', 'Strg+Eingabe: anlegen · Esc: abbrechen'), h('span.spacer'), cancel, createBtn);
+  // (on the phone createBtn already sits in the head – appending it here would move it into the hidden footer)
+  $('#foot').append(h('span.task-kbd', 'Strg+Eingabe: anlegen · Esc: abbrechen'), h('span.spacer'), cancel, ...(isMobile ? [] : [createBtn]));
   paint();
 }
 

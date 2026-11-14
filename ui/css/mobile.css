@@ -899,3 +899,56 @@ html.mobile.framed body.compose .cw-head .cw-flags { order: 2; flex: none; min-w
 html.mobile.framed body.compose .cw-head .cw-title { flex: 1; }
 html.mobile .m-evform > .m-lbl-hidden + .input[name=location], html.mobile .m-evform > .rcpt-box + .m-lbl-hidden + .input[name=subject] { border-top: 1px solid var(--border); }
 html.mobile .ct-detail a.ct-round { display: flex; font-size: 13px; min-height: 0; height: 64px; }
+
+/* ================================================================ round 4 */
+/* sheets: the body shrinks so the last items stay above "Abbrechen" */
+.msheet-body { flex: 1 1 auto; min-height: 0; }
+/* settings section page: back + section title in the header */
+.m-modal-back { display: none; align-items: center; gap: 0; height: 44px; padding: 0 8px 0 2px; border: 0; background: transparent; color: var(--accent); font-size: 17px; border-radius: 10px; justify-self: start; }
+.m-sub-open .m-modal-back { display: inline-flex; }
+.m-sub-open .m-modal-cancel { display: none; }
+html.mobile .m-settings .set-panel { background: var(--bg); border-radius: 12px; padding: 4px 16px 10px; margin-top: 12px; }
+html.mobile .m-settings .set-panel > h3:first-child { margin-top: 10px; }
+html.mobile .m-settings .set-content { padding: 0 0 24px; }
+html.mobile .m-settings .checkrow { font-size: 16px; }
+/* event: every row a full-width hairline, title first */
+html.mobile .m-evform > * { border-top: 1px solid var(--border) !important; }
+html.mobile .m-evform > .input[name=subject] { border-top: 0 !important; }
+html.mobile .m-evform .inline { padding-right: 16px; }
+html.mobile .m-evform .rcpt-input { height: 44px; min-height: 44px; }
+.m-row-chev { margin-right: 0; }
+/* compose: labelled send pill, 16pt from the edge */
+.m-send { width: auto; height: 40px; padding: 0 14px 0 12px; gap: 6px; margin: 0 6px 0 8px; border-radius: 20px; font-size: 16px; font-weight: 650; }
+.m-send span { color: #fff; }
+.m-nav-action:disabled { color: var(--text-dim); opacity: .55; }
+/* FAB: always the compact circle on the phone – it covers less of the list */
+.m-fab { width: 56px; padding: 0; justify-content: center; border-radius: 18px; }
+.m-fab span { display: none; }
+/* kanban: the tab names the lane; plain lane card */
+html.mobile .kb-colhead { display: none; }
+html.mobile .kb-col.nolane { border: 0; background: #eceef2; }
+html.mobile .kb-body { padding-top: 8px; }
+/* select mode delete like the reader */
+.m-appbar [data-testid=m-sel-delete] { color: var(--danger); margin-left: 10px; }
+.m-appbar.contextual .m-icon + .m-icon { margin-left: 4px; }
+/* secondary text ≥ 13–14px */
+html.mobile .rp-recips, html.mobile .rp-recips * { font-size: 14px !important; }
+html.mobile .peek .pill, html.mobile .peek .bc-people, html.mobile .peek .bc-head * { font-size: 13.5px; }
+html.mobile .m-drawer .tree-root .pill, html.mobile .m-drawer .acct-kind, html.mobile .m-drawer [class*=badge] { font-size: 12px !important; }
+/* day view gutter */
+html.mobile .tg-allday .tg-gutter::after { padding: 6px 6px 0 6px; text-align: right; font-size: 12px; }
+/* recipient & e-mail remove glyphs visible */
+html.mobile .rcpt-x .ico { width: 14px; height: 14px; }
+html.mobile .rcpt-x { opacity: .75; }
+/* contacts: tiles on grey, no highlighted row at rest */
+.ct-round { background: var(--canvas); }
+html.mobile .ct-row.selected, html.mobile .ct-list:focus-within .ct-row.selected { background: transparent; }
+html.mobile .ct-row:active { background: var(--hover); }
+/* today sub-row on the grid */
+html.mobile .today-sub, html.mobile .td-sub, html.mobile .list-sub { padding: 8px 16px; font-size: 13px; }
+.m-send { height: 44px; border-radius: 22px; }
+html.mobile body.compose .rcpt-input { height: 44px; min-height: 44px; }
+html.mobile .ev-form.m-evform > .input, html.mobile .ev-form.m-evform > .rcpt-box { border-top: 1px solid var(--border) !important; }
+html.mobile .ev-form.m-evform > .input[name=subject] { border-top: 0 !important; }
+.m-row-value { margin-left: auto; }
+html.mobile .ev-form.m-evform { align-items: stretch; }
