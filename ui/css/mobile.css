@@ -1541,3 +1541,20 @@ html.mobile .ct-multirow .ct-pkind { flex: 0 0 auto; width: auto; max-width: 132
 html.mobile .ct-form textarea, html.mobile .modal textarea[name=notes] { border: 0 !important; resize: none; background: var(--bg); }
 /* agenda: times as dark as the title on the coloured chips */
 html.mobile .sp-item .sp-time { color: inherit; opacity: .8; }
+html.mobile .sn-stepper { flex: 1 1 auto; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+html.mobile .sn-stepper .sn-dayswrap { flex: none; }
+html.mobile .sn-stepper .sn-days { width: 44px; text-align: center; background: var(--bg); border-radius: 8px; color: var(--text); }
+html.mobile .sn-step { width: 44px; height: 36px; border: 0; border-radius: 10px; background: var(--hover, #eef0f3); color: var(--accent); font-size: 22px; line-height: 1; }
+html.mobile .sn-step:disabled { color: var(--text-dim); opacity: .5; }
+html.mobile .sn-field .sn-stepper .sn-dayswrap { flex: none; gap: 4px; }
+html.mobile .sn-field .sn-stepper input.sn-days { flex: none; width: 48px !important; min-width: 0; max-width: 48px; padding: 0; }
+html.mobile .sn-field .sn-stepper .sn-dayswrap .dim { min-width: 0; }
+/* signatures: the empty note only repeated the button; the switches get a section title */
+html.mobile .sig-empty { display: none !important; }
+html.mobile .sig-flagwrap { margin-top: 20px; }
+html.mobile .sig-flags-head { padding: 0 16px 6px; font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--text-dim); }
+/* snooze "Wann": a value row with a grey › instead of the native arrow */
+html.mobile .sn-field select.sn-base { -webkit-appearance: none; appearance: none; background-image: none; padding-right: 0; }
+html.mobile .sn-chev { flex: none; display: inline-flex; color: var(--text-dim); margin-left: -6px; }
+html.mobile .sig-flagwrap .sig-flags > .checkrow:first-child { border-top: 0 !important; }
+html.mobile .sig-flagwrap .sig-flags { padding-top: 0 !important; }

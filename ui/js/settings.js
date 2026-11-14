@@ -56,7 +56,10 @@ function snoozeEditor(initial) {
     }
     host.appendChild(h('div.sn-actions',
       h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); openIdx = rows.length - 1; render(); } }),
-      h('button.btn.small', { type: 'button', onclick: () => { rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); openIdx = -1; render(); } }, 'Standard wiederherstellen')));
+      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-reset' }, onclick: async () => {
+        if (isMobile && !(await confirmDialog('Alle Zeitpunkte auf den Standard zurücksetzen? Eigene Einträge gehen dabei verloren.', { danger: true, ok: 'Zurücksetzen', cancel: 'Abbrechen', title: 'Standard wiederherstellen' }))) return;
+        rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); openIdx = -1; render();
+      } }, 'Standard wiederherstellen')));
   };
   const rowEditor = (r, i) => {
     {
@@ -91,11 +94,19 @@ function snoozeEditor(initial) {
       if (isMobile) {
         // the summary row above shows label and target; the editor holds the fields and the row tools
         label.addEventListener('change', render);
+        // "− 4 Stunden +": a stepper reads as something you can change
+        const stepper = () => {
+          const step = (d) => { r.days = Math.min(365, Math.max(1, (r.days || 1) + d)); render(); };
+          return h('span.sn-stepper',
+            h('button.sn-step', { type: 'button', 'aria-label': 'Weniger', disabled: (r.days || 1) <= 1, onclick: () => step(-1), dataset: { testid: 'snooze-minus' } }, '−'),
+            daysWrap,
+            h('button.sn-step', { type: 'button', 'aria-label': 'Mehr', onclick: () => step(1), dataset: { testid: 'snooze-plus' } }, '+'));
+        };
         const fieldRow = (name, ...ctl) => h('label.sn-field', h('span.sn-fname', name), ...ctl);
         return h('div.sn-row.sn-open', { dataset: { testid: 'snooze-editrow' } },
           fieldRow('Bezeichnung', label),
-          fieldRow('Wann', base),
-          h('div.sn-field' + ((r.base === 'days' || r.base === 'hours') ? '' : '.hidden'), { dataset: { k: 'days' } }, h('span.sn-fname', 'Anzahl'), daysWrap),
+          fieldRow('Wann', base, h('span.sn-chev', { html: icon('chevronRight', 16) })),
+          h('div.sn-field' + ((r.base === 'days' || r.base === 'hours') ? '' : '.hidden'), { dataset: { k: 'days' } }, h('span.sn-fname', 'Anzahl'), stepper()),
           h('label.sn-field' + (r.base === 'hours' ? '.hidden' : ''), { dataset: { k: 'time' } }, h('span.sn-fname', 'Uhrzeit'), time),
           h('div.sn-tools',
             h('button.sn-tool', { type: 'button', disabled: i === 0, onclick: () => mv(-1), html: icon('up', 18) + '<span>Nach oben</span>' }),

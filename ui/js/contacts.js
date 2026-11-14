@@ -261,7 +261,7 @@ export async function editContact(c, accountId) {
     v.phones.forEach((p, i) => {
       const kind = h('select.input.ct-pkind', { name: `phoneKind${i}` }, ...PHONE_KINDS.map(([k, l]) => h('option', { value: k, selected: k === p.kind }, l)));
       kind.addEventListener('change', () => { p.kind = kind.value; });
-      const num = h('input.input', { name: `phone${i}`, value: p.number, placeholder: '+49 …' });
+      const num = h('input.input', { name: `phone${i}`, value: p.number, placeholder: 'Telefon', type: 'tel' });
       num.addEventListener('input', () => { p.number = num.value; });
       phonesHost.appendChild(h('div.ct-multirow', kind, num, h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 13), onclick: () => { v.phones.splice(i, 1); renderPhones(); } })));
     });

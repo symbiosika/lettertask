@@ -277,7 +277,7 @@ export function showSheetMenu(items, { title } = {}) {
     // icons on all rows or on none – a lone icon makes the label column jump
     const real = list.filter((it) => it && !it.separator && !it.header);
     const withIcon = real.filter((it) => it.icon || it.iconHtml || it.checked).length;
-    const noIcons = withIcon > 0 && withIcon < real.length / 2;
+    const noIcons = withIcon < real.length / 2;
     if (noIcons) sheet.classList.add('msheet-noicons'); else sheet.classList.remove('msheet-noicons');
     for (const it of list) {
       if (!it) continue;
