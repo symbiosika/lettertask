@@ -47,6 +47,61 @@ pub(crate) struct NewMail {
     pub due: Option<DateTime<Utc>>,
     /// Categories to set on creation (hidden ones like "[#monthly]", "[F_…]" included).
     pub categories: Vec<String>,
+    /// Files attached to the task: (name, content type, bytes).
+    pub attachments: Vec<(String, String, Vec<u8>)>,
+}
+
+/// A new task ("create_task"); `delegate` makes it a delegated one.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskInput {
+    pub mailbox_id: String,
+    pub subject: String,
+    #[serde(default)]
+    pub body_html: String,
+    #[serde(default)]
+    pub due: Option<String>,
+    #[serde(default)]
+    pub recurrence: Option<String>,
+    /// Assignee of a delegated task.
+    #[serde(default)]
+    pub delegate: Option<Address>,
+    /// "ToDo: " in front of the subject of the delegated mail.
+    #[serde(default = "yes")]
+    pub todo_prefix: bool,
+    #[serde(default)]
+    pub attachments: Vec<NewAttachment>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The delegator's own copy of a delegated task.
+pub(crate) struct DelegationCopy {
+    due: Option<DateTime<Utc>>,
+    /// Thread of the sent mail, to recognise the answer.
+    thread: Option<String>,
+    attachments: Vec<(String, String, Vec<u8>)>,
+}
+
+/// Attachments as sent by the page (base64), checked before anything is created.
+pub(crate) fn decode_attachments(list: &[NewAttachment]) -> Result<Vec<(String, String, Vec<u8>)>> {
+    use base64::Engine;
+    list.iter()
+        .map(|a| {
+            let name = a.name.trim();
+            if name.is_empty() {
+                return Err(Error::invalid("Anhang ohne Dateinamen."));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(a.content_base64.trim())
+                .map_err(|e| Error::invalid(format!("Anhang {name}: {e}")))?;
+            let ct = a.content_type.trim();
+            let ct = if ct.is_empty() { "application/octet-stream" } else { ct };
+            Ok((name.to_string(), ct.to_string(), bytes))
+        })
+        .collect()
 }
 
 /// Hidden category linking a reminder to the thread of the sent mail.
@@ -168,22 +223,16 @@ pub(crate) fn next_occurrence_in<Z: TimeZone>(
 }
 
 impl Service {
-    pub(crate) async fn create_task(
-        &self,
-        mailbox_id: &str,
-        subject: &str,
-        body_html: &str,
-        due: Option<&str>,
-        recurrence: Option<&str>,
-        // Assignee of a delegated task and whether "ToDo: " goes in front of the subject.
-        delegate: Option<(&Address, bool)>,
-    ) -> Result<MessageSummary> {
-        if let Some((d, todo_prefix)) = delegate {
-            if recurrence.is_some_and(|r| !r.is_empty()) {
+    pub(crate) async fn create_task(&self, t: TaskInput) -> Result<MessageSummary> {
+        let files = decode_attachments(&t.attachments)?;
+        if let Some(d) = &t.delegate {
+            if t.recurrence.as_deref().is_some_and(|r| !r.is_empty()) {
                 return Err(Error::invalid("Delegierte Aufgaben können nicht wiederholt werden."));
             }
-            return self.delegate_task(mailbox_id, subject, body_html, due, d, todo_prefix).await;
+            return self.delegate_task(&t, d, files).await;
         }
+        let TaskInput { mailbox_id, subject, body_html, due, recurrence, .. } = &t;
+        let (mailbox_id, body_html, due, recurrence) = (mailbox_id.as_str(), body_html.as_str(), due.as_deref(), recurrence.as_deref());
         let subject = subject.trim();
         let mut categories = Vec::new();
         if let Some(r) = recurrence.filter(|r| !r.is_empty()) {
@@ -210,6 +259,7 @@ impl Service {
                 reply_to: vec![],
                 due,
                 categories,
+                attachments: files,
             },
         )
         .await
@@ -218,15 +268,8 @@ impl Service {
     /// Delegation: the task goes out as a mail to `to`; a copy for yourself
     /// marked "[D_<address>]" waits in "Wiedervorlage" (or the inbox without
     /// due time) like a normal task, so it can be followed up.
-    async fn delegate_task(
-        &self,
-        mailbox_id: &str,
-        subject: &str,
-        body_html: &str,
-        due: Option<&str>,
-        to: &Address,
-        todo_prefix: bool,
-    ) -> Result<MessageSummary> {
+    async fn delegate_task(&self, t: &TaskInput, to: &Address, files: Vec<(String, String, Vec<u8>)>) -> Result<MessageSummary> {
+        let (mailbox_id, subject, body_html) = (t.mailbox_id.as_str(), t.subject.as_str(), t.body_html.as_str());
         if subject.trim().is_empty() {
             return Err(Error::invalid("Bitte einen Betreff für die Aufgabe angeben."));
         }
@@ -234,8 +277,8 @@ impl Service {
         if !super::compose::valid_address(&to.address) {
             return Err(Error::invalid(format!("Ungültige Adresse: {}", to.address)));
         }
-        let due = parse_due(due)?;
-        let subject = delegated_subject(subject, todo_prefix);
+        let due = parse_due(t.due.as_deref())?;
+        let subject = delegated_subject(subject, t.todo_prefix);
         let thread = self.send_draft_thread(DraftInput {
             id: None,
             mailbox_id: mailbox_id.to_string(),
@@ -247,13 +290,13 @@ impl Service {
             body_html: body_html.to_string(),
             importance: "normal".into(),
             request_read_receipt: false,
-            new_attachments: vec![],
+            new_attachments: t.attachments.clone(),
             source_message_id: None,
             removed_attachment_ids: vec![],
             remind_at: None,
         }, true)
         .await?;
-        self.place_delegation(mailbox_id, subject, body_html, &to, due, thread).await
+        self.place_delegation(mailbox_id, subject, body_html, &to, DelegationCopy { due, thread, attachments: files }).await
     }
 
     /// Delegating an existing mail: it is forwarded (`d`, mode "forward",
@@ -274,7 +317,7 @@ impl Service {
         d.remind_at = None;
         let (mailbox_id, subject, body_html) = (d.mailbox_id.clone(), d.subject.clone(), d.body_html.clone());
         let thread = self.send_draft_thread(d, true).await?;
-        self.place_delegation(&mailbox_id, subject, &body_html, &to, due, thread).await
+        self.place_delegation(&mailbox_id, subject, &body_html, &to, DelegationCopy { due, thread, attachments: vec![] }).await
     }
 
     /// The copy of a delegation for yourself: "[D_<address>]" plus the
@@ -285,9 +328,9 @@ impl Service {
         subject: String,
         body_html: &str,
         to: &Address,
-        due: Option<DateTime<Utc>>,
-        thread: Option<String>,
+        copy: DelegationCopy,
     ) -> Result<MessageSummary> {
+        let DelegationCopy { due, thread, attachments } = copy;
         let name = if to.name.is_empty() { to.address.clone() } else { format!("{} &lt;{}&gt;", html_escape::encode_text(&to.name), to.address) };
         let header = format!(
             "<div style=\"padding:8px 12px;margin-bottom:12px;background:#f3f6fc;border-left:3px solid #2f6fe4;font-family:sans-serif;font-size:13px\">\
@@ -306,6 +349,7 @@ impl Service {
                 categories: std::iter::once(delegate_category(&to.address))
                     .chain(thread.as_deref().filter(|t| !t.is_empty()).map(delegation_thread_category))
                     .collect(),
+                attachments,
             },
         )
         .await
@@ -405,6 +449,17 @@ impl Service {
             .await?;
         let mut summary = convert::message_summary(&v, mailbox_id, &folder.id);
         summary.folder_id = folder.id.clone();
+        if !m.attachments.is_empty() {
+            let prefix = mb.graph_prefix();
+            for (name, ct, bytes) in &m.attachments {
+                if let Err(e) = Self::upload_attachment(&c, &prefix, &summary.id, name, ct, bytes, None).await {
+                    // Half a task is worse than none: take it back and say why.
+                    let _ = c.delete(&format!("{prefix}/messages/{}", seg(&summary.id))).await;
+                    return Err(Error::Other(format!("Anhang „{name}“ konnte nicht angefügt werden: {e}")));
+                }
+            }
+            summary.has_attachments = true;
+        }
         self.store.upsert_messages(std::slice::from_ref(&summary))?;
         self.store
             .adjust_folder_counts(mailbox_id, &folder.id, if summary.is_read { 0 } else { 1 }, 1)?;
@@ -437,6 +492,7 @@ impl Service {
                 reply_to: recipients,
                 due,
                 categories: thread_id.map(followup_category).into_iter().collect(),
+                attachments: vec![],
             },
         )
         .await?;
@@ -533,6 +589,12 @@ impl Service {
             }
             let detail = self.get_message(mailbox_id, id).await?;
             let mb = self.store.get_mailbox(mailbox_id)?;
+            // The files of the task come along to the next time.
+            let mut attachments = Vec::new();
+            for a in detail.attachments.iter().filter(|a| !a.is_inline) {
+                let (name, bytes) = self.attachment_file(mailbox_id, id, &a.id).await?;
+                attachments.push((name, a.content_type.clone(), bytes));
+            }
             self.place_mail(
                 mailbox_id,
                 NewMail {
@@ -542,6 +604,7 @@ impl Service {
                     reply_to: vec![],
                     due: Some(next),
                     categories,
+                    attachments,
                 },
             )
             .await?;

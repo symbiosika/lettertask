@@ -1,6 +1,6 @@
 // Compose window (new mail, reply, reply all, forward, edit draft).
-import { call, params, closeWindow, currentWindow, isTauri, isMobile, on, invokeNative } from './api.js';
-import { h, $, esc, fmtSize, fileToBase64, load, store } from './util.js';
+import { call, params, closeWindow, currentWindow, isMobile } from './api.js';
+import { h, $, esc, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, reportError, toast, confirmDialog, showMenuAt, setPending, loadingPill } from './dialogs.js';
 import { recipientField } from './recipients.js';
@@ -9,6 +9,7 @@ import { splitBtn } from './toolbar.js';
 import { accountAvatar } from './accounts.js';
 import { state, bootstrapSecondary, mailboxes, mailboxById, accountOfMailbox } from './state.js';
 import { duePicker } from './due.js';
+import { readFile, readPastedPaths, installFileDrop, attachmentChip } from './attachments.js';
 import { loadSignatures, defaultSignatureFor, applySignature, currentSignatureId, signatureMenuItems, signaturesPanel } from './signatures.js';
 
 const P = params();
@@ -141,31 +142,8 @@ function renderForm() {
   editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles, onPasteFiles: addFiles, onPastePaths: (p) => addPastedPaths(p).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
 
-  // drag & drop files onto the window
-  const dropKinds = ['Files', 'application/x-lt-attachment'];
-  document.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].some((t) => dropKinds.includes(t))) { e.preventDefault(); document.body.classList.add('dropping'); } });
-  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
-  document.addEventListener('drop', async (e) => {
-    document.body.classList.remove('dropping');
-    if (!e.dataTransfer) return;
-    // An attachment dragged out of a mail (lettertask in the browser).
-    const ref = e.dataTransfer.getData('application/x-lt-attachment');
-    if (ref) { e.preventDefault(); await addMailAttachment(JSON.parse(ref)).catch(reportError); return; }
-    if (!e.dataTransfer.files.length) return;
-    e.preventDefault();
-    await addFiles(e.dataTransfer.files);
-  });
-  // In the app, file drops arrive from the backend (Tauri takes them over natively).
-  if (isTauri) {
-    const w = currentWindow();
-    const mine = (p) => p && w && p.label === w.label;
-    on('files-drag', (p) => { if (mine(p)) document.body.classList.toggle('dropping', !!p.over); });
-    on('files-dropped', (p) => {
-      if (!mine(p)) return;
-      for (const f of p.files || []) addAttachment({ name: f.name, contentType: contentTypeOf(f.name), contentBase64: f.contentBase64, size: f.size });
-      if ((p.skipped || []).length) toast(`Nicht angefügt (Ordner oder größer als 150 MB): ${p.skipped.join(', ')}`, 'error');
-    });
-  }
+  // drag & drop files onto the window (and, in the app, from the backend)
+  installFileDrop((a) => a && addAttachment(a));
 }
 
 // ------------------------------------------------------------------ signatures
@@ -208,24 +186,13 @@ function showCcBcc(focus) {
 }
 
 async function addFile(file) {
-  if (file.size > 150 * 1024 * 1024) { toast(`„${file.name}" ist größer als 150 MB und kann nicht angefügt werden.`, 'error'); return; }
-  const contentBase64 = await fileToBase64(file);
-  addAttachment({ name: file.name, contentType: file.type || contentTypeOf(file.name), contentBase64, size: file.size });
+  const a = await readFile(file);
+  if (a) addAttachment(a);
 }
 
-/** Attachment of another mail ({ mailboxId, messageId, attachmentId, name }). */
-async function addMailAttachment(ref) {
-  const f = await call('attachment_content', { mailboxId: ref.mailboxId, messageId: ref.messageId, attachmentId: ref.attachmentId });
-  addAttachment({ name: f.name, contentType: ref.contentType || contentTypeOf(f.name), contentBase64: f.contentBase64, size: f.size });
-}
-
-/** Ctrl+V of files copied in the file manager: the page only gets their
- *  file:// addresses, the app reads the files. */
+/** Ctrl+V of files copied in the file manager. */
 async function addPastedPaths(paths) {
-  if (!isTauri) { toast('Kopierte Dateien lassen sich nur in der Desktop-App einfügen – bitte per Drag & Drop anfügen.', 'error'); return; }
-  const res = await invokeNative('read_local_files', { paths });
-  for (const f of res.files || []) addAttachment({ name: f.name, contentType: contentTypeOf(f.name), contentBase64: f.contentBase64, size: f.size });
-  if ((res.skipped || []).length) toast(`Nicht angefügt (Ordner oder größer als 150 MB): ${res.skipped.join(', ')}`, 'error');
+  for (const a of await readPastedPaths(paths)) addAttachment(a);
 }
 
 async function addFiles(files) {
@@ -238,22 +205,6 @@ function addAttachment({ name, contentType, contentBase64, size }) {
   renderAttachments();
 }
 
-const TYPES = {
-  pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv', html: 'text/html', htm: 'text/html', ics: 'text/calendar', eml: 'message/rfc822',
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', heic: 'image/heic',
-  zip: 'application/zip', json: 'application/json', xml: 'application/xml', mp3: 'audio/mpeg', mp4: 'video/mp4',
-  doc: 'application/msword', xls: 'application/vnd.ms-excel', ppt: 'application/vnd.ms-powerpoint',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-};
-
-/** Content type from the file extension (files dropped in the app come without one). */
-function contentTypeOf(name) {
-  const ext = (String(name).match(/\.([^.]+)$/) || [])[1];
-  return (ext && TYPES[ext.toLowerCase()]) || 'application/octet-stream';
-}
-
 function renderAttachments() {
   attList.innerHTML = '';
   const all = [
@@ -262,16 +213,12 @@ function renderAttachments() {
   ];
   attList.classList.toggle('hidden', !all.length);
   for (const a of all) {
-    const x = h('button.att-x', { type: 'button', title: 'Entfernen', 'aria-label': 'Anhang entfernen', html: icon('close', 13) });
-    x.addEventListener('click', () => {
+    attList.appendChild(attachmentChip(a, () => {
       if (a.kind === 'existing') st.removed.push(a.id);
       else st.newAttachments = st.newAttachments.filter((n) => n.tmpId !== a.id);
       markDirty();
       renderAttachments();
-    });
-    attList.appendChild(h('span.attachment', { title: a.name },
-      h('span.att-ic', { html: icon(/^image\//.test(a.contentType) ? 'image' : 'file', 18) }),
-      h('span.att-text', h('span.att-name', a.name), h('span.att-size', fmtSize(a.size))), x));
+    }));
   }
 }
 

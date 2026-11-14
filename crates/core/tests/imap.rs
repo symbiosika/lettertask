@@ -820,10 +820,12 @@ async fn recurring_tasks_keep_rhythm() {
     let t: MessageSummary = call(
         &ctx.svc,
         "create_task",
-        json!({"mailboxId": ctx.account, "subject": "Monatsabschluss", "bodyHtml": "<p>Belege</p>", "due": due.to_rfc3339(), "recurrence": "monthly"}),
+        json!({"mailboxId": ctx.account, "subject": "Monatsabschluss", "bodyHtml": "<p>Belege</p>", "due": due.to_rfc3339(), "recurrence": "monthly",
+               "attachments": [{"name": "Belege.pdf", "contentType": "application/pdf", "contentBase64": "JVBERi0xLjQK"}]}),
     )
     .await;
     assert_eq!(t.recurrence.as_deref(), Some("monthly"));
+    assert!(t.has_attachments);
     let snoozed = ctx.folder("snoozed").await;
     let flags = server_flags(ctx.dv.port, &snoozed.id).await;
     let f = &flags.iter().find(|(s, _)| s == "Monatsabschluss").unwrap().1;
@@ -847,4 +849,9 @@ async fn recurring_tasks_keep_rhythm() {
     let days = (next_due.with_timezone(&chrono::Utc) - due).num_days();
     assert!((27..=31).contains(&days), "next due in {days} days");
     assert_eq!(next.recurrence.as_deref(), Some("monthly"));
+    // The task's file comes along to the next time.
+    let d: Value = call(&ctx.svc, "get_message", json!({"mailboxId": ctx.account, "messageId": next.id})).await;
+    let atts = d["attachments"].as_array().unwrap();
+    assert_eq!(atts.len(), 1, "{atts:?}");
+    assert_eq!(atts[0]["name"], "Belege.pdf");
 }

@@ -1015,6 +1015,24 @@ async fn tasks_are_created_directly_in_place() {
     ctx.sync(&inbox.id).await;
     assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == "Steuer vorbereiten"));
     assert!(call_err(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": " ", "due": null})).await.contains("Betreff"));
+    // With files: attached to the task itself.
+    let t3: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Vertrag lesen", "due": null,
+               "attachments": [{"name": "Vertrag.pdf", "contentType": "application/pdf", "contentBase64": "JVBERi0xLjQK"}]}),
+    )
+    .await;
+    assert!(t3.has_attachments);
+    let raw = ctx.fake.as_ref().unwrap().state.message("me", &t3.id).unwrap();
+    assert_eq!(raw["isDraft"], false);
+    assert_eq!(raw["hasAttachments"], true);
+    // A broken file creates nothing.
+    let err = call_err(&ctx.svc, "create_task", json!({"mailboxId": ctx.account, "subject": "Kaputt", "due": null,
+        "attachments": [{"name": "x.pdf", "contentBase64": "%%%"}]})).await;
+    assert!(err.contains("x.pdf"), "{err}");
+    ctx.sync(&inbox.id).await;
+    assert!(!ctx.list(&inbox.id).await.items.iter().any(|m| m.subject == "Kaputt"));
 }
 
 #[tokio::test]

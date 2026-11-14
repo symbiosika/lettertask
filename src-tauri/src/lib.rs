@@ -100,7 +100,7 @@ impl Host for TauriHost {
 /// Largest file taken from a drop (the compose window checks the same).
 const DROP_MAX: u64 = 150 * 1024 * 1024;
 
-/// Files dropped onto a compose window. Tauri takes file drops over natively,
+/// Files dropped onto a compose or task window. Tauri takes file drops over natively,
 /// so the page never sees them (and the editor frame delivers no events in
 /// WebKitGTK at all): the files are read here and handed to that window as
 /// "files-dropped" `{ label, files: [{ name, contentBase64, size }], skipped: [name] }`.
@@ -108,7 +108,7 @@ fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     use tauri::{DragDropEvent, WindowEvent};
     let WindowEvent::DragDrop(dd) = event else { return };
     let label = window.label().to_string();
-    if !label.starts_with("compose-") {
+    if !label.starts_with("compose-") && !label.starts_with("task-") {
         return;
     }
     let app = window.app_handle().clone();
