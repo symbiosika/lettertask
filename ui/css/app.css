@@ -418,7 +418,7 @@ kbd { font-family: inherit; }
 .attachment .att-x { border: 0; background: transparent; padding: 2px; display: flex; color: var(--text-dim); border-radius: 4px; }
 .attachment .att-x:hover { background: var(--hover); color: var(--danger); }
 .rp-body { flex: 1; min-height: 0; display: flex; padding: 10px 18px 0; }
-.mail-frame { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; }
+.mail-frame { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; transform: translateZ(0); }
 
 /* ================================================================ tag popover */
 .tagpop {
@@ -573,7 +573,12 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .menu-header { padding: 8px 10px 4px 34px; font-weight: 600; font-size: 11.5px; color: var(--text-dim); text-transform: none; letter-spacing: .02em; }
 
 /* ================================================================ toast */
-.toast-host { position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 3000; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 520px; }
+.toast-host { position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 3000; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 520px; will-change: transform; }
+/* WebKitGTK: without their own compositing layers, a toast over the mail body
+   was painted into the iframe's scroll layer and, after it faded out, its
+   pixels stayed behind and moved along as the mail was scrolled. Toasts and
+   the mail frame each get their own layer so neither paints into the other. */
+.toast { will-change: opacity, transform; }
 .toast { display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 14px; background: #1f2328; color: #fff; border-radius: 10px; box-shadow: var(--shadow-lg); transition: opacity .35s, transform .35s; user-select: text; -webkit-user-select: text; }
 .toast .ico { color: #9ec0ff; }
 .toast.error { background: #b42318; }
