@@ -97,10 +97,9 @@ function snoozeEditor(initial) {
         // "− 4 Stunden +": a stepper reads as something you can change
         const stepper = () => {
           const step = (d) => { r.days = Math.min(365, Math.max(1, (r.days || 1) + d)); render(); };
-          return h('span.sn-stepper',
+          return h('span.sn-stepper', daysWrap, h('span.m-stepper',
             h('button.sn-step', { type: 'button', 'aria-label': 'Weniger', disabled: (r.days || 1) <= 1, onclick: () => step(-1), dataset: { testid: 'snooze-minus' } }, '−'),
-            daysWrap,
-            h('button.sn-step', { type: 'button', 'aria-label': 'Mehr', onclick: () => step(1), dataset: { testid: 'snooze-plus' } }, '+'));
+            h('button.sn-step', { type: 'button', 'aria-label': 'Mehr', onclick: () => step(1), dataset: { testid: 'snooze-plus' } }, '+')));
         };
         const fieldRow = (name, ...ctl) => h('label.sn-field', h('span.sn-fname', name), ...ctl);
         return h('div.sn-row.sn-open', { dataset: { testid: 'snooze-editrow' } },
@@ -293,7 +292,7 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
       lanes ? lanes.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.'),
       isMobile ? null : field('Lesebereich im Kanban', kbPane)),
     accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),
-    m365: h('div.set-panel',
+    m365: h('div.set-panel', { dataset: { testid: 'm365-panel' } },
       h('h3', 'Microsoft 365'),
       h('p.note', c.builtinClientId
         ? 'Diese Version enthält bereits eine App-Registrierung für die Anmeldung bei Microsoft 365. Eigene Werte sind nur für Sonderfälle nötig, etwa wenn Ihre Organisation eine eigene App-Registrierung vorschreibt.'

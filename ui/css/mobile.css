@@ -1558,3 +1558,16 @@ html.mobile .sn-field select.sn-base { -webkit-appearance: none; appearance: non
 html.mobile .sn-chev { flex: none; display: inline-flex; color: var(--text-dim); margin-left: -6px; }
 html.mobile .sig-flagwrap .sig-flags > .checkrow:first-child { border-top: 0 !important; }
 html.mobile .sig-flagwrap .sig-flags { padding-top: 0 !important; }
+
+/* ================================================================ round 19 */
+/* sheet: the explanation is centred like the sheet title */
+html.mobile .msheet-header { text-align: center; font-size: 13px; font-weight: 500; padding: 4px 20px 8px; }
+/* stepper: value as grey text, one pill "− | +" (as in iOS) */
+html.mobile .sn-field .sn-stepper input.sn-days { background: transparent; color: var(--text-2); text-align: right; width: 36px !important; max-width: 36px; }
+html.mobile .m-stepper { display: inline-flex; align-items: stretch; height: 36px; border-radius: 9px; background: var(--hover, #eef0f3); overflow: hidden; margin-left: 6px; }
+html.mobile .m-stepper .sn-step { width: 48px; height: 36px; border-radius: 0; background: transparent; color: var(--text); font-size: 22px; font-weight: 500; }
+html.mobile .m-stepper .sn-step + .sn-step { border-left: 1px solid var(--border-strong, #d0d4da); }
+html.mobile .m-stepper .sn-step:active { background: rgba(0,0,0,.06); }
+/* admin pages: stacked label + borderless field inside the white group */
+html.mobile :is([data-testid=m365-panel], [data-testid=google-panel]) .field input.input { border: 0; background: transparent; padding: 0; min-height: 40px; box-shadow: none; font-size: 16px; }
+html.mobile :is([data-testid=m365-panel], [data-testid=google-panel]) .field input.input::placeholder { color: var(--text-dim); }
