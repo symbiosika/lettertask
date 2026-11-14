@@ -248,6 +248,9 @@ export function showSheetMenu(items, { title } = {}) {
       body.appendChild(row);
     }
     sheet.appendChild(body);
+    const cancel = h('button.msheet-item.msheet-cancel', { type: 'button', dataset: { testid: 'msheet-cancel' } }, h('span.msheet-label', 'Abbrechen'));
+    cancel.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    sheet.appendChild(cancel);
   };
   render(items, null, title);
   let done = false;

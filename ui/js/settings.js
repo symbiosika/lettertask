@@ -1,5 +1,5 @@
 // Dialogs: settings, category manager, auto reply, welcome / account setup.
-import { call, isMobile } from './api.js';
+import { call, isMobile, isIOS } from './api.js';
 import { h, esc, toLocalIso, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, field, busyClick, loadingPill } from './dialogs.js';
@@ -214,12 +214,14 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null,
       h('h3', 'Neue E-Mails'),
       // Only the phone has a separate pass while the app is closed.
-      isMobile ? field('Abruf bei geschlossener App', bgInterval, 'Android ruft höchstens alle 15 Minuten ab, im Energiesparmodus auch seltener. Fällige Wiedervorlagen kommen trotzdem pünktlich zurück.') : null,
-      h('label.checkrow', push, 'Sofort benachrichtigen (Push)'),
-      h('p.note', 'Bei IMAP- und Gmail-Konten hält lettertask eine Verbindung zum Server offen und meldet neue E-Mails ohne Verzögerung. '
+      // iPhone: no background worker and no push service (yet) – say what happens instead.
+      isIOS ? h('p.note', 'Auf dem iPhone ruft lettertask neue E-Mails ab, solange die App geöffnet ist, und beim nächsten Öffnen.') : null,
+      isMobile && !isIOS ? field('Abruf bei geschlossener App', bgInterval, 'Android ruft höchstens alle 15 Minuten ab, im Energiesparmodus auch seltener. Fällige Wiedervorlagen kommen trotzdem pünktlich zurück.') : null,
+      isIOS ? null : h('label.checkrow', push, 'Sofort benachrichtigen (Push)'),
+      isIOS ? null : h('p.note', 'Bei IMAP- und Gmail-Konten hält lettertask eine Verbindung zum Server offen und meldet neue E-Mails ohne Verzögerung. '
         + (isMobile ? 'Android zeigt dafür eine dauerhafte Benachrichtigung, der Akkuverbrauch ist etwas höher. ' : '')
         + 'Microsoft-365-Konten werden weiterhin im eingestellten Intervall abgerufen.'),
-      pushStatus()),
+      isIOS ? null : pushStatus()),
     reading: h('div.set-panel',
       h('h3', 'Lesen'),
       field('Lesebereich', pane),

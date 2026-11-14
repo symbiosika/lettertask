@@ -1058,8 +1058,8 @@ function briefingCard(ev, { actions = false } = {}) {
         h('button.btn.small', { html: icon('decline', 12) + ' Ablehnen', onclick: busyClick(() => respond(ev, 'decline'), bar) }),
       );
     }
-    bar.append(h('span.spacer'), h('button.btn.small', { onclick: () => { closePeek(); openEvent(ev); } }, 'Öffnen'));
-    if (!calObj || calObj.canEdit) bar.append(h('button.btn.small', { onclick: () => { closePeek(); deleteEvent(ev).catch(reportError); } }, 'Löschen'));
+    bar.append(h('span.spacer'), h('button.btn.small.pk-open', { dataset: { testid: 'peek-open' }, onclick: () => { closePeek(); openEvent(ev); } }, isMobile && (!calObj || calObj.canEdit) ? 'Bearbeiten' : 'Öffnen'));
+    if (!calObj || calObj.canEdit) bar.append(h('button.btn.small.pk-delete', { dataset: { testid: 'peek-delete' }, onclick: () => { closePeek(); deleteEvent(ev).catch(reportError); } }, isMobile ? 'Termin löschen' : 'Löschen'));
     p.appendChild(bar);
   }
   return p;

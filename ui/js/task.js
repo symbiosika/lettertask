@@ -2,7 +2,7 @@
 // Created directly on the server (create_task): "Sofort" → inbox, otherwise → Wiedervorlage.
 // "Andere Person" (Delegation): the task goes out as a mail ("ToDo: …"); the copy for
 // yourself carries the hidden marker "[D_<address>]" and is followed up like a task.
-import { call, params, closeWindow, currentWindow } from './api.js';
+import { call, params, closeWindow, currentWindow, isMobile } from './api.js';
 import { h, $ } from './util.js';
 import { icon } from './icons.js';
 import { reportError, toast, confirmDialog, setPending } from './dialogs.js';
@@ -30,7 +30,7 @@ function render() {
 
   subject = h('input.task-subject#subject', { type: 'text', name: 'subject', placeholder: 'Was ist zu tun?', 'aria-label': 'Betreff', autocomplete: 'off' });
   subject.addEventListener('input', () => { markDirty(); document.title = subject.value.trim() ? `Aufgabe: ${subject.value.trim()}` : 'Neue Aufgabe'; });
-  due = duePicker({ config: state.config, allowNow: true, variant: 'chips', testid: 'task-due', onChange: markDirty });
+  due = duePicker({ config: state.config, allowNow: true, variant: isMobile ? 'select' : 'chips', testid: 'task-due', onChange: markDirty });
 
   repeat = h('select.input.task-repeat', { name: 'recurrence', dataset: { testid: 'task-repeat' }, 'aria-label': 'Wiederholen' });
   for (const [k, label] of RECURRENCE_OPTIONS) repeat.appendChild(h('option', { value: k || '' }, label));

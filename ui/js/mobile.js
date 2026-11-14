@@ -127,10 +127,8 @@ export function initMobile(h0) {
   setupContacts();
   renderReadbar();
   // Work week and week are too narrow for a phone: start with the agenda once.
-  if (!load('mCalViewSet', false)) {
-    store('mCalViewSet', true);
-    if (['workweek', 'week'].includes(calendar.getView())) calendar.setView('sprint');
-  }
+  store('mCalViewSet', true);
+  if (['workweek', 'week'].includes(calendar.getView())) calendar.setView('sprint');
   on('open-window', (p) => { if (p && p.kind) openSheet(p.kind, p.query || ''); });
   update();
 }
@@ -190,7 +188,7 @@ function renderAppbar() {
   }
   if (state.mode === 'mail' && st.search) {
     bar.classList.add('searching');
-    const input = h('input.m-search-input', { type: 'search', placeholder: 'In Mails suchen', enterkeyhint: 'search', autocomplete: 'off', spellcheck: false, dataset: { testid: 'm-search-input' } });
+    const input = h('input.m-search-input', { type: 'search', placeholder: 'Suchen (Eingabe: auf dem Server)', enterkeyhint: 'search', autocomplete: 'off', spellcheck: false, dataset: { testid: 'm-search-input' } });
     input.value = st.searchText || '';
     input.addEventListener('input', () => {
       st.searchText = input.value;
@@ -206,7 +204,8 @@ function renderAppbar() {
     });
     bar.append(btn('chevronLeft', 'Suche schließen', () => st.search(), 'm-search-close'), input);
     renderSearchRow();
-    setTimeout(() => input.focus(), 30);
+    input.focus();
+    setTimeout(() => { if (document.activeElement !== input) input.focus(); }, 30);
     return;
   }
   const menu = btn('menu', 'Menü', () => openDrawer(), 'm-menu');
@@ -256,7 +255,8 @@ function calTitle() {
   return `${dm(start)} – ${dm(last)}`;
 }
 
-const VIEWS = [['sprint', 'Agenda (14 Tage)', 'bullets'], ['day', 'Tag', 'dayView'], ['week', 'Woche', 'weekView'], ['month', 'Monat', 'monthView']];
+// No week view on the phone: seven columns of 40px leave no room for a title.
+const VIEWS = [['sprint', 'Agenda (14 Tage)', 'bullets'], ['day', 'Tag', 'dayView'], ['month', 'Monat', 'monthView']];
 function viewIcon(v) { return (VIEWS.find((x) => x[0] === v) || VIEWS[0])[2]; }
 function calViewItems() {
   const cur = calendar.getView();
@@ -291,7 +291,7 @@ function renderSearchRow() {
     b.addEventListener('click', () => { st.searchScope = v; renderSearchRow(); });
     return b;
   };
-  row.append(chip('all', 'Alle Ordner'), chip('folder', 'Dieser Ordner'), h('span.m-search-hint', 'Eingabe: auf dem Server suchen'));
+  row.append(chip('all', 'Alle Ordner'), chip('folder', 'Dieser Ordner'));
 }
 
 // ------------------------------------------------------------------ drawer (the sidebar)
@@ -427,13 +427,13 @@ function renderReadbar() {
     h('span.spacer'),
     btn('archive', 'Archivieren', () => mail.archiveSelected().then(closeReader), 'm-read-archive'),
     btn('snooze', 'Auf Wiedervorlage', () => snoozeSheet(closeReader), 'm-read-snooze'),
-    btn('delete', 'Löschen', () => mail.deleteSelected(false).then(closeReader), 'm-read-delete'),
     btn('more', 'Weitere Aktionen', () => showSheetMenu([
       ...mail.moreItems(false).filter((it) => it && !/Fenster|Quelltext/.test(it.label || '')),
       { separator: true },
       { label: 'Kategorien', icon: 'tag', submenu: () => mail.categoryMenuItems() },
       { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
-    ]), 'm-read-more'));
+    ]), 'm-read-more'),
+    btn('delete', 'Löschen', () => mail.deleteSelected(false).then(closeReader), 'm-read-delete'));
   ui.readactions.innerHTML = '';
   const act = (ic, label, mode) => {
     const b = h('button.m-readact', { type: 'button', dataset: { testid: 'm-' + mode }, html: icon(ic, 20) + `<span>${label}</span>` });

@@ -519,6 +519,9 @@ function setupShortcuts() {
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     const ctrl = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
+    // Phone: no single-key shortcuts – a key that reaches the page before a
+    // field got focus must not archive or delete anything.
+    if (isMobile && !ctrl) return;
     if (e.key === 'F9') { e.preventDefault(); syncAll(); return; }
     if (ctrl && k === '1') { e.preventDefault(); setMode('mail'); return; }
     if (ctrl && k === '2') { e.preventDefault(); setMode('calendar'); return; }

@@ -2,12 +2,14 @@
 // The iframe keeps styles of quoted/forwarded HTML mails away from the window's own UI.
 import { h } from './util.js';
 import { icon } from './icons.js';
-import { promptDialog, showMenuAt } from './dialogs.js';
+import { promptDialog, showMenuAt, showSheetMenu } from './dialogs.js';
+import { isMobile } from './api.js';
 import { installNativeImageMenu } from './imagemenu.js';
 
 installNativeImageMenu();
 
 const COLORS = ['#000000', '#7f7f7f', '#c00000', '#ff0000', '#ffc000', '#00b050', '#0070c0', '#002060', '#7030a0'];
+const COLOR_NAMES = [['#000000', 'Schwarz'], ['#7f7f7f', 'Grau'], ['#c00000', 'Dunkelrot'], ['#ff0000', 'Rot'], ['#ffc000', 'Orange'], ['#00b050', 'Grün'], ['#0070c0', 'Blau'], ['#002060', 'Dunkelblau'], ['#7030a0', 'Lila']];
 // html needs a height so the body's min-height fills the editor: clicks
 // anywhere in an empty editor land in the text and it is never 0 px tall.
 const BASE_CSS = 'html{height:100%}body{font-family:"Segoe UI",Calibri,system-ui,Arial,sans-serif;font-size:11pt;line-height:1.45;color:#1f2328;margin:14px 20px;max-width:820px;word-wrap:break-word;min-height:calc(100% - 28px);box-sizing:border-box}p{margin:0}img{max-width:100%}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex}';
@@ -499,7 +501,25 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
   }
   const sep = () => h('span.ed-sep');
 
-  const toolbar = h('div.ed-toolbar',
+  // Phone: a few 44pt buttons; the rest of the formatting lives in an "Aa" sheet.
+  const formatSheet = () => showSheetMenu([
+    { label: 'Unterstrichen', icon: 'underline', onClick: () => exec('underline') },
+    { label: 'Nummerierung', icon: 'numbers', onClick: () => exec('insertOrderedList') },
+    { label: 'Link einfügen', icon: 'link', onClick: () => editLink() },
+    { label: 'Link entfernen', icon: 'link', onClick: removeLink },
+    { label: 'Zitat', icon: 'quote', onClick: () => exec('formatBlock', 'blockquote') },
+    { label: 'Schriftfarbe', icon: 'textColor', submenu: () => COLOR_NAMES.map(([c, n]) => ({ label: n, iconHtml: `<span class="ed-swatch" style="background:${c}"></span>`, onClick: () => exec('foreColor', c) })) },
+    { label: 'Schriftgröße', icon: 'textColor', submenu: () => [['2', 'Klein'], ['3', 'Normal'], ['4', 'Groß'], ['5', 'Sehr groß']].map(([v, l]) => ({ label: l, onClick: () => exec('fontSize', v) })) },
+    { separator: true },
+    { label: 'Formatierung löschen', icon: 'clearFormat', onClick: () => exec('removeFormat') },
+  ], { title: 'Formatierung' });
+  const toolbar = isMobile ? h('div.ed-toolbar.m-ed-toolbar',
+    ...lead,
+    btn('bold', 'Fett', () => exec('bold'), 'bold'),
+    btn('italic', 'Kursiv', () => exec('italic'), 'italic'),
+    btn('bullets', 'Aufzählung', () => exec('insertUnorderedList')),
+    (() => { const b = h('button.ed-btn.ed-aa', { type: 'button', title: 'Weitere Formatierung', 'aria-label': 'Weitere Formatierung', dataset: { testid: 'ed-format' } }, 'Aa'); b.addEventListener('mousedown', (e) => e.preventDefault()); b.addEventListener('click', formatSheet); return b; })(),
+  ) : h('div.ed-toolbar',
     ...lead, lead.length ? sep() : null,
     btn('bold', 'Fett (Strg+B)', () => exec('bold'), 'bold'),
     btn('italic', 'Kursiv (Strg+I)', () => exec('italic'), 'italic'),

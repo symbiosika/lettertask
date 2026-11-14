@@ -626,6 +626,7 @@ function renderListHead() {
     const o = list.search.opts || {};
     const scope = o.scope === 'all' ? 'alle Ordner' : (f ? f.displayName : 'aktueller Ordner');
     els.searchbar.innerHTML = '';
+    els.searchbar.classList.remove('local');
     els.searchbar.append(
       h('span', { html: icon('search', 15) }),
       h('span.sb-text', `Suchergebnisse für „${list.search.text}“`),
@@ -635,6 +636,7 @@ function renderListHead() {
     els.searchbar.classList.remove('hidden');
   } else if (list.text) {
     els.searchbar.innerHTML = '';
+    els.searchbar.classList.add('local');
     els.searchbar.append(h('span', { html: icon('filter', 15) }), h('span.sb-text', `Gefiltert: „${list.text}“`),
       h('button.icon-btn.sm', { type: 'button', title: 'Filter entfernen', html: icon('close', 14), onclick: () => clearSearch() }));
     els.searchbar.classList.remove('hidden');
@@ -875,8 +877,18 @@ function paintListFooter() {
   if (!items.length && listLoading()) {
     els.list.appendChild(h('div.loading-state', { dataset: { testid: 'list-loading' } }, h('span.busy'), h('div', 'Nachrichten werden geladen…')));
   } else if (!items.length) {
-    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : isDelegated() ? 'people' : 'inbox', 40) }),
-      h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.')));
+    const q = list.search ? list.search.text : list.text;
+    let action = null;
+    if (isMobile && list.text && !list.search) {
+      action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-server-search' }, html: icon('search', 18) + '<span>In allen Ordnern auf dem Server suchen</span>' });
+      action.addEventListener('click', () => serverSearch(list.text, { scope: 'all' }).catch(reportError));
+    } else if (isMobile && isToday()) {
+      action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-new-task' }, html: icon('task', 18) + '<span>Aufgabe anlegen</span>' });
+      action.addEventListener('click', () => { const mb = state.current.mailboxId; openWindow('task', mb ? { mailboxId: mb } : {}).catch(reportError); });
+    }
+    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(q ? 'search' : isToday() ? 'sun' : isDelegated() ? 'people' : 'inbox', 40) }),
+      h('div', q ? `Keine Treffer für „${q}“${list.search ? '.' : ' in diesem Ordner.'}` : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.'),
+      action));
   } else if (!list.search && !isVirtual() && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
     const foot = h('div.load-more', { dataset: { testid: 'list-more' } });
     if (list.loading) foot.append(h('span.busy.on.inline-busy'), ' Weitere Elemente werden geladen…');
