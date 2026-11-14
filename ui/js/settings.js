@@ -211,7 +211,7 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
       field('Abgleich alle', h('span.inline', interval, h('span.m-unit', 'Sekunden'), h('span.dim', isMobile ? 'Standard, je Konto unter „Konten“ änderbar' : 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
-      h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
+      h('label.checkrow', confetti, isMobile ? 'Konfetti bei erledigten Aufgaben' : 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null,
       h('h3', 'Neue E-Mails'),
       // Only the phone has a separate pass while the app is closed.
@@ -240,7 +240,7 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
       snooze.el),
     kanban: h('div.set-panel',
       h('h3', 'Kanban'),
-      h('p.note', 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen. Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.'),
+      h('p.note', 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen.' + (isMobile ? '' : ' Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.')),
       lanes ? lanes.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.'),
       field('Lesebereich im Kanban', kbPane)),
     accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),

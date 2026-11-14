@@ -1034,3 +1034,107 @@ html.mobile .toast-x { min-width: 44px; min-height: 44px; justify-content: cente
 .m-agenda-row { min-height: 52px; cursor: pointer; }
 .m-agenda-join { height: 44px; border-radius: 22px; padding: 0 14px; }
 .m-agenda-all { height: 44px; }
+
+/* ================================================================ round 6 */
+/* settings pages scroll as a whole (desktop caps the content at 64vh) */
+html.mobile .m-settings .set-content { max-height: none; overflow: visible; }
+html.mobile .settings-modal .modal-body { overflow-y: auto; }
+/* accounts page */
+html.mobile .acc-panel { gap: 18px; }
+html.mobile .acc-list { max-height: none; border: 0; padding: 0; background: var(--bg); border-radius: 12px; }
+html.mobile .acc-item { min-height: 56px; padding: 6px 12px; border-radius: 0; gap: 12px; }
+html.mobile .acc-item + .acc-item { border-top: 1px solid var(--border); }
+html.mobile .acc-item.selected { background: transparent; }
+html.mobile .acc-e { font-size: 13px; }
+html.mobile .acc-side-foot .btn { min-height: 44px; font-size: 16px; border: 0; background: transparent; color: var(--accent); padding: 0 4px; }
+html.mobile .acc-head { flex-direction: column; align-items: center; text-align: center; }
+html.mobile .acc-head-text { align-items: center; }
+html.mobile .acc-avatar-edit .btn { min-height: 44px; }
+html.mobile .wiz-grid, html.mobile .acc-detail .wiz-grid { grid-template-columns: 1fr; gap: 6px; max-width: none; }
+html.mobile .wiz-grid .input { width: 100%; min-height: 44px; font-size: 16px; }
+html.mobile .acc-swatches { gap: 10px; }
+html.mobile .acc-swatch { width: 36px; height: 36px; font-size: 13px; }
+html.mobile .acc-color { width: 44px; height: 36px; }
+html.mobile .acc-badge-text { width: 100%; min-height: 64px; font-size: 16px; }
+html.mobile .acc-order .icon-btn.sm { width: 44px; height: 32px; }
+html.mobile .acc-actions .btn { min-height: 44px; font-size: 15px; }
+html.mobile .acc-detail { border-top: 0; padding-top: 0; }
+/* signatures page: list above the editor */
+html.mobile .sig-main { flex-direction: column; min-height: 0; }
+html.mobile .sig-side { width: auto; }
+html.mobile .sig-list { min-height: 0; border: 0; padding: 0; background: var(--bg); border-radius: 12px; }
+html.mobile .sig-list:empty { display: none; }
+html.mobile .sig-item { height: auto; min-height: 48px; padding: 0 4px 0 14px; border-radius: 0; }
+html.mobile .sig-item + .sig-item { border-top: 1px solid var(--border); }
+html.mobile .sig-tools .icon-btn { opacity: 1; width: 44px; height: 44px; }
+html.mobile .sig-side .btn { min-height: 44px; font-size: 16px; }
+html.mobile .sig-empty { min-height: 0; padding: 14px; font-size: 14.5px; border: 0; background: var(--canvas); }
+html.mobile .sig-defbadge { font-size: 12px; }
+html.mobile .sig-flags-title { font-size: 15px; margin-top: 4px; }
+html.mobile .sig-editor-box .ed-btn { width: 44px; height: 44px; }
+/* kanban lanes page */
+html.mobile .lane-list { border: 0; padding: 0; background: var(--bg); gap: 0; border-radius: 12px; overflow: hidden; }
+html.mobile .lane-item { min-height: 48px; box-shadow: none; border-radius: 0; padding: 0 4px 0 14px; font-size: 16px; }
+html.mobile .lane-item + .lane-item { border-top: 1px solid var(--border); }
+html.mobile .lane-item .icon-btn { width: 44px; height: 44px; }
+html.mobile .lane-none { padding: 12px 14px; font-size: 15px; color: var(--text-dim); background: var(--canvas); border-radius: 12px; }
+html.mobile .lane-add { flex-wrap: nowrap; }
+html.mobile .lane-add .input { min-height: 44px; font-size: 16px; min-width: 0; }
+html.mobile .lane-add .btn { flex: none; min-height: 44px; padding: 0 14px; font-size: 15px; white-space: nowrap; }
+html.mobile .m-settings .set-panel .field select { border: 0; background: var(--canvas); max-width: 60vw; }
+html.mobile .m-settings .set-panel .note { font-size: 14px; }
+html.mobile .acc-swatches { gap: 8px; }
+html.mobile .acc-swatch { width: 44px; height: 44px; }
+html.mobile .acc-color { width: 44px; height: 44px; }
+html.mobile .kind-badge, html.mobile .kind-badge.sm { font-size: 12px; padding: 1px 6px; }
+html.mobile body.task .task-due, html.mobile body.task .task-row:has(.task-repeat) { cursor: pointer; }
+/* settings: section captions above white row groups */
+html.mobile .m-settings .set-panel { background: transparent; padding: 0; }
+html.mobile .m-settings .set-panel > h3 { margin: 22px 0 6px; padding: 0 16px; }
+html.mobile .m-settings .set-panel > :is(.field, .checkrow, .sig-panel, .acc-panel, .lane-editor, div:not(.m-unit)) { background: var(--bg); padding-left: 16px; padding-right: 16px; }
+html.mobile .m-settings .set-panel > :is(.field, .checkrow):is(h3 + *, :first-child) { border-radius: 12px 12px 0 0; border-top: 0; }
+html.mobile .m-settings .set-panel > :is(.field, .checkrow):is(:last-child, :has(+ h3), :has(+ .note)) { border-radius: 0 0 12px 12px; }
+html.mobile .m-settings .set-panel > :is(.field, .checkrow):is(h3 + *):is(:last-child, :has(+ h3), :has(+ .note)) { border-radius: 12px; }
+html.mobile .m-settings .set-panel > .note { padding: 7px 16px 0; margin: 0; background: transparent; font-size: 13px; }
+html.mobile .m-settings .set-panel > :is(.sig-panel, .acc-panel, .lane-editor) { background: transparent; padding: 0; }
+/* contact detail: captions outside, white tiles, 16pt margins */
+html.mobile .ct-body { padding: 0 16px 24px; }
+html.mobile .ct-sec { background: transparent; padding: 0; }
+html.mobile .ct-sec-title { padding: 0 16px 6px; }
+html.mobile .ct-sec > .ct-line, html.mobile .ct-sec > .ct-notes { background: var(--bg); padding: 0 16px; }
+html.mobile .ct-sec > .ct-line:nth-child(2) { border-radius: 12px 12px 0 0; }
+html.mobile .ct-sec > .ct-line:last-child { border-radius: 0 0 12px 12px; }
+html.mobile .ct-sec > .ct-line:nth-child(2):last-child { border-radius: 12px; }
+html.mobile .ct-sec > .ct-line + .ct-line { border-top: 1px solid var(--border); }
+html.mobile .ct-sec > .ct-notes { border-radius: 12px; padding: 12px 16px; }
+.ct-round { background: var(--bg) !important; height: 56px; line-height: 16px; }
+html.mobile .ct-detail a.ct-round { height: 56px; }
+/* event attendees: the input gets its own line once there is a token */
+html.mobile .m-evform .rcpt-box:has(.rcpt-chip) .rcpt-input { flex-basis: 100%; }
+/* contact phone row */
+html.mobile .ct-pkind { min-width: 132px; }
+/* A–Z only on the list itself */
+body.m-ct-detail .m-az, body:has(.modal-overlay) .m-az, body:has(.m-frame) .m-az { display: none; }
+/* event brief: no coloured top line, "vorbei" as a quiet caption */
+html.mobile .peek { border-top: 0 !important; }
+html.mobile .peek .pill.past, html.mobile .peek [class*=past] { background: transparent; padding: 0; color: var(--text-dim); }
+/* day view "ganztägig" aligned with the hour labels */
+html.mobile .tg-allday .tg-gutter::after { display: block; width: 100%; box-sizing: border-box; text-align: right; padding: 6px 8px 0 4px; }
+/* select mode: title fits next to "Alle" */
+.m-appbar.contextual .m-title-main { font-size: 16px; }
+.m-appbar.contextual .m-icon + .m-icon { margin-left: 0; }
+.m-appbar.contextual [data-testid=m-sel-delete] { margin-left: 4px; }
+body.m-select .msg .avatar { display: grid !important; place-items: center; overflow: visible !important; }
+body.m-select .msg.selected .avatar::after { transform: translateY(-1px) rotate(-45deg); }
+/* today: meetings as a white group on canvas */
+html.mobile body.m-app .listpane:has(.m-agenda:not(.hidden)) { background: var(--canvas); }
+.m-agenda { background: var(--bg); }
+/* select mode: a clean ring / check (SVG), title fits */
+body.m-select .msg .avatar { width: 26px !important; height: 26px !important; margin: 10px 8px 0 !important; font-size: 0 !important; }
+body.m-select .msg .avatar::after { content: none !important; }
+body.m-select .msg.selected .avatar {
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 16px no-repeat !important;
+}
+.m-appbar.contextual .m-title { padding: 0 2px; }
+.m-appbar.contextual .m-title-main { font-size: 15.5px; }
+.m-appbar.contextual .m-textbtn { padding: 0 6px; }

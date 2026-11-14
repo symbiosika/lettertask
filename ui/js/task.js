@@ -96,6 +96,15 @@ function render() {
     $('#foot').classList.add('m-hidden');
     // greyed out until there is a title (like "Hinzufügen" in iOS sheets)
     const sync = () => { createBtn.disabled = !subject.value.trim(); };
+    // the whole row opens its picker, not only the value text
+    for (const row of document.querySelectorAll('.task-due, .task-row:has(.task-repeat)')) {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('select, input, button')) return;
+        const sel = row.querySelector('select');
+        if (!sel) return;
+        try { sel.showPicker(); } catch { sel.focus(); }
+      });
+    }
     subject.addEventListener('input', sync);
     sync();
   }

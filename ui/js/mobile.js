@@ -169,7 +169,7 @@ async function renderTodayAgenda() {
     setTimeout(() => { agendaEvents = null; }, 5 * 60000); // refreshed every few minutes
   }
   const evs = agendaEvents
-    .filter((e) => e.isAllDay || new Date(e.end) > now)
+    .filter((e) => (e.isAllDay ? calendar.allDayRange(e).end > new Date(now.getFullYear(), now.getMonth(), now.getDate()) : new Date(e.end) > now))
     .sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
   const pad = (n) => String(n).padStart(2, '0');
   const time = (e) => (e.isAllDay ? 'ganztägig' : `${pad(new Date(e.start).getHours())}:${pad(new Date(e.start).getMinutes())}`);
