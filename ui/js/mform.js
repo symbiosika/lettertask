@@ -43,7 +43,7 @@ export function mSwitchRow(label, checked, onChange, opts = {}) {
 /** Row around a native <select>: value right-aligned, the system picker opens on tap. */
 export function mSelectRow(label, select, opts = {}) {
   select.classList.add('m-select');
-  return mRow(label, select, { ...opts, className: 'm-row-select' });
+  return mRow(label, select, { chevron: true, ...opts, className: 'm-row-select' });
 }
 
 /** Full-width red action row (delete). */

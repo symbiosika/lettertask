@@ -1,5 +1,5 @@
 // Contacts module: source list (sidebar), contact list, detail card, editor dialog.
-import { call, openWindow } from './api.js';
+import { call, openWindow, isMobile } from './api.js';
 import { h, esc, initials, avatarColor, debounce, load, store, EMAIL_RE } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, showMenu, busyClick } from './dialogs.js';
@@ -174,7 +174,7 @@ function renderDetail() {
         h('h2.ct-name', { dataset: { testid: 'contact-name' } }, name),
         role ? h('div.ct-role', role) : null,
         h('div.ct-origin.dim', `${SOURCE_LABEL[c.source] || c.source}${acc ? ' · ' + accountLabel(acc) : ''}${c.readOnly ? ' · schreibgeschützt' : ''}`)),
-      h('div.ct-actions',
+      isMobile ? roundActions(c) : h('div.ct-actions',
         btn('E-Mail schreiben', 'mail', () => writeTo(c, c.emails[0]), { primary: true, disabled: !c.emails.length, testid: 'contact-write' }),
         btn('Bearbeiten', 'edit', () => editContact(c), { testid: 'contact-edit' }),
         btn('Löschen', 'delete', () => deleteContact(c), { disabled: c.readOnly, testid: 'contact-delete' }))),
@@ -184,10 +184,28 @@ function renderDetail() {
         a.addEventListener('click', (ev) => { ev.preventDefault(); writeTo(c, e); });
         return h('div.ct-line', a);
       })),
-      section('Telefon', 'phone', (c.phones || []).map((p) => h('div.ct-line', h('span.ct-kind', (PHONE_KINDS.find(([k]) => k === p.kind) || [0, p.kind])[1]), h('span.selectable', p.number)))),
+      section('Telefon', 'phone', (c.phones || []).map((p) => h('div.ct-line', h('span.ct-kind', (PHONE_KINDS.find(([k]) => k === p.kind) || [0, p.kind])[1]),
+        isMobile ? h('a.ct-tel', { href: 'tel:' + p.number.replace(/[^+\d]/g, ''), dataset: { testid: 'contact-phone' } }, p.number) : h('span.selectable', p.number)))),
       section('Firma', 'building', [c.company, c.jobTitle].filter(Boolean).map((t) => h('div.ct-line.selectable', t))),
-      section('Notizen', 'note', c.notes ? [h('div.ct-notes.selectable', c.notes)] : [])));
+      section('Notizen', 'note', c.notes ? [h('div.ct-notes.selectable', c.notes)] : []),
+      // Phone: delete as a red row at the very end.
+      isMobile && !c.readOnly ? h('button.ct-delete-row', { type: 'button', dataset: { testid: 'contact-delete' }, onclick: busyClick(() => deleteContact(c)) }, 'Kontakt löschen') : null));
   els.detail.appendChild(card);
+}
+
+/** Phone: round actions under the name (Mail, Anrufen, Bearbeiten), like Contacts on iOS. */
+function roundActions(c) {
+  const phone = (c.phones || []).find((p) => p.number);
+  const act = (label, ic, onClick, { disabled, testid, href } = {}) => {
+    const el = h(href ? 'a.ct-round' : 'button.ct-round', { ...(href ? { href } : { type: 'button', disabled: !!disabled }), dataset: { testid: testid || '' }, 'aria-disabled': disabled ? 'true' : 'false' },
+      h('span.ct-round-ic', { html: icon(ic, 22) }), h('span.ct-round-label', label));
+    if (onClick && !disabled) el.addEventListener('click', busyClick(onClick));
+    return el;
+  };
+  return h('div.ct-rounds',
+    act('E-Mail', 'mail', () => writeTo(c, c.emails[0]), { disabled: !c.emails.length, testid: 'contact-write' }),
+    phone ? act('Anrufen', 'phone', null, { href: 'tel:' + phone.number.replace(/[^+\d]/g, ''), testid: 'contact-call' }) : act('Anrufen', 'phone', null, { disabled: true, testid: 'contact-call' }),
+    act('Bearbeiten', 'edit', () => editContact(c), { testid: 'contact-edit' }));
 }
 
 function mailboxForContact(c) {

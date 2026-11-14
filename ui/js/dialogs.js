@@ -52,6 +52,26 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
       if (b.id) btn.id = b.id;
       footer.appendChild(btn);
     }
+    // Phone: a form dialog gets an iOS sheet header – "Abbrechen" · title · action –
+    // instead of a desktop footer (alerts keep their buttons at the bottom).
+    const cancelDef = buttons.find((b) => b.cancel);
+    const primaryDef = buttons.find((b) => b.primary);
+    const isForm = body && body.querySelector && (body.querySelector('input:not([type=hidden]), select, textarea, [contenteditable]') || /settings|sig-modal|ct-/.test(className));
+    if (isMobile && cancelDef && primaryDef && isForm) {
+      const btns = [...footer.children];
+      const fCancel = btns[buttons.indexOf(cancelDef)];
+      const fPrimary = btns[buttons.indexOf(primaryDef)];
+      const bar = dlg.querySelector('.modal-title');
+      bar.innerHTML = '';
+      const left = h('button.m-modal-cancel', { type: 'button', dataset: { testid: 'modal-cancel' } }, cancelDef.label);
+      left.addEventListener('click', () => fCancel.click());
+      const right = h('button.m-modal-action', { type: 'button', dataset: { testid: 'modal-ok' } }, primaryDef.label);
+      right.addEventListener('click', () => fPrimary.click());
+      bar.append(left, h('span.m-modal-title', title), right);
+      dlg.classList.add('m-navmodal');
+      fCancel.classList.add('m-hidden'); fPrimary.classList.add('m-hidden');
+      if (buttons.length === 2) footer.classList.add('m-hidden');
+    }
     function onKey(e) {
       // Only the topmost dialog reacts (nested dialogs, e.g. a confirm inside the settings).
       const overlays = document.querySelectorAll('.modal-overlay');
@@ -228,7 +248,7 @@ export function showSheetMenu(items, { title } = {}) {
       if (it.separator) { body.appendChild(h('div.msheet-sep')); continue; }
       if (it.header) { body.appendChild(h('div.msheet-header', it.header)); continue; }
       const hint = it.shortcut && !KEY_HINT.test(it.shortcut) ? it.shortcut : '';
-      const row = h('button.msheet-item' + (it.disabled ? '.disabled' : '') + (it.checked ? '.checked' : ''), { type: 'button', role: 'menuitem', disabled: !!it.disabled },
+      const row = h('button.msheet-item' + (it.disabled ? '.disabled' : '') + (it.checked ? '.checked' : '') + (it.danger ? '.danger' : ''), { type: 'button', role: 'menuitem', disabled: !!it.disabled },
         h('span.msheet-icon', { html: it.checked ? icon('check', 18) : (it.iconHtml || (it.icon ? icon(it.icon, 20) : '')) }),
         h('span.msheet-label', it.label),
         hint ? h('span.msheet-hint', hint) : null,

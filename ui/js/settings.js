@@ -172,8 +172,9 @@ function lanesPanel(initialAccountId) {
   };
 }
 
-export async function openSettings(initialTab = 'general', { accountId = null } = {}) {
-  initialTab = TAB_ALIASES[initialTab] || initialTab;
+export async function openSettings(initialTab = null, { accountId = null } = {}) {
+  const explicitTab = !!initialTab;
+  initialTab = TAB_ALIASES[initialTab] || initialTab || 'general';
   const c = { ...state.config };
   // OAuth fields only hold the user's own overrides; empty = built-in default (never shown).
   const clientId = h('input.input', { value: c.clientId || '', placeholder: c.builtinClientId ? 'Standard' : '00000000-0000-0000-0000-000000000000', name: 'clientId', spellcheck: false });
@@ -209,7 +210,7 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const panels = {
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
-      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
+      field('Abgleich alle', h('span.inline', interval, h('span.m-unit', 'Sekunden'), h('span.dim', isMobile ? 'Standard, je Konto unter „Konten“ änderbar' : 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
       h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null,
       h('h3', 'Neue E-Mails'),
@@ -263,20 +264,28 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   };
   const nav = h('div.set-nav', { role: 'tablist' });
   const content = h('div.set-content');
+  const root = h('div.settings' + (isMobile ? '.m-settings' : ''), nav, content);
+  // Phone: a list of sections like the Settings app; a section pushes its page.
+  const back = isMobile ? h('button.m-set-back', { type: 'button', dataset: { testid: 'settings-back' }, html: icon('chevronLeft', 20) + '<span>Einstellungen</span>' }) : null;
+  if (back) back.addEventListener('click', () => root.classList.remove('m-sub'));
   const show = (key) => {
     nav.querySelectorAll('.set-tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === key));
     content.innerHTML = '';
+    if (back) content.appendChild(back);
     content.appendChild(panels[key]);
+    root.classList.add('m-sub');
+    content.scrollTop = 0;
   };
   for (const [key, label, ic] of TABS) {
-    const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, 16) + `<span>${esc(label)}</span>` });
+    const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, isMobile ? 20 : 16) + `<span>${esc(label)}</span>` + (isMobile ? icon('chevronRight', 16) : '') });
     t.addEventListener('click', () => show(key));
     nav.appendChild(t);
   }
   show(panels[initialTab] ? initialTab : 'general');
+  if (isMobile && !explicitTab) root.classList.remove('m-sub');
 
   const res = await modal({
-    title: 'Einstellungen', body: h('div.settings', nav, content), width: 880, className: 'settings-modal',
+    title: 'Einstellungen', body: root, width: 880, className: 'settings-modal',
     buttons: [{ label: 'Speichern', value: 'ok', primary: true, id: 'settings-ok' }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: async () => {
       const iv = parseInt(interval.value, 10);

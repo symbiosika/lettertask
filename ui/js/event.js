@@ -136,10 +136,14 @@ function renderMobile() {
     return s;
   };
   const teams = mSwitchRow(google() ? 'Google Meet' : 'Teams-Besprechung', st.online, (v) => { st.online = v; dirty(); }, { icon: 'teams', testid: 'ev-teams' });
+  const n = required ? required.get().length + optional.get().length : 0;
   const rows = [
-    mRow('Teilnehmer', st.attendeesVisible ? 'Einladung absagen' : 'Einladen', { icon: 'people', chevron: true, onClick: () => toggleAttendees(), testid: 'ev-invite' }),
+    st.attendeesVisible
+      ? mRow('Teilnehmer', n === 1 ? '1 Person' : `${n} Personen`, { icon: 'people', chevron: true, onClick: () => required.focus(), testid: 'ev-attendees' })
+      : mRow('Teilnehmer', 'Einladen', { icon: 'people', chevron: true, onClick: () => toggleAttendees(), testid: 'ev-invite' }),
     teams.row,
   ];
+  if (st.attendeesVisible) rows.push(mRow(isNew ? 'Teilnehmer entfernen' : 'Einladung zurückziehen', null, { className: 'm-danger', onClick: () => toggleAttendees(), testid: 'ev-invite' }));
   const more = [
     mSelectRow('Erinnerung', sel(REMINDERS, st.reminder, (v) => { st.reminder = Number(v); }, 'ev-reminder'), { icon: 'bell' }),
     mRow('Wiederholen', st.recurrence ? recurrenceText(st.recurrence) : 'Nie', { icon: 'recurrence', chevron: true, onClick: () => recurrenceDialog(), testid: 'ev-series' }),
@@ -221,7 +225,9 @@ function renderForm() {
   f.allDay.addEventListener('change', () => { syncAllDay(); dirty(); });
   f.calendar.addEventListener('change', () => { dirty(); onCalendarChange(); });
 
-  const attLbl = (label, fld) => h('button.flabel.btn.small', { type: 'button', tabindex: '-1', onclick: () => fld.focus(), style: { justifyContent: 'flex-start' } }, label);
+  const attLbl = (label, fld) => (isMobile
+    ? h('span.m-att-lbl', { onclick: () => fld.focus() }, label.replace('…', ''))
+    : h('button.flabel.btn.small', { type: 'button', tabindex: '-1', onclick: () => fld.focus(), style: { justifyContent: 'flex-start' } }, label));
   f.rowsAtt = [attLbl('Erforderlich…', required), required.el, attLbl('Optional…', optional), optional.el];
   f.catRow = h('div.cat-picks');
   if (isMobile) {
@@ -232,8 +238,8 @@ function renderForm() {
     form.classList.add('m-evform');
     form.append(
       ...f.rowsAtt,
-      h('span', 'Titel'), f.subject,
-      h('span', 'Ort'), f.location,
+      h('span.m-lbl-hidden', 'Titel'), f.subject,
+      h('span.m-lbl-hidden', 'Ort'), f.location,
       h('span', 'Ganztägig'), h('label.inline.m-end', f.allDay),
       h('span', 'Beginn'), h('div.inline', f.startDate, f.startTime),
       h('span', 'Ende'), h('div.inline', f.endDate, f.endTime, f.recurText = h('span.dim.hidden')),

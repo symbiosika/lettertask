@@ -517,7 +517,7 @@ function renderTimeGrid() {
   scroll.appendChild(body);
   grid.appendChild(scroll);
   els.body.appendChild(grid);
-  scroll.scrollTop = prevScroll !== null ? prevScroll : SLOT_PX * 2 * 7;
+  scroll.scrollTop = prevScroll !== null ? prevScroll : SLOT_PX * 2 * 7 - 10;
   paintNowLine();
   if (cal.slot) {
     const col = cols.querySelector(`.tg-col[data-date="${toLocalIso(cal.slot.start).slice(0, 10)}"]`);
@@ -736,16 +736,22 @@ async function rescheduleEvent(ev, start, end) {
   refresh().catch(reportError);
 }
 
+// Phone: the month grid picks a day; its events are listed under the grid (as in iOS Calendar).
+let mSelDay = null;
 function renderMonth() {
   const { start } = range();
   els.body.innerHTML = '';
   const grid = h('div.monthgrid');
+  if (isMobile && (!mSelDay || mSelDay.getMonth() !== cal.date.getMonth())) {
+    const t = startOfDay(new Date());
+    mSelDay = t.getMonth() === cal.date.getMonth() && t.getFullYear() === cal.date.getFullYear() ? t : new Date(cal.date.getFullYear(), cal.date.getMonth(), 1);
+  }
   for (const wd of [1, 2, 3, 4, 5, 6, 0]) grid.appendChild(h('div.mg-wd', (isMobile ? WEEKDAYS_SHORT : WEEKDAYS)[wd]));
   const today = startOfDay(new Date());
   const m = cal.date.getMonth();
   for (let i = 0; i < 42; i++) {
     const d = addDays(start, i);
-    const cell = h('div.mg-cell' + (d.getMonth() !== m ? '.other' : '') + (sameDay(d, today) ? '.today' : ''), { dataset: { date: toLocalIso(d).slice(0, 10) } });
+    const cell = h('div.mg-cell' + (d.getMonth() !== m ? '.other' : '') + (sameDay(d, today) ? '.today' : '') + (isMobile && sameDay(d, mSelDay) ? '.sel' : ''), { dataset: { date: toLocalIso(d).slice(0, 10) } });
     cell.appendChild(h('div.mg-date', d.getDate() === 1 ? `${d.getDate()}. ${MONTHS[d.getMonth()].slice(0, 3)}` : String(d.getDate())));
     const evs = cal.events.filter((ev) => {
       if (ev.isAllDay) { const r = allDayRange(ev); return r.start <= d && r.end > d; }
@@ -762,12 +768,19 @@ function renderMonth() {
       const st = new Date(d); st.setHours(9);
       newEvent({ start: st, end: addMinutes(st, 30) });
     });
-    // Phone: the bars are too small to tap – a tap on the day opens it.
-    if (isMobile) cell.addEventListener('click', () => { cal.date = d; setView('day'); });
+    // Phone: the bars are too small to tap – a tap selects the day for the list below.
+    if (isMobile) cell.addEventListener('click', () => { mSelDay = d; renderMonth(); });
     else cell.addEventListener('click', (e) => { if (!e.target.closest('.ev')) { cal.slot = { start: new Date(d.getTime() + 9 * 3600000), end: new Date(d.getTime() + 9.5 * 3600000) }; grid.querySelectorAll('.mg-cell.sel').forEach((x) => x.classList.remove('sel')); cell.classList.add('sel'); closePeek(); } });
     grid.appendChild(cell);
   }
   els.body.appendChild(grid);
+  if (isMobile) {
+    const evs = eventsOn(mSelDay).sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
+    const list = h('div.m-daylist', { dataset: { testid: 'm-daylist' } },
+      h('div.m-daylist-head', `${WEEKDAYS[mSelDay.getDay()]}, ${mSelDay.getDate()}. ${MONTHS[mSelDay.getMonth()]}`),
+      ...(evs.length ? evs.map((ev) => eventBlock(ev, 'sprint')) : [h('div.m-daylist-empty', 'Keine Termine')]));
+    els.body.appendChild(list);
+  }
 }
 
 // ------------------------------------------------------------- "14 Tage"

@@ -40,6 +40,7 @@ function renderHead() {
   const head = $('#head');
   const more = h('button.icon-btn', { type: 'button', title: 'Weitere Optionen', 'aria-label': 'Weitere Optionen', dataset: { testid: 'compose-more' }, html: icon(isMobile ? 'more' : 'menu', 18) });
   more.addEventListener('click', () => showMenuAt(more, [
+    ...(isMobile && canArchiveSource() ? [{ label: DELEGATE ? 'Delegieren & archivieren' : 'Senden & archivieren', icon: 'archive', onClick: () => { store('composeSendMode', 'sendArchive'); return send_(); }, testid: 'compose-send-archive' }, { separator: true }] : []),
     { label: 'Als Entwurf speichern', icon: 'save', shortcut: 'Strg+S', onClick: () => save(false), testid: 'compose-save' },
     { label: 'Verwerfen', icon: 'delete', onClick: () => discard(), testid: 'compose-discard' },
     { separator: true },
@@ -49,6 +50,12 @@ function renderHead() {
   ]));
   titleEl = h('div.cw-title', 'Neue Nachricht');
   head.append(more, titleEl, h('span.cw-flags'));
+  // Phone: send as a round arrow top right, like Mail.
+  if (isMobile) {
+    const s = h('button.m-send', { type: 'button', title: DELEGATE ? 'Delegieren' : 'Senden', 'aria-label': DELEGATE ? 'Delegieren' : 'Senden', dataset: { testid: 'm-compose-send' }, html: icon('send', 20) });
+    s.addEventListener('click', () => { store('composeSendMode', 'send'); send_().catch(reportError); });
+    head.appendChild(s);
+  }
 }
 
 function setImportance(v) { st.importance = v; markDirty(); syncToggles(); }
@@ -109,6 +116,7 @@ function renderForm() {
   renderForm.paintFrom = paintFrom;
   sendSplit = send;
   sendrow.append(send, h('span.cw-from-lbl', 'Von'), fromChip);
+  if (isMobile) sendrow.classList.add('m-fromrow');
 
   // fields
   ccLink = h('button.linkbtn.cc-link', { type: 'button', dataset: { testid: 'add-ccbcc' }, onclick: () => showCcBcc(true) }, 'Cc & Bcc hinzufügen');
@@ -277,14 +285,20 @@ function reminderRow() {
   const onBtn = mk(true, 'Ein');
   const paint = () => {
     off.classList.toggle('on', !on); onBtn.classList.toggle('on', on);
+    if (sw) sw.checked = on;
     off.setAttribute('aria-checked', String(!on)); onBtn.setAttribute('aria-checked', String(on));
     picker.el.classList.toggle('hidden', !on);
     el.classList.toggle('active', on);
   };
+  // Phone: a switch row "Erinnerung an mich" – the segments stay (hidden) for the logic.
+  const sw = isMobile ? h('input.m-switch', { type: 'checkbox', role: 'switch', 'aria-label': 'Erinnerung an mich', dataset: { testid: 'remind-switch' } }) : null;
+  if (sw) sw.addEventListener('change', () => { on = sw.checked; paint(); });
   const el = h('div.cw-row.remind-row', { dataset: { testid: 'remind-row' } },
     h('span.cw-lbl.remind-lbl'),
     h('div.cw-val.remind-val', { title: 'Nach dem Senden liegt eine Kopie zum Nachfassen auf Wiedervorlage – „Antworten“ geht an die Empfänger.' },
-      h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich:</span>' }), seg, picker.el));
+      ...(isMobile
+        ? [h('label.m-remind', h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich</span>' }), sw)]
+        : [h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich:</span>' })]), seg, picker.el));
   paint();
   return {
     el,

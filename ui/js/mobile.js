@@ -123,6 +123,12 @@ export function initMobile(h0) {
 
   setupDrawer();
   setupList();
+  // The extended FAB folds into a circle while a list scrolls (it covers less).
+  document.addEventListener('scroll', (e) => {
+    const t = e.target;
+    if (!t || !t.closest || !t.closest('.msglist, .cal-body, .sprintgrid, .ct-list, .kb-body')) return;
+    ui.fab.classList.toggle('mini', t.scrollTop > 40);
+  }, true);
   setupBoard();
   setupContacts();
   renderReadbar();
@@ -178,12 +184,14 @@ function renderAppbar() {
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-select-count' } }, `${n} ausgewählt`)),
       btn('archive', 'Archivieren', () => mail.archiveSelected().then(endSelect), 'm-sel-archive'),
       btn('snooze', 'Auf Wiedervorlage', () => snoozeSheet(endSelect), 'm-sel-snooze'),
-      btn('delete', 'Löschen', () => mail.deleteSelected(false).then(endSelect), 'm-sel-delete'),
       btn('more', 'Weitere Aktionen', () => showSheetMenu([
+        { label: 'Alle auswählen', icon: 'check', onClick: () => { mail.selectAllVisible(); update(); }, testid: 'm-sel-all' },
+        { separator: true },
         ...mail.moreItems(false).filter((it) => it && !it.separator && !/Fenster|Quelltext/.test(it.label || '')),
         { label: 'Kategorien', icon: 'tag', submenu: () => mail.categoryMenuItems() },
         { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
-      ]), 'm-sel-more'));
+      ]), 'm-sel-more'),
+      btn('delete', 'Löschen', () => mail.deleteSelected(false).then(endSelect), 'm-sel-delete'));
     return;
   }
   if (state.mode === 'mail' && st.search) {
@@ -216,28 +224,37 @@ function renderAppbar() {
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-title' } }, folderTitle()),
         h('span.m-title-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : '')),
       btn('search', 'Suchen', () => openSearch(), 'm-search'),
-      mail.isVirtual() ? null : btn(kanban ? 'bullets' : 'kanban', kanban ? 'Als Liste' : 'Als Kanban', () => { mail.toggleView(); update(); }, 'm-view'),
-      accountButton());
+      accountButton(mail.isVirtual() ? null : { label: kanban ? 'Als Liste anzeigen' : 'Als Kanban-Board anzeigen', icon: kanban ? 'bullets' : 'kanban', onClick: () => { mail.toggleView(); update(); }, testid: 'm-view' }));
   } else if (state.mode === 'calendar') {
     bar.append(menu,
       btn('chevronLeft', 'Zurück', () => { calendar.step(-1); setTimeout(update, 50); }, 'm-cal-prev'),
       h('div.m-title.center', h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle())),
       btn('chevronRight', 'Vor', () => { calendar.step(1); setTimeout(update, 50); }, 'm-cal-next'),
       btn('today', 'Heute', () => { calendar.goToday(); setTimeout(update, 50); }, 'm-cal-today'),
-      btn(viewIcon(calendar.getView()), 'Ansicht', () => showSheetMenu(calViewItems(), { title: 'Ansicht' }), 'm-cal-view'));
+      viewButton());
   } else {
     bar.append(menu,
       h('div.m-title', h('span.m-title-main', 'Kontakte')),
-      btn('sync', 'Synchronisieren', () => hooks.syncAll(), 'm-ct-sync'),
       accountButton());
   }
 }
 
-function accountButton() {
+/** Calendar view as a labelled button ("Agenda ▾") instead of a bare icon. */
+function viewButton() {
+  const cur = VIEWS.find((x) => x[0] === calendar.getView()) || VIEWS[0];
+  const b = h('button.m-textbtn', { type: 'button', 'aria-label': 'Ansicht wählen', dataset: { testid: 'm-cal-view' }, html: `<span>${cur[0] === 'sprint' ? 'Agenda' : cur[1]}</span>` + icon('chevronDown', 14) });
+  b.addEventListener('click', () => showSheetMenu(calViewItems(), { title: 'Ansicht' }));
+  return b;
+}
+
+function accountButton(viewItem = null) {
   const a = state.accounts[0];
   const b = h('button.m-avatar', { type: 'button', title: a ? a.email : 'Konto', 'aria-label': 'Konto und Einstellungen', dataset: { testid: 'm-account' } });
   if (a) b.appendChild(accountAvatar(a, 'sm')); else b.innerHTML = icon('user', 22);
-  b.addEventListener('click', () => showSheetMenu(hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')), { title: a ? a.email : 'lettertask' }));
+  b.addEventListener('click', () => showSheetMenu([
+    ...(viewItem ? [viewItem, { separator: true }] : []),
+    ...hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')),
+  ], { title: a ? a.email : 'lettertask' }));
   return b;
 }
 
@@ -250,7 +267,7 @@ function calTitle() {
   const last = new Date(end.getTime() - 86400000);
   const dm = (d) => `${d.getDate()}. ${MONTHS_SHORT[d.getMonth()]}`;
   if (v === 'day') return `${WD_SHORT[start.getDay()]}, ${dm(start)}`;
-  if (v === 'month') return calendar.periodTitle();
+  if (v === 'month') return `${MONTHS_SHORT[start.getMonth() === last.getMonth() ? start.getMonth() : new Date(start.getTime() + 15 * 86400000).getMonth()]} ${new Date(start.getTime() + 15 * 86400000).getFullYear()}`;
   if (start.getMonth() === last.getMonth()) return `${start.getDate()}.–${dm(last)}`;
   return `${dm(start)} – ${dm(last)}`;
 }
@@ -332,6 +349,9 @@ function paintDrawerHead() {
 function openDrawer() {
   if (st.drawer) return;
   paintDrawerHead();
+  // A folder that is also a favourite is marked once (in Favoriten) – not twice.
+  const sel = [...document.querySelectorAll('#navpane .tree-node.selected')];
+  sel.forEach((n, i) => n.classList.toggle('m-dup', i > 0));
   document.body.classList.add('m-drawer-open');
   const pop = pushLayer(() => closeDrawer());
   st.drawer = () => pop();

@@ -12,6 +12,8 @@ const COLORS = ['#000000', '#7f7f7f', '#c00000', '#ff0000', '#ffc000', '#00b050'
 const COLOR_NAMES = [['#000000', 'Schwarz'], ['#7f7f7f', 'Grau'], ['#c00000', 'Dunkelrot'], ['#ff0000', 'Rot'], ['#ffc000', 'Orange'], ['#00b050', 'Grün'], ['#0070c0', 'Blau'], ['#002060', 'Dunkelblau'], ['#7030a0', 'Lila']];
 // html needs a height so the body's min-height fills the editor: clicks
 // anywhere in an empty editor land in the text and it is never 0 px tall.
+// Phone: the same 11pt mail text, shown larger (zoom keeps the sent formatting).
+const MOBILE_CSS = 'html{zoom:1.14}body{margin:12px 14px;min-height:calc(100% - 24px)}';
 const BASE_CSS = 'html{height:100%}body{font-family:"Segoe UI",Calibri,system-ui,Arial,sans-serif;font-size:11pt;line-height:1.45;color:#1f2328;margin:14px 20px;max-width:820px;word-wrap:break-word;min-height:calc(100% - 28px);box-sizing:border-box}p{margin:0}img{max-width:100%}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex}';
 
 function splitHtml(html) {
@@ -406,7 +408,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
 
   function setContent(x) {
     const { styles, body } = splitHtml(x);
-    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}</style>${styles}</head><body>${body}</body></html>`;
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}${isMobile ? MOBILE_CSS : ''}</style>${styles}</head><body>${body}</body></html>`;
   }
 
   const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };

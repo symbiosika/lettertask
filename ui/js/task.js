@@ -61,7 +61,7 @@ function render() {
     // The copy is a reminder for yourself; a recurring delegation would need a new mail each time.
     repeatRow.classList.toggle('hidden', delegated);
     $('#head .cw-title').textContent = delegated ? 'Neue Aufgabe delegieren' : 'Neue Aufgabe';
-    createBtn.querySelector('span').textContent = delegated ? 'Aufgabe senden' : 'Aufgabe anlegen';
+    createBtn.querySelector('span').textContent = isMobile ? (delegated ? 'Senden' : 'Hinzufügen') : delegated ? 'Aufgabe senden' : 'Aufgabe anlegen';
   };
 
   form.append(
@@ -86,8 +86,12 @@ function render() {
   $('#editor').after(attList);
   installFileDrop(addAttachment);
 
-  createBtn = h('button.btn.primary', { type: 'button', dataset: { testid: 'task-create' }, title: 'Aufgabe anlegen (Strg+Eingabe)', html: icon('task', 16) + '<span>Aufgabe anlegen</span>' });
+  createBtn = isMobile
+    ? h('button.m-nav-action', { type: 'button', dataset: { testid: 'task-create' } }, h('span', 'Hinzufügen'))
+    : h('button.btn.primary', { type: 'button', dataset: { testid: 'task-create' }, title: 'Aufgabe anlegen (Strg+Eingabe)', html: icon('task', 16) + '<span>Aufgabe anlegen</span>' });
   createBtn.addEventListener('click', () => create().catch(reportError));
+  // Phone: the action sits top right like in the event sheet; no footer.
+  if (isMobile) { $('#head').appendChild(createBtn); $('#foot').classList.add('m-hidden'); }
   const cancel = h('button.btn', { type: 'button', dataset: { testid: 'task-cancel' } }, 'Abbrechen');
   cancel.addEventListener('click', () => confirmClose().then((ok) => ok && closeWindow()));
   $('#foot').append(h('span.task-kbd', 'Strg+Eingabe: anlegen · Esc: abbrechen'), h('span.spacer'), cancel, createBtn);

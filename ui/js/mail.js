@@ -880,14 +880,14 @@ function paintListFooter() {
     const q = list.search ? list.search.text : list.text;
     let action = null;
     if (isMobile && list.text && !list.search) {
-      action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-server-search' }, html: icon('search', 18) + '<span>In allen Ordnern auf dem Server suchen</span>' });
+      action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-server-search' }, html: icon('search', 18) + '<span>Auf dem Server suchen</span>' });
       action.addEventListener('click', () => serverSearch(list.text, { scope: 'all' }).catch(reportError));
     } else if (isMobile && isToday()) {
       action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-new-task' }, html: icon('task', 18) + '<span>Aufgabe anlegen</span>' });
       action.addEventListener('click', () => { const mb = state.current.mailboxId; openWindow('task', mb ? { mailboxId: mb } : {}).catch(reportError); });
     }
     els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(q ? 'search' : isToday() ? 'sun' : isDelegated() ? 'people' : 'inbox', 40) }),
-      h('div', q ? `Keine Treffer für „${q}“${list.search ? '.' : ' in diesem Ordner.'}` : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.'),
+      h('div', q ? `Keine Treffer für „${q}“${list.search ? (list.search.opts && list.search.opts.scope === 'all' ? ' in allen Ordnern.' : '.') : ' in den geladenen Nachrichten dieses Ordners.'}` : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.'),
       action));
   } else if (!list.search && !isVirtual() && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
     const foot = h('div.load-more', { dataset: { testid: 'list-more' } });
@@ -1138,6 +1138,8 @@ const selectionChanged = debounce(() => {
 }, 50);
 
 /** Selects exactly these messages (phone: swipe, long press, selection mode). */
+export function selectAllVisible() { selectIds(visibleItems().map((m) => m.id)); }
+
 export function selectIds(ids) {
   list.selection = new Set(ids);
   list.cursor = ids[0] || null; list.anchor = list.cursor;

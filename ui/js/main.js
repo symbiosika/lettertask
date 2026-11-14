@@ -208,7 +208,7 @@ function appMenu() {
     { label: 'Abwesenheitsnotiz…', icon: 'outOfOffice', disabled: !o365, onClick: () => openAutoReply(o365.id), testid: 'menu-autoreply' },
     { separator: true },
     { label: 'Konto hinzufügen…', icon: 'user', onClick: () => addAccountFlow().catch(reportError), testid: 'menu-add-account' },
-    { label: 'Konto entfernen…', icon: 'signOut', disabled: !acc, onClick: () => removeAccountDialog() },
+    { label: 'Konto entfernen…', icon: 'signOut', danger: true, disabled: !acc, onClick: () => removeAccountDialog() },
     { separator: true },
     { label: 'Über…', icon: 'info', onClick: () => aboutDialog() },
   ];

@@ -145,11 +145,14 @@ test('Handy: Abruf bei geschlossener App einstellen', async ({ page }) => {
   await openApp(page);
   await page.locator('[data-testid=m-account]').tap();
   await page.locator('.msheet-item', { hasText: 'Einstellungen' }).tap();
+  // Phone: settings open as a list of sections; "Allgemein" pushes its page.
+  await page.locator('[data-testid=settings-tab-general]').tap();
   const sel = page.locator('[data-testid=set-bg-interval]');
   await expect(sel).toBeVisible();
   await expect(sel).toHaveValue('15');
   await sel.selectOption('60');
-  await page.locator('#settings-ok').tap();
+  // Form dialogs carry their action in the header ("Abbrechen · Titel · Speichern").
+  await page.locator('[data-testid=modal-ok]').tap();
   await expect(page.locator('.modal', { hasText: 'Einstellungen' })).toHaveCount(0);
   const cfg = await (await page.request.post('/api/call/get_config', { data: {} })).json();
   expect(cfg.backgroundIntervalMins).toBe(60);
