@@ -159,7 +159,14 @@ export function update() {
   // The app-bar title hides only while a large title is really on screen (not on the board).
   const large = (state.mode === 'mail' && mail.getView() !== 'kanban') || state.mode === 'contacts';
   document.body.classList.toggle('m-has-large', large);
-  if (st.lastMode !== state.mode) { st.lastMode = state.mode; document.body.classList.remove('m-scrolled'); }
+  if (st.lastMode !== state.mode) {
+    st.lastMode = state.mode;
+    // title and list belong together: the title stays folded while the list is still scrolled
+    requestAnimationFrame(() => {
+      const list = [...document.querySelectorAll('.msglist, .ct-list, .kb-cols')].find((e) => e.offsetParent);
+      document.body.classList.toggle('m-scrolled', !!list && list.scrollTop > 8);
+    });
+  }
   renderBottomNav();
   renderTodayAgenda();
 }
@@ -573,8 +580,7 @@ function renderReadActions(task) {
     ui.readactions.append(
       act('check', 'Erledigt', 'm-done', () => mail.completeSelected().then(closeReader), '.m-done'),
       act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)),
-      act('delete', '', 'm-task-delete', () => mail.deleteSelectedUndoable().then(closeReader), '.m-readact-danger'));
-    ui.readactions.lastChild.setAttribute('aria-label', 'Löschen');
+      act('delete', 'Löschen', 'm-task-delete', () => mail.deleteSelectedUndoable().then(closeReader), '.m-readact-danger'));
   } else {
     // A toolbar as in Mail: archive, the three answers, delete (red, at the far end).
     const tool = (ic, label, testid, onClick, cls = '') => {

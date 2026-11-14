@@ -1495,4 +1495,14 @@ body.m-app .m-appbar .m-title { transition: opacity .15s; }
 .m-tool-danger { margin-left: 10px; }
 /* a task: delete sits in the bottom bar, like in the mail reader */
 body.m-task-open .m-readbar [data-testid=m-read-delete] { display: none; }
-.m-readact.m-readact-danger { flex: 0 0 56px; background: transparent; color: var(--danger); }
+.m-readact.m-readact-danger { flex: 0 0 auto; padding: 0 12px; gap: 6px; background: transparent; color: var(--danger); }
+.m-tab-label { font-size: 13px; }
+html.mobile .listpane .list-head:has(.today-sub) { border-bottom: 0 !important; }
+/* folders: the expand arrow sits at the row end (as in Mail / Files), empty placeholders go away */
+html.mobile .m-drawer .tree-node .twisty { order: 99; margin-left: 4px; width: 32px; height: 32px; margin-right: -8px; }
+html.mobile .m-drawer .tree-node .twisty:empty { display: none; }
+html.mobile .m-drawer .tree-node::after { order: 100; }
+/* board: unread is a dot, as in the list */
+html.mobile .kb-card.unread::before { left: 5px; top: 20px; bottom: auto; width: 7px; height: 7px; border-radius: 50%; }
+/* recipient chip: a larger × (the hit area stays 44pt) */
+html.mobile .rcpt-x .ico { width: 18px; height: 18px; }
