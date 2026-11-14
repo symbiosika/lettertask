@@ -952,3 +952,85 @@ html.mobile .ev-form.m-evform > .input, html.mobile .ev-form.m-evform > .rcpt-bo
 html.mobile .ev-form.m-evform > .input[name=subject] { border-top: 0 !important; }
 .m-row-value { margin-left: auto; }
 html.mobile .ev-form.m-evform { align-items: stretch; }
+
+/* ================================================================ round 5 */
+/* FAB: label at the top of a list ("Schreiben", "Termin", "Kontakt"), a circle while scrolling */
+.m-fab { width: auto; padding: 0 20px 0 18px; border-radius: 18px; }
+.m-fab span { display: inline; }
+.m-fab-wrap.mini .m-fab, .m-fab-wrap.open .m-fab { width: 56px; padding: 0; }
+.m-fab-wrap.mini .m-fab span, .m-fab-wrap.open .m-fab span { display: none; }
+/* collapsed reply quote */
+.m-quote-pill { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 4px 16px 12px; padding: 0 14px; border: 0; border-radius: 22px; background: var(--canvas); color: var(--text-2); font-size: 15px; max-width: calc(100% - 32px); }
+.m-quote-pill span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.mobile .editor-wrap { position: relative; }
+/* today: meetings above the list */
+.m-agenda { flex: none; margin: 8px 12px 4px; padding: 4px 0 6px; background: var(--canvas); border-radius: 14px; }
+.m-agenda.hidden { display: none; }
+.m-agenda-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 2px 16px; font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .02em; }
+.m-agenda-all { height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--accent); font-size: 15px; font-weight: 600; text-transform: none; letter-spacing: 0; border-radius: 10px; }
+.m-agenda-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 4px 12px 4px 16px; border: 0; background: transparent; text-align: left; color: var(--text); font-size: 16px; }
+.m-agenda-row:active { background: var(--hover); }
+.m-agenda-time { flex: none; width: 74px; color: var(--text-2); font-variant-numeric: tabular-nums; font-size: 15px; }
+.m-agenda-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-agenda-join { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 0; border-radius: 18px; background: var(--accent); color: #fff; font-size: 14px; font-weight: 600; }
+.m-agenda-join .ico { color: #fff; }
+.m-agenda-more { width: 100%; min-height: 40px; border: 0; background: transparent; color: var(--accent); font-size: 15px; text-align: left; padding: 0 16px; }
+/* contacts A–Z index */
+html.mobile body.m-app .ct-listpane { position: relative; }
+.m-az { position: absolute; right: 0; top: 112px; bottom: 96px; width: 28px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 4px 0; z-index: 5; touch-action: none; user-select: none; }
+.m-az span { font-size: 11.5px; font-weight: 650; color: var(--accent); line-height: 1; padding: 0 6px; }
+.m-az span.on { transform: scale(1.6); }
+html.mobile .ct-row { padding-right: 32px; }
+/* action sheet confirmations */
+.m-action-msg { padding: 6px 22px 14px; font-size: 14px; line-height: 1.4; color: var(--text-dim); text-align: center; }
+.m-action-ok { width: calc(100% - 16px); margin: 0 8px; justify-content: center; min-height: 54px; border-radius: 14px; background: var(--canvas); color: var(--danger); font-weight: 600; font-size: 17px; }
+.m-action-ok .msheet-label { flex: none; }
+.m-action .msheet-cancel { margin-top: 8px; }
+/* sheets */
+.msheet { max-height: 90dvh; }
+.msheet-body { -webkit-mask-image: linear-gradient(#000 calc(100% - 18px), transparent); mask-image: linear-gradient(#000 calc(100% - 18px), transparent); padding-bottom: 14px; }
+.msheet-noicons .msheet-icon { display: none; }
+/* month: 2 bars + readable "+n" */
+html.mobile .monthgrid { grid-template-rows: 30px repeat(6, 58px); }
+html.mobile .mg-more { font-size: 12px; font-weight: 650; color: var(--accent); line-height: 14px; }
+/* event: regular-weight placeholders */
+html.mobile .m-evform .input[name=subject]::placeholder { font-weight: 400; }
+/* kanban: the page scrolls, not a box inside it */
+html.mobile .kb-cols { align-items: flex-start; overflow-y: auto; }
+html.mobile .kb-col { height: auto; max-height: none; }
+html.mobile .kb-body { overflow: visible; max-height: none; }
+/* settings page: rows with hairlines, value on the right */
+html.mobile .m-settings .set-panel .field { grid-template-columns: 1fr auto; align-items: center; margin: 0; padding: 10px 0; border-top: 1px solid var(--border); gap: 4px 12px; }
+html.mobile .m-settings .set-panel .field .field-hint { grid-column: 1 / -1; }
+html.mobile .m-settings .set-panel .field .inline { flex-wrap: nowrap; justify-content: flex-end; }
+html.mobile .m-settings .set-panel .field .inline .dim { display: none; }
+html.mobile .m-settings .set-panel .field input[type=number] { width: 76px; text-align: right; border: 0; background: var(--canvas); }
+html.mobile .m-settings .set-panel .checkrow { border-top: 1px solid var(--border); margin: 0; padding: 8px 0; }
+html.mobile .m-settings .set-panel h3 + .field, html.mobile .m-settings .set-panel h3 + .checkrow { border-top: 0; }
+/* contact form: white groups, borderless rows */
+html.mobile .ct-frow .ct-fval { background: var(--bg); border-radius: 12px; overflow: hidden; }
+html.mobile .ct-form .ct-fval .input { border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: 0 16px; }
+html.mobile .ct-namegrid { gap: 0; }
+html.mobile .ct-namegrid .input + .input, html.mobile .ct-multirow + .ct-multirow, html.mobile .ct-multi > .linkbtn { border-top: 1px solid var(--border); }
+html.mobile .ct-multi .linkbtn { width: 100%; justify-content: flex-start; padding: 0 16px; color: var(--accent); }
+html.mobile .ct-multirow .icon-btn .ico { width: 18px; height: 18px; }
+html.mobile .ct-form textarea.input { padding: 12px 16px; }
+html.mobile .ct-frow .ct-fval:has(> select) select { border: 0; }
+/* task: title as the first group row */
+html.mobile body.task .task-subject { border: 0; box-shadow: none !important; outline: 0; font-weight: 600; }
+html.mobile body.task .task-row:first-child { overflow: hidden; }
+html.mobile body.task .due-picker > :not(select):not(.hidden) { font-size: 13px; }
+/* event brief */
+html.mobile .peek-bar { display: none; }
+/* contact detail */
+.ct-round { flex: 1 1 0; height: 60px; }
+html.mobile body.m-app .ct-detail { background: var(--canvas); }
+/* agenda: a free day is a quiet line */
+html.mobile .sp-day:not(:has(> :not(.sp-head))) { background: transparent; border-color: transparent; min-height: 44px; }
+/* toast close reachable */
+html.mobile .toast .icon-btn, html.mobile .toast button { min-width: 44px; min-height: 44px; }
+html.mobile .toast-x { min-width: 44px; min-height: 44px; justify-content: center; align-items: center; }
+.m-az span { font-size: 12px; }
+.m-agenda-row { min-height: 52px; cursor: pointer; }
+.m-agenda-join { height: 44px; border-radius: 22px; padding: 0 14px; }
+.m-agenda-all { height: 44px; }

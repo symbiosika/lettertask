@@ -137,10 +137,9 @@ function renderMobile() {
   };
   const teams = mSwitchRow(google() ? 'Google Meet' : 'Teams-Besprechung', st.online, (v) => { st.online = v; dirty(); }, { icon: 'teams', testid: 'ev-teams' });
   const n = required ? required.get().length + optional.get().length : 0;
+  void n;
   const rows = [
-    st.attendeesVisible
-      ? mRow('Teilnehmer', n === 1 ? '1 Person' : `${n} Personen`, { icon: 'people', chevron: true, onClick: () => required.focus(), testid: 'ev-attendees' })
-      : mRow('Teilnehmer', 'Einladen', { icon: 'people', chevron: true, onClick: () => toggleAttendees(), testid: 'ev-invite' }),
+    st.attendeesVisible ? null : mRow('Teilnehmer', 'Einladen', { icon: 'people', chevron: true, onClick: () => toggleAttendees(), testid: 'ev-invite' }),
     teams.row,
   ];
 
@@ -197,8 +196,8 @@ function renderForm() {
     const acc = state.accounts.find((a) => a.id === st.accountId);
     return acc && acc.mailboxes[0] ? acc.mailboxes[0].id : null;
   };
-  required = recipientField({ mailboxId: mb, name: 'required', onChange: dirty });
-  optional = recipientField({ mailboxId: mb, name: 'optional', onChange: dirty });
+  required = recipientField({ mailboxId: mb, name: 'required', onChange: dirty, placeholder: isMobile ? 'Person hinzufügen' : undefined });
+  optional = recipientField({ mailboxId: mb, name: 'optional', onChange: dirty, placeholder: isMobile ? 'Person hinzufügen' : undefined });
   f.subject = h('input.input', { name: 'subject', 'aria-label': 'Betreff' });
   f.subject.addEventListener('input', () => { dirty(); updateTitle(); });
   f.location = h('input.input', { name: 'location', 'aria-label': 'Ort' });

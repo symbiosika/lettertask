@@ -758,10 +758,10 @@ function renderMonth() {
       const s = new Date(ev.start), e = new Date(ev.end);
       return s < addDays(d, 1) && e > d && !(e.getTime() === d.getTime());
     }).sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
-    const max = isMobile ? 3 : 4;
+    const max = isMobile ? 2 : 4;
     evs.slice(0, evs.length > max ? max - 1 : max).forEach((ev) => cell.appendChild(eventBlock(ev, 'month')));
     if (evs.length > max) {
-      cell.appendChild(h('div.mg-more', { onclick: (e) => { e.stopPropagation(); cal.date = d; setView('day'); } }, `+${evs.length - max + 1} weitere`));
+      cell.appendChild(h('div.mg-more', { onclick: (e) => { e.stopPropagation(); cal.date = d; setView('day'); } }, isMobile ? `+${evs.length - max + 1}` : `+${evs.length - max + 1} weitere`));
     }
     cell.addEventListener('dblclick', (e) => {
       if (e.target.closest('.ev')) return;

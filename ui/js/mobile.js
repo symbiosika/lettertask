@@ -3,7 +3,7 @@
 //
 // Layers (drawer, reader, sheets, dialogs, menus) sit on the browser history,
 // so the Android back button closes the topmost one.
-import { on } from './api.js';
+import { on, openUrl } from './api.js';
 import { h, esc, load, store } from './util.js';
 import { icon } from './icons.js';
 import { reportError, showSheetMenu } from './dialogs.js';
@@ -147,6 +147,55 @@ export function update() {
   renderAppbar();
   renderBottomNav();
   if (ui.fabMode !== state.mode) renderFab();
+  renderTodayAgenda();
+}
+
+// ------------------------------------------------------------------ "Heute": today's meetings above the list
+let agendaDay = '';
+let agendaEvents = null;
+async function renderTodayAgenda() {
+  const show = state.mode === 'mail' && mail.isToday() && !st.select && !st.search;
+  if (!ui.agenda) { ui.agenda = h('div.m-agenda', { dataset: { testid: 'm-today-agenda' } }); $('#msglist').before(ui.agenda); }
+  ui.agenda.classList.toggle('hidden', !show);
+  if (!show) return;
+  const now = new Date();
+  const day = now.toDateString();
+  if (agendaDay !== day || !agendaEvents) {
+    agendaDay = day;
+    agendaEvents = [];
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(start.getTime() + 86400000);
+    try { agendaEvents = (await calendar.eventsBetween(start, end, { own: true })).filter((e) => !e.isCancelled); } catch (e) { console.warn(e); }
+    setTimeout(() => { agendaEvents = null; }, 5 * 60000); // refreshed every few minutes
+  }
+  const evs = agendaEvents
+    .filter((e) => e.isAllDay || new Date(e.end) > now)
+    .sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
+  const pad = (n) => String(n).padStart(2, '0');
+  const time = (e) => (e.isAllDay ? 'ganztägig' : `${pad(new Date(e.start).getHours())}:${pad(new Date(e.start).getMinutes())}`);
+  ui.agenda.innerHTML = '';
+  const head = h('div.m-agenda-head', h('span', evs.length ? `Termine heute (${evs.length})` : 'Keine weiteren Termine heute'));
+  const all = h('button.m-agenda-all', { type: 'button' }, 'Kalender');
+  all.addEventListener('click', () => { hooks.setMode('calendar'); calendar.goToday(); update(); });
+  head.appendChild(all);
+  ui.agenda.appendChild(head);
+  for (const e of evs.slice(0, 3)) {
+    const row = h('div.m-agenda-row', { role: 'button', tabindex: '0' },
+      h('span.m-agenda-time', time(e)),
+      h('span.m-agenda-title', e.subject || '(Kein Betreff)'));
+    row.addEventListener('click', () => calendar.openEvent(e));
+    if (e.onlineMeetingUrl && !e.isAllDay) {
+      const join = h('button.m-agenda-join', { type: 'button', html: icon('teams', 16) + '<span>Beitreten</span>' });
+      join.addEventListener('click', (ev) => { ev.stopPropagation(); openUrl(e.onlineMeetingUrl); });
+      row.appendChild(join);
+    }
+    ui.agenda.appendChild(row);
+  }
+  if (evs.length > 3) {
+    const more = h('button.m-agenda-more', { type: 'button' }, `${evs.length - 3} weitere im Kalender`);
+    more.addEventListener('click', () => all.click());
+    ui.agenda.appendChild(more);
+  }
 }
 
 const btn = (ic, label, onClick, testid, extra = '') => {
@@ -182,6 +231,7 @@ function renderAppbar() {
     bar.append(
       btn('close', 'Auswahl beenden', () => st.select(), 'm-select-close'),
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-select-count' } }, `${n} ausgewählt`)),
+      (() => { const b = h('button.m-textbtn', { type: 'button', dataset: { testid: 'm-sel-all-btn' } }, 'Alle'); b.addEventListener('click', () => { mail.selectAllVisible(); update(); }); return b; })(),
       btn('archive', 'Archivieren', () => mail.archiveSelected().then(endSelect), 'm-sel-archive'),
       btn('snooze', 'Auf Wiedervorlage', () => snoozeSheet(endSelect), 'm-sel-snooze'),
       btn('more', 'Weitere Aktionen', () => showSheetMenu([
@@ -637,6 +687,25 @@ function setupBoard() {
 function setupContacts() {
   const list = $('.ct-list');
   if (!list) return;
+  // A–Z index on the right edge: tap or slide to jump to a letter.
+  const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('');
+  const idx = h('div.m-az', { dataset: { testid: 'm-az' }, 'aria-label': 'Alphabet-Index' }, ...LETTERS.map((l) => h('span', l)));
+  list.parentElement.appendChild(idx);
+  const jump = (y) => {
+    const r = idx.getBoundingClientRect();
+    const i = Math.max(0, Math.min(LETTERS.length - 1, Math.floor((y - r.top) / (r.height / LETTERS.length))));
+    const want = LETTERS[i];
+    const heads = [...list.querySelectorAll('.ct-letter')];
+    const target = heads.find((el) => el.textContent.trim().toUpperCase() >= want) || heads[heads.length - 1];
+    if (target) list.scrollTop = target.offsetTop - list.offsetTop;
+    idx.querySelectorAll('span').forEach((s, j) => s.classList.toggle('on', j === i));
+  };
+  let sliding = false;
+  idx.addEventListener('pointerdown', (e) => { sliding = true; idx.setPointerCapture(e.pointerId); jump(e.clientY); e.preventDefault(); });
+  idx.addEventListener('pointermove', (e) => { if (sliding) jump(e.clientY); });
+  const stop = () => { sliding = false; setTimeout(() => idx.querySelectorAll('span.on').forEach((s) => s.classList.remove('on')), 400); };
+  idx.addEventListener('pointerup', stop);
+  idx.addEventListener('pointercancel', stop);
   ui.ctbar.append(btn('chevronLeft', 'Zurück', () => { if (st.ctDetail) st.ctDetail(); }, 'm-ct-back'), h('span.m-ctbar-title', 'Kontakt'));
   list.addEventListener('click', (e) => {
     if (!e.target.closest('.ct-row')) return;

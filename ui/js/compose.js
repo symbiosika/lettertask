@@ -119,7 +119,7 @@ function renderForm() {
   if (isMobile) sendrow.classList.add('m-fromrow');
 
   // fields
-  ccLink = h('button.linkbtn.cc-link', { type: 'button', dataset: { testid: 'add-ccbcc' }, onclick: () => showCcBcc(true) }, 'Cc & Bcc hinzufügen');
+  ccLink = h('button.linkbtn.cc-link', { type: 'button', dataset: { testid: 'add-ccbcc' }, onclick: () => showCcBcc(true) }, isMobile ? 'Cc/Bcc' : 'Cc & Bcc hinzufügen');
   const row = (label, field, extra) => h('div.cw-row', h('label.cw-lbl', { onclick: () => field.focus() }, label), h('div.cw-val', field.el || field, extra || null));
   const toRow = row('An', to, ccLink);
   ccRow = row('Cc', cc);
@@ -152,6 +152,19 @@ function renderForm() {
 
   // drag & drop files onto the window (and, in the app, from the backend)
   installFileDrop((a) => a && addAttachment(a));
+}
+
+// ------------------------------------------------------------------ phone: collapsed quote
+/** Reply/forward on the phone: the quoted mail stays hidden behind a pill (as in Mail). */
+function collapseQuote() {
+  const doc = editor && editor.doc();
+  if (!isMobile || !doc || !doc.body.querySelector('hr')) return;
+  doc.body.classList.add('lt-qc');
+  const hdr = doc.body.querySelector('hr ~ div, hr ~ font');
+  const from = hdr && (hdr.textContent.match(/(?:Von|From):\s*([^\n<]+?)(?:\s*<|\s*Gesendet|\s*Sent|$)/) || [])[1];
+  const pill = h('button.m-quote-pill', { type: 'button', dataset: { testid: 'm-show-quote' }, html: icon('more', 16) + `<span>Zitierten Text anzeigen${from ? ' – ' + esc(from.trim()) : ''}</span>` });
+  pill.addEventListener('click', () => { doc.body.classList.remove('lt-qc'); pill.remove(); });
+  editor.area.after(pill);
 }
 
 // ------------------------------------------------------------------ signatures
@@ -233,7 +246,8 @@ function renderAttachments() {
 function updateTitle() {
   const s = subject.value.trim() || (DELEGATE ? 'Delegieren' : MODE_TITLE[(st.draft && st.draft.mode) || P.mode || 'new']);
   document.title = s;
-  if (titleEl) titleEl.textContent = s;
+  // Phone: the header names the action (the subject is right below it)
+  if (titleEl) titleEl.textContent = isMobile ? (DELEGATE ? 'Delegieren' : { new: 'Neue Nachricht', reply: 'Antworten', replyAll: 'Allen antworten', forward: 'Weiterleiten' }[(st.draft && st.draft.mode) || P.mode || 'new']) : s;
   { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
 }
 
@@ -508,6 +522,7 @@ async function init() {
     if (renderForm.paintFrom) renderForm.paintFrom();
     await editor.setHtml(d.bodyHtml || '');
     stopPill();
+    collapseQuote();
     st.dirty = !!P.to;
     // Loading takes a moment; never pull the cursor out of a field the user
     // already started typing in.

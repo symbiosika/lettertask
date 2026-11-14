@@ -93,10 +93,39 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
 }
 
 export function confirmDialog(message, { title = 'Bestätigen', ok = 'OK', cancel = 'Abbrechen', danger = false } = {}) {
+  if (isMobile && danger) return actionSheet(message, { ok, cancel });
   return modal({
     title,
     body: h('div.confirm-body', h('span.confirm-icon', { html: icon(danger ? 'warning' : 'info', 32) }), h('div', message)),
     buttons: [{ label: ok, value: true, primary: true }, { label: cancel, value: false, cancel: true }],
+  });
+}
+
+/** Phone: a destructive confirmation as an iOS action sheet – message, red action, "Abbrechen". */
+function actionSheet(message, { ok, cancel }) {
+  return new Promise((resolve) => {
+    const scrim = h('div.msheet-scrim');
+    const sheet = h('div.msheet.m-action', { role: 'alertdialog', 'aria-label': message });
+    const msg = h('div.m-action-msg', message);
+    const okBtn = h('button.msheet-item.m-action-ok', { type: 'button', dataset: { testid: 'confirm-ok' } }, h('span.msheet-label', ok));
+    const cancelBtn = h('button.msheet-item.msheet-cancel', { type: 'button', dataset: { testid: 'confirm-cancel' } }, h('span.msheet-label', cancel));
+    sheet.append(h('div.msheet-grip'), msg, okBtn, cancelBtn);
+    let done = false;
+    const sh = shell();
+    const popLayer = sh ? sh.pushLayer(() => finish(false, true)) : null;
+    function finish(v, fromBack = false) {
+      if (done) return;
+      done = true;
+      if (popLayer && !fromBack) popLayer(false);
+      scrim.classList.remove('in'); sheet.classList.remove('in');
+      setTimeout(() => { scrim.remove(); sheet.remove(); }, 200);
+      resolve(v);
+    }
+    okBtn.addEventListener('click', () => finish(true));
+    cancelBtn.addEventListener('click', () => finish(false));
+    scrim.addEventListener('click', () => finish(false));
+    document.body.append(scrim, sheet);
+    requestAnimationFrame(() => { scrim.classList.add('in'); sheet.classList.add('in'); });
   });
 }
 
@@ -243,6 +272,11 @@ export function showSheetMenu(items, { title } = {}) {
       sheet.appendChild(h('div.msheet-title', heading));
     }
     const body = h('div.msheet-body');
+    // icons on all rows or on none – a lone icon makes the label column jump
+    const real = list.filter((it) => it && !it.separator && !it.header);
+    const withIcon = real.filter((it) => it.icon || it.iconHtml || it.checked).length;
+    const noIcons = withIcon > 0 && withIcon < real.length / 2;
+    if (noIcons) sheet.classList.add('msheet-noicons'); else sheet.classList.remove('msheet-noicons');
     for (const it of list) {
       if (!it) continue;
       // one hairline at most, never at the start or end
