@@ -1571,3 +1571,5 @@ html.mobile .m-stepper .sn-step:active { background: rgba(0,0,0,.06); }
 /* admin pages: stacked label + borderless field inside the white group */
 html.mobile :is([data-testid=m365-panel], [data-testid=google-panel]) .field input.input { border: 0; background: transparent; padding: 0; min-height: 40px; box-shadow: none; font-size: 16px; }
 html.mobile :is([data-testid=m365-panel], [data-testid=google-panel]) .field input.input::placeholder { color: var(--text-dim); }
+/* snooze editor: the label value is a plain editable value like the others */
+html.mobile .sn-field input.sn-label { font-weight: 400; color: var(--text-2); }

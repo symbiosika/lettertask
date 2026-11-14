@@ -226,7 +226,7 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
   const clientId = h('input.input', { value: c.clientId || '', placeholder: c.builtinClientId ? 'Standard' : '00000000-0000-0000-0000-000000000000', name: 'clientId', spellcheck: false });
   const tenant = h('input.input', { value: c.tenant || '', placeholder: 'Standard', name: 'tenant', spellcheck: false });
   const googleId = h('input.input', { value: c.googleClientId || '', placeholder: c.builtinGoogleClient ? 'Standard' : '….apps.googleusercontent.com', name: 'googleClientId', spellcheck: false });
-  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', placeholder: c.builtinGoogleClient ? 'Standard' : '', name: 'googleClientSecret', autocomplete: 'off' });
+  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', placeholder: c.builtinGoogleClient ? 'Standard' : 'Clientschlüssel eingeben', name: 'googleClientSecret', autocomplete: 'off' });
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
