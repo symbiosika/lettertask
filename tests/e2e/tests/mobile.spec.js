@@ -62,7 +62,8 @@ test('Handy: Mail öffnet im Vollbild, Zurück schließt sie', async ({ page }) 
   await row(page, 'Anforderungen Schnittstelle ERP').first().tap();
   await expect(page.locator('body')).toHaveClass(/m-reading/);
   await expect(page.locator('.rp-subject')).toContainText('Anforderungen Schnittstelle ERP');
-  await expect(page.locator('[data-testid=m-read-archive]')).toBeVisible();
+  // archive sits in the bottom toolbar (as in Mail)
+  await expect(page.locator('[data-testid=m-archive]')).toBeVisible();
   // Android back button = history back
   await page.goBack();
   await expect(page.locator('body')).not.toHaveClass(/m-reading/);

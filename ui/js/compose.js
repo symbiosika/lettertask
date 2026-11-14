@@ -163,8 +163,23 @@ function collapseQuote() {
   const hdr = doc.body.querySelector('hr ~ div, hr ~ font');
   const from = hdr && (hdr.textContent.match(/(?:Von|From):\s*([^\n<]+?)(?:\s*<|\s*Gesendet|\s*Sent|$)/) || [])[1];
   const pill = h('button.m-quote-pill', { type: 'button', dataset: { testid: 'm-show-quote' }, html: icon('more', 16) + `<span>Zitierten Text anzeigen${from ? ' – ' + esc(from.trim()) : ''}</span>` });
-  pill.addEventListener('click', () => { doc.body.classList.remove('lt-qc'); pill.remove(); });
+  pill.addEventListener('click', () => { doc.body.classList.remove('lt-qc'); pill.remove(); obs.disconnect(); });
   editor.area.after(pill);
+  // The pill follows the text you write (as in Mail), instead of sitting at the bottom.
+  const place = () => {
+    let bottom = 0;
+    for (const n of doc.body.children) {
+      if (n.tagName === 'HR') break;
+      const r = n.getBoundingClientRect();
+      if (r.height) bottom = Math.max(bottom, r.bottom);
+    }
+    const frame = editor.area;
+    const top = Math.min(frame.offsetTop + Math.max(bottom, 24) + 8, frame.offsetTop + frame.clientHeight - 56);
+    pill.style.top = top + 'px';
+  };
+  const obs = new MutationObserver(place);
+  obs.observe(doc.body, { childList: true, subtree: true, characterData: true });
+  requestAnimationFrame(place);
 }
 
 // ------------------------------------------------------------------ signatures

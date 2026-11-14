@@ -413,6 +413,19 @@ function renderTimeGrid() {
   // header
   const head = h('div.tg-head', h('div.tg-gutter'));
   const today = startOfDay(new Date());
+  // Phone, day view: a week strip (Mo–So) instead of a lone day header – tap a day to switch.
+  if (isMobile && cal.view === 'day') {
+    const wk = addDays(startOfDay(cal.date), -((cal.date.getDay() + 6) % 7));
+    const strip = h('div.m-weekstrip', { dataset: { testid: 'm-weekstrip' } });
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(wk, i);
+      const b = h('button.m-wsday' + (sameDay(d, cal.date) ? '.on' : '') + (sameDay(d, today) ? '.today' : ''), { type: 'button', 'aria-label': fmtDateLong(d) },
+        h('span.m-wsname', WEEKDAYS_SHORT[d.getDay()]), h('span.m-wsnum', String(d.getDate())));
+      b.addEventListener('click', () => { cal.date = d; refresh().catch(reportError); });
+      strip.appendChild(b);
+    }
+    els.body.appendChild(strip);
+  }
   for (const d of dayList) {
     head.appendChild(h('div.tg-dayhead' + (sameDay(d, today) ? '.today' : ''), { onclick: () => { cal.date = d; setView('day'); } },
       h('span.dnum', String(d.getDate())), h('span.dname', WEEKDAYS[d.getDay()])));

@@ -123,6 +123,18 @@ export function initMobile(h0) {
 
   setupDrawer();
   setupList();
+  // Large titles above the mail and contact lists; they fold into the app bar on scroll.
+  ui.large = h('div.m-largetitle', { dataset: { testid: 'm-largetitle' } });
+  const lp = $('.listpane');
+  if (lp) lp.prepend(ui.large);
+  ui.largeCt = h('div.m-largetitle', 'Kontakte');
+  const cp = $('.ct-listpane');
+  if (cp) cp.prepend(ui.largeCt);
+  document.addEventListener('scroll', (e) => {
+    const t = e.target;
+    if (!t || !t.closest || !t.closest('.msglist, .ct-list, .kb-cols')) return;
+    document.body.classList.toggle('m-scrolled', t.scrollTop > 8);
+  }, true);
   setupBoard();
   setupContacts();
   renderReadbar();
@@ -139,6 +151,11 @@ function $(sel) { return document.querySelector(sel); }
 export function update() {
   if (!ui.appbar) return;
   renderAppbar();
+  if (ui.large && state.mode === 'mail') {
+    const stats = mail.listStats();
+    ui.large.innerHTML = '';
+    ui.large.append(h('span.m-lt-main', folderTitle()), h('span.m-lt-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : ''));
+  }
   renderBottomNav();
   renderTodayAgenda();
 }
@@ -553,11 +570,20 @@ function renderReadActions(task) {
       act('check', 'Erledigt', 'm-done', () => mail.completeSelected().then(closeReader), '.m-done'),
       act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)));
   } else {
+    // A toolbar as in Mail: archive, the three answers, delete (red, at the far end).
+    const tool = (ic, label, testid, onClick, cls = '') => {
+      const b = h('button.m-tool' + cls, { type: 'button', dataset: { testid }, 'aria-label': label, html: icon(ic, 22) + `<span>${label}</span>` });
+      b.addEventListener('click', () => Promise.resolve().then(onClick).catch(reportError));
+      return b;
+    };
     ui.readactions.append(
-      act('reply', 'Antworten', 'm-reply', () => mail.respond('reply')),
-      act('replyAll', 'Allen', 'm-replyAll', () => mail.respond('replyAll')),
-      act('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')));
+      tool('archive', 'Archiv', 'm-archive', () => mail.archiveSelected().then(closeReader)),
+      tool('reply', 'Antworten', 'm-reply', () => mail.respond('reply')),
+      tool('replyAll', 'Allen', 'm-replyAll', () => mail.respond('replyAll')),
+      tool('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')),
+      tool('delete', 'Löschen', 'm-delete', () => mail.deleteSelected(false).then(closeReader), '.m-tool-danger'));
   }
+  ui.readactions.classList.toggle('m-toolbar', !task);
 }
 
 function openReader() {

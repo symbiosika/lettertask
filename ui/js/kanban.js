@@ -159,7 +159,7 @@ export function createBoard(host, ctx) {
       t.addEventListener('click', () => { const col = cols.querySelectorAll('.kb-col')[i]; if (col) cols.scrollTo({ left: col.offsetLeft - 16, behavior: 'smooth' }); });
       tabs.appendChild(t);
     });
-    const edit = h('button.kb-tab.kb-tab-edit', { type: 'button', dataset: { testid: 'kb-tab-edit' }, html: icon('settings', 16) + '<span>Lanes</span>' });
+    const edit = h('button.kb-tab.kb-tab-edit', { type: 'button', dataset: { testid: 'kb-tab-edit' }, html: icon('settings', 16) + `<span>${ctx.lanes().length ? 'Lanes' : 'Lanes einrichten'}</span>` });
     edit.addEventListener('click', () => ctx.onEditLanes());
     tabs.appendChild(edit);
   }
