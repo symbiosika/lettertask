@@ -312,7 +312,8 @@ function composeButton() {
   let timer = null;
   const b = btn(ic, label, () => { if (longPressed) { longPressed = false; return; } return run(); }, 'm-compose', '.m-compose');
   // labelled: "Neu" next to the icon (an icon alone was a guess for some testers)
-  b.insertAdjacentHTML('beforeend', '<span class="m-compose-label">Neu</span>');
+  // calendar: icon only – the period title needs the room on 375–393pt phones
+  if (state.mode !== 'calendar') b.insertAdjacentHTML('beforeend', '<span class="m-compose-label">Neu</span>');
   const sheet = () => showSheetMenu([
     { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'm-new-mail' },
     { label: 'Aufgabe', icon: 'task', onClick: () => hooks.newTask(), testid: 'm-new-task' },

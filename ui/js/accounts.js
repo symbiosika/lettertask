@@ -546,7 +546,7 @@ function sharedMailboxes(acc, { onSaved, onRelogin }) {
     h('div.acc-sub', 'Freigegebene Postfächer'),
     list,
     h('div.acc-actions', add, relogin),
-    h('p.note', 'Für Konten, die vor dieser Funktion angemeldet wurden, einmal „Erneut anmelden“ wählen, damit lettertask auf freigegebene Postfächer zugreifen darf.'));
+    h('p.note', isMobile ? '„Erneut anmelden“ ist nur für Konten nötig, die vor dieser Funktion angemeldet wurden.' : 'Für Konten, die vor dieser Funktion angemeldet wurden, einmal „Erneut anmelden“ wählen, damit lettertask auf freigegebene Postfächer zugreifen darf.'));
 }
 
 export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRelogin }) {

@@ -1445,3 +1445,18 @@ html.mobile .m-acc .shared-mbs { display: block; }
 html.mobile .m-acc .shared-mbs > * { margin: 0 !important; }
 html.mobile .m-acc .shared-mbs .btn { width: 100%; min-height: 48px; justify-content: flex-start; }
 html.mobile .m-settings .set-panel:has(.acc-panel.m-acc-open) > h3 { display: none; }
+
+/* ================================================================ round 13 */
+/* shared mailboxes: one group – list, add, re-login – footnote below */
+html.mobile .m-acc .shared-mbs .acc-actions { display: block; gap: 0; margin: 0; padding: 0; background: var(--bg); border-radius: 0 0 12px 12px; overflow: hidden; }
+html.mobile .m-acc .shared-mbs .acc-actions .btn { margin: 0 !important; border-radius: 0 !important; border-top: 1px solid var(--border); }
+html.mobile .m-acc .shared-mbs .shared-mb-list { border-radius: 12px 12px 0 0; }
+/* calendar header: the period title takes the free room, never clipped */
+html.mobile .m-appbar .m-cal-titlebtn { flex: 1 1 auto; min-width: 0; }
+html.mobile .m-appbar .m-cal-titlebtn .m-title-main { overflow: visible; text-overflow: clip; font-size: 15.5px; letter-spacing: -.01em; }
+html.mobile .m-appbar:has(.m-cal-titlebtn) { gap: 0; }
+html.mobile .m-appbar:has(.m-cal-titlebtn) .m-compose { width: 44px; padding: 0; justify-content: center; }
+html.mobile .m-appbar:has(.m-cal-titlebtn) .m-textbtn { padding: 0 4px; }
+/* calendar list: the lock says what it means */
+html.mobile .m-drawer .cal-ro { margin-left: auto; align-items: center; gap: 4px; font-size: 13px; }
+html.mobile .m-drawer .cal-ro::after { content: 'nur lesen'; }
