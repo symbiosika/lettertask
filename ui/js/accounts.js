@@ -465,12 +465,15 @@ function lookEditor(acc, { onPreview, onChanged }) {
   label.addEventListener('input', () => onPreview(current()));
   label.addEventListener('change', save);
   renderSwatches();
-  return h('div.acc-look', { dataset: { testid: 'acc-look' } },
-    h('div.wiz-grid',
-      h('label.srv-l', 'Name in der Ansicht'), label,
-      h('label.srv-l', 'Farbe'), swatches,
-      h('label.srv-l', 'Inhalt im Kreis'), h('div', text,
-        h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`))));
+  const grid = h('div.wiz-grid',
+    h('label.srv-l', 'Name in der Ansicht'), label,
+    h('label.srv-l', 'Farbe'), swatches,
+    h('label.srv-l', isMobile ? 'Text im Kontobild' : 'Inhalt im Kreis'), h('div', text,
+      h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`)));
+  // Phone: the look settings fold away behind one row – the page shows the essentials.
+  return isMobile
+    ? h('details.acc-look.m-details', { dataset: { testid: 'acc-look' } }, h('summary', 'Darstellung anpassen'), grid)
+    : h('div.acc-look', { dataset: { testid: 'acc-look' } }, grid);
 }
 
 /** Own sync interval of the account; empty = the global setting. Saved right away. */

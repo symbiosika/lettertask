@@ -282,7 +282,17 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
     dlg.classList.toggle('m-sub-open', !!key);
     if (t) t.textContent = key ? (TABS.find((x) => x[0] === key) || [0, 'Einstellungen'])[1] : 'Einstellungen';
   };
-  if (back) back.addEventListener('click', () => { root.classList.remove('m-sub'); header(null); });
+  if (back) back.addEventListener('click', () => {
+    // one level up: an open account page returns to the account list first
+    const accOpen = root.querySelector('.acc-panel.m-acc-open');
+    if (accOpen) { accOpen.classList.remove('m-acc-open'); header('accounts'); content.scrollTop = 0; return; }
+    root.classList.remove('m-sub'); header(null);
+  });
+  root.addEventListener('lt-subpage', (e) => {
+    const t = root.closest('.modal') && root.closest('.modal').querySelector('.m-modal-title');
+    if (t) t.textContent = e.detail.title;
+    content.scrollTop = 0;
+  });
   const show = (key) => {
     nav.querySelectorAll('.set-tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === key));
     content.innerHTML = '';
@@ -377,7 +387,13 @@ function accountsPanel({ initialAccountId }) {
         n > 1 ? h('span.acc-order',
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', 'aria-label': 'Nach oben', html: icon('up', 14), disabled: i === 0, dataset: { testid: 'acc-up' }, onclick: (e) => mv(e, -1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', 'aria-label': 'Nach unten', html: icon('down', 14), disabled: i === n - 1, dataset: { testid: 'acc-down' }, onclick: (e) => mv(e, 1) })) : null);
-      row.addEventListener('click', () => { selected = a.id; render(); });
+      // Phone: a row pushes the account's own page (the header "‹ Zurück" returns to the list).
+      row.addEventListener('click', () => {
+        selected = a.id;
+        if (isMobile) { panel.classList.add('m-acc-open'); panel.dispatchEvent(new CustomEvent('lt-subpage', { bubbles: true, detail: { title: a.label || a.displayName || a.email } })); }
+        render();
+      });
+      if (isMobile) row.appendChild(h('span.acc-chev', { html: icon('chevronRight', 16) }));
       listEl.appendChild(row);
     });
     if (!state.accounts.length) listEl.appendChild(h('div.dim.acc-none', 'Noch kein Konto eingerichtet.'));
@@ -418,13 +434,14 @@ function accountsPanel({ initialAccountId }) {
     const acc = await addAccountFlow();
     if (acc) { await reloadAccounts(); selected = acc.id; render(); }
   }));
-  render();
   // List on top, details below in the full width (side by side was too narrow
   // for the server settings).
-  return { el: h('div.acc-panel',
+  const panel = h('div.acc-panel',
     h('div.acc-side', listEl,
       h('div.acc-side-foot', add, state.accounts.length > 1 ? h('span.note.acc-hint', 'Reihenfolge, Kontobild und Darstellung werden sofort übernommen.') : null)),
-    detailHost) };
+    detailHost);
+  render();
+  return { el: panel };
 }
 
 async function removeAccount(acc) {

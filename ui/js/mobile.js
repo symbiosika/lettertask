@@ -9,6 +9,7 @@ import { icon } from './icons.js';
 import { reportError, showSheetMenu } from './dialogs.js';
 import { state, mailboxes, wellKnown } from './state.js';
 import { accountAvatar } from './accounts.js';
+import { isTaskMail } from './categories.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
@@ -99,7 +100,7 @@ window.__lt = { pushLayer, openSheet, closeSheet };
 // ------------------------------------------------------------------ shell
 const ui = {};
 let hooks = {};
-const st = { reader: null, select: null, search: null, drawer: null, ctDetail: null, fabOpen: null };
+const st = { reader: null, select: null, search: null, drawer: null, ctDetail: null };
 
 /**
  * hooks: { appMenu(), snoozeItems(), focusMenu(), focusLabel(), setMode(mode), syncAll(), newTask() }
@@ -113,22 +114,15 @@ export function initMobile(h0) {
   ui.readactions = h('div.m-readactions');
   ui.ctbar = h('div.m-ctbar');
   ui.bottomnav = h('nav.m-bottomnav', { 'aria-label': 'Bereiche' });
-  ui.fab = h('div.m-fab-wrap');
   ui.scrim = h('div.m-scrim');
   ui.ptr = h('div.m-ptr', { html: icon('sync', 20) });
   document.body.prepend(ui.appbar, ui.searchrow);
-  document.body.append(ui.readbar, ui.readactions, ui.ctbar, ui.bottomnav, ui.fab, ui.scrim);
+  document.body.append(ui.readbar, ui.readactions, ui.ctbar, ui.bottomnav, ui.scrim);
   $('#msglist').before(ui.ptr);
-  ui.scrim.addEventListener('click', () => { if (st.drawer) st.drawer(); if (st.fabOpen) st.fabOpen(); });
+  ui.scrim.addEventListener('click', () => { if (st.drawer) st.drawer(); });
 
   setupDrawer();
   setupList();
-  // The extended FAB folds into a circle while a list scrolls (it covers less).
-  document.addEventListener('scroll', (e) => {
-    const t = e.target;
-    if (!t || !t.closest || !t.closest('.msglist, .cal-body, .sprintgrid, .ct-list, .kb-body')) return;
-    ui.fab.classList.toggle('mini', t.scrollTop > 40);
-  }, true);
   setupBoard();
   setupContacts();
   renderReadbar();
@@ -146,7 +140,6 @@ export function update() {
   if (!ui.appbar) return;
   renderAppbar();
   renderBottomNav();
-  if (ui.fabMode !== state.mode) renderFab();
   renderTodayAgenda();
 }
 
@@ -267,7 +260,9 @@ function renderAppbar() {
     setTimeout(() => { if (document.activeElement !== input) input.focus(); }, 30);
     return;
   }
-  const menu = btn('menu', 'Menü', () => openDrawer(), 'm-menu');
+  // The folder/calendar list is a page of its own ("Postfächer"), opened from the left.
+  const menu = btn(state.mode === 'mail' ? 'folder' : state.mode === 'calendar' ? 'listView' : 'contacts',
+    state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalenderliste' : 'Adressbücher', () => openDrawer(), 'm-menu');
   if (state.mode === 'mail') {
     const stats = mail.listStats();
     const kanban = mail.getView() === 'kanban';
@@ -275,6 +270,7 @@ function renderAppbar() {
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-title' } }, folderTitle()),
         h('span.m-title-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : '')),
       btn('search', 'Suchen', () => openSearch(), 'm-search'),
+      composeButton(),
       accountButton(mail.isVirtual() ? null : { label: kanban ? 'Als Liste anzeigen' : 'Als Kanban-Board anzeigen', icon: kanban ? 'bullets' : 'kanban', onClick: () => { mail.toggleView(); update(); }, testid: 'm-view' }));
   } else if (state.mode === 'calendar') {
     bar.append(menu,
@@ -282,12 +278,39 @@ function renderAppbar() {
       h('div.m-title.center', h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle())),
       btn('chevronRight', 'Vor', () => { calendar.step(1); setTimeout(update, 50); }, 'm-cal-next'),
       btn('today', 'Heute', () => { calendar.goToday(); setTimeout(update, 50); }, 'm-cal-today'),
-      viewButton());
+      viewButton(),
+      composeButton());
   } else {
     bar.append(menu,
       h('div.m-title', h('span.m-title-main', 'Kontakte')),
+      composeButton(),
       accountButton());
   }
+}
+
+/**
+ * "Neu" in the app bar (replaces the floating button): a tap creates what the
+ * current area is about – mail, a task on "Heute", an event, a contact; a long
+ * press offers all three kinds.
+ */
+function composeButton() {
+  const today = state.mode === 'mail' && mail.isToday();
+  const [ic, label, run] = state.mode === 'calendar' ? ['plus', 'Neuer Termin', () => calendar.newEvent()]
+    : state.mode === 'contacts' ? ['plus', 'Neuer Kontakt', () => contacts.newContact()]
+    : today ? ['task', 'Neue Aufgabe', () => hooks.newTask()]
+    : ['edit', 'Neue E-Mail', () => mail.newMail()];
+  let longPressed = false;
+  let timer = null;
+  const b = btn(ic, label, () => { if (longPressed) { longPressed = false; return; } return run(); }, 'm-compose', '.m-compose');
+  const sheet = () => showSheetMenu([
+    { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'm-new-mail' },
+    { label: 'Aufgabe', icon: 'task', onClick: () => hooks.newTask(), testid: 'm-new-task' },
+    { label: 'Termin', icon: 'calendarNew', onClick: () => calendar.newEvent(), testid: 'm-new-event' },
+  ], { title: 'Neu' });
+  b.addEventListener('pointerdown', () => { longPressed = false; timer = setTimeout(() => { longPressed = true; sheet(); }, 480); });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => clearTimeout(timer));
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
+  return b;
 }
 
 /** Calendar view as a labelled button ("Agenda ▾") instead of a bare icon. */
@@ -385,8 +408,10 @@ function paintDrawerHead() {
   ui.drawerHead.innerHTML = '';
   const focusBtn = h('button.m-drawer-focus', { type: 'button', dataset: { testid: 'm-focus' }, html: icon('focus', 18) + `<span>${esc(hooks.focusLabel ? hooks.focusLabel() : 'Fokuszeit')}</span>` });
   focusBtn.addEventListener('click', () => showSheetMenu(hooks.focusMenu(), { title: 'Fokuszeit' }));
+  const done = h('button.m-nav-action.m-drawer-done', { type: 'button', dataset: { testid: 'm-drawer-done' } }, 'Fertig');
+  done.addEventListener('click', () => { if (st.drawer) st.drawer(); });
   ui.drawerHead.append(
-    h('div.m-drawer-brand', { html: icon('mail', 20) + '<span>lettertask</span>' }),
+    h('div.m-drawer-bar', h('span.m-drawer-title', state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalender' : 'Adressbücher'), done),
     a ? h('div.m-drawer-account', accountAvatar(a, 'lg'), h('div.m-drawer-who', h('div.m-drawer-name', a.displayName || a.email), h('div.m-drawer-mail', a.email))) : null,
     focusBtn);
   ui.drawerMenu.innerHTML = '';
@@ -451,46 +476,6 @@ function scrollListTop() {
   if (l) l.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// ------------------------------------------------------------------ FAB
-function renderFab() {
-  ui.fabMode = state.mode;
-  const wrap = ui.fab;
-  wrap.innerHTML = '';
-  closeFab();
-  const main = (ic, label, onClick, testid) => {
-    const b = h('button.m-fab', { type: 'button', 'aria-label': label, dataset: { testid }, html: icon(ic, 22) + `<span>${esc(label)}</span>` });
-    b.addEventListener('click', () => Promise.resolve().then(onClick).catch(reportError));
-    return b;
-  };
-  if (state.mode === 'calendar') { wrap.append(main('plus', 'Termin', () => calendar.newEvent(), 'm-fab')); return; }
-  if (state.mode === 'contacts') { wrap.append(main('plus', 'Kontakt', () => contacts.newContact(), 'm-fab')); return; }
-  const dial = h('div.m-dial');
-  const opt = (ic, label, onClick, testid) => {
-    const b = h('button.m-dial-opt', { type: 'button', dataset: { testid } }, h('span.m-dial-label', label), h('span.m-dial-ic', { html: icon(ic, 20) }));
-    b.addEventListener('click', () => { closeFab(); Promise.resolve().then(onClick).catch(reportError); });
-    return b;
-  };
-  dial.append(
-    opt('calendarNew', 'Termin', () => calendar.newEvent(), 'm-new-event'),
-    opt('task', 'Aufgabe', () => hooks.newTask(), 'm-new-task'),
-    opt('mail', 'E-Mail', () => mail.newMail(), 'm-new-mail'));
-  const fab = main('edit', 'Schreiben', () => {
-    if (wrap.classList.contains('open')) { closeFab(); mail.newMail(); return; }
-    wrap.classList.add('open');
-    ui.scrim.classList.add('fab');
-    const pop = pushLayer(() => closeFabNow());
-    st.fabOpen = () => pop();
-  }, 'm-fab');
-  wrap.append(dial, fab);
-}
-
-function closeFab() { if (st.fabOpen) st.fabOpen(); }
-function closeFabNow() {
-  st.fabOpen = null;
-  ui.fab.classList.remove('open');
-  ui.scrim.classList.remove('fab');
-}
-
 // ------------------------------------------------------------------ reader
 function renderReadbar() {
   ui.readbar.innerHTML = '';
@@ -506,13 +491,31 @@ function renderReadbar() {
       { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
     ]), 'm-read-more'),
     btn('delete', 'Löschen', () => mail.deleteSelected(false).then(closeReader), 'm-read-delete'));
+  renderReadActions(false);
+  // A task gets "Erledigt" (archive) and "Später" instead of reply buttons.
+  document.addEventListener('lt-detail', (e) => renderReadActions(isTaskMail(e.detail && e.detail.message)));
+}
+
+function renderReadActions(task) {
+  if (ui.readactions.dataset.task === String(task)) return;
+  ui.readactions.dataset.task = String(task);
   ui.readactions.innerHTML = '';
-  const act = (ic, label, mode) => {
-    const b = h('button.m-readact', { type: 'button', dataset: { testid: 'm-' + mode }, html: icon(ic, 20) + `<span>${label}</span>` });
-    b.addEventListener('click', () => mail.respond(mode));
+  const act = (ic, label, testid, onClick, cls = '') => {
+    const b = h('button.m-readact' + cls, { type: 'button', dataset: { testid }, html: icon(ic, 20) + `<span>${label}</span>` });
+    b.addEventListener('click', () => Promise.resolve().then(onClick).catch(reportError));
     return b;
   };
-  ui.readactions.append(act('reply', 'Antworten', 'reply'), act('replyAll', 'Allen', 'replyAll'), act('forward', 'Weiterleiten', 'forward'));
+  if (task) {
+    ui.readactions.append(
+      act('check', 'Erledigt', 'm-done', () => mail.archiveSelected().then(closeReader), '.m-done'),
+      act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)),
+      act('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')));
+  } else {
+    ui.readactions.append(
+      act('reply', 'Antworten', 'm-reply', () => mail.respond('reply')),
+      act('replyAll', 'Allen', 'm-replyAll', () => mail.respond('replyAll')),
+      act('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')));
+  }
 }
 
 function openReader() {

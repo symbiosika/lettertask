@@ -117,18 +117,21 @@ test('Handy: Langes Drücken startet die Mehrfachauswahl', async ({ page }) => {
 
 test('Handy: Verfassen öffnet als Ebene und schließt wieder', async ({ page }) => {
   await openApp(page);
-  await page.locator('[data-testid=m-fab]').tap();
-  await page.locator('[data-testid=m-new-mail]').tap();
+  // "Neu" sits in the app bar: a tap in the inbox writes a mail
+  await page.locator('[data-testid=m-compose]').tap();
   const frame = page.frameLocator('[data-testid=m-frame-compose] iframe');
   await expect(frame.locator('[data-testid=m-frame-close]')).toBeVisible();
   await expect(frame.locator('#subject, input[name=subject]').first()).toBeVisible();
   await frame.locator('[data-testid=m-frame-close]').tap();
   await expect(page.locator('[data-testid=m-frame-compose]')).toHaveCount(0);
-  // the FAB still works afterwards (no stale layer)
-  await page.locator('[data-testid=m-fab]').tap();
+  // still works afterwards (no stale layer); a long press offers all kinds
+  const box = await page.locator('[data-testid=m-compose]').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.locator('[data-testid=m-compose]').dispatchEvent('pointerdown');
   await expect(page.locator('[data-testid=m-new-task]')).toBeVisible();
+  await page.locator('[data-testid=m-compose]').dispatchEvent('pointerup');
   await page.goBack();
-  await expect(page.locator('.m-fab-wrap')).not.toHaveClass(/open/);
+  await expect(page.locator('.msheet')).toHaveCount(0);
 });
 
 test('Handy: Menüs erscheinen als Sheet von unten', async ({ page }) => {
@@ -157,4 +160,38 @@ test('Handy: Abruf bei geschlossener App einstellen', async ({ page }) => {
   const cfg = await (await page.request.post('/api/call/get_config', { data: {} })).json();
   expect(cfg.backgroundIntervalMins).toBe(60);
   await api(page, 'save_config', { config: { ...cfg, backgroundIntervalMins: 15 } });
+});
+
+test('Handy: Aufgaben sind als Aufgabe markiert und lassen sich erledigen', async ({ page }) => {
+  await openApp(page);
+  const mb = (await api(page, 'list_accounts', {}))[0].mailboxes[0].id;
+  await api(page, 'create_task', { mailboxId: mb, subject: 'Handy-Aufgabe erledigen', bodyHtml: '', due: null });
+  await page.reload();
+  const row = page.locator('.msg', { hasText: 'Handy-Aufgabe erledigen' });
+  await expect(row.locator('[data-testid=m-task]')).toBeVisible();
+  await expect(row.locator('.m-from')).toHaveText('Aufgabe');
+  await row.tap();
+  // a task offers "Erledigt" instead of the reply buttons
+  await expect(page.locator('[data-testid=m-done]')).toBeVisible();
+  await expect(page.locator('[data-testid=m-reply]')).toHaveCount(0);
+  await page.locator('[data-testid=m-done]').tap();
+  await expect(page.locator('body')).not.toHaveClass(/m-reading/);
+  await expect(page.locator('.msg', { hasText: 'Handy-Aufgabe erledigen' })).toHaveCount(0);
+});
+
+test('Handy: Konten als Liste, ein Konto öffnet seine eigene Seite', async ({ page }) => {
+  await openApp(page);
+  await page.locator('[data-testid=m-account]').tap();
+  await page.locator('.msheet-item', { hasText: 'Einstellungen' }).tap();
+  await page.locator('[data-testid=settings-tab-accounts]').tap();
+  await expect(page.locator('[data-testid=acc-item]').first()).toBeVisible();
+  await expect(page.locator('.acc-detail')).toBeHidden();
+  await page.locator('[data-testid=acc-item]').first().tap();
+  await expect(page.locator('.acc-detail')).toBeVisible();
+  await expect(page.locator('[data-testid=acc-item]').first()).toBeHidden();
+  // "Zurück" goes one level up: the account list, then the settings list
+  await page.locator('[data-testid=settings-back]').tap();
+  await expect(page.locator('[data-testid=acc-item]').first()).toBeVisible();
+  await page.locator('[data-testid=settings-back]').tap();
+  await expect(page.locator('[data-testid=settings-tab-accounts]')).toBeVisible();
 });

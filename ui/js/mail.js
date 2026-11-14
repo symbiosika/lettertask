@@ -4,7 +4,7 @@ import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, 
 import { icon } from './icons.js';
 import { isImap, isGoogle, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
-import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName } from './categories.js';
+import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName, isTaskMail } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
 import { addrAttrs } from './contactcard.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
@@ -919,7 +919,9 @@ function verbIcon(verb) {
 }
 
 function msgRow(m, accountId, toMode, snoozedView) {
-  const who = toMode ? (m.to || []).map(displayName).join(', ') : displayName(m.from);
+  // Phone: a task shows as one (check mark, "Aufgabe") instead of a mail from yourself.
+  const task = isMobile && isTaskMail(m);
+  const who = task ? 'Aufgabe' : toMode ? (m.to || []).map(displayName).join(', ') : displayName(m.from);
   const avatarSrc = toMode ? (m.to && m.to[0]) || {} : (m.from || {});
   const sel = list.selection.has(m.id);
   const cls = 'div.msg' + (m.isRead ? '' : '.unread') + (sel ? '.selected' : '') + (list.cursor === m.id ? '.cursor' : '') + (m.flag === 'flagged' ? '.flagged' : '');
@@ -937,7 +939,9 @@ function msgRow(m, accountId, toMode, snoozedView) {
   el.innerHTML =
     (srcBar ? `<span class="m-src" data-testid="m-src" style="background:${mailboxColor(m.mailboxId)}" title="${esc((mailboxById(m.mailboxId) || {}).address || '')}"></span>` : '') +
     `<span class="m-dot readcell" title="${m.isRead ? 'Als ungelesen markieren' : 'Als gelesen markieren'}"></span>` +
-    `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
+    (task
+      ? `<span class="avatar sm m-task-av" data-testid="m-task" title="Aufgabe">${icon('task', 20)}</span>`
+      : `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>`) +
     `<div class="m-main">` +
       `<div class="m-l1"><span class="m-from" title="${esc(who)}"${(toMode ? (m.to || []).length === 1 : true) ? addrAttrs(avatarSrc) : ''}>${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
       `<div class="m-l2">${verbIcon(m.lastVerb)}<span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
@@ -1190,6 +1194,8 @@ async function showReading(m, text) {
     const delegation = await delegationP;
     if (token !== readToken) return;
     currentDetail = detail;
+    // the phone shell adapts its bottom actions (a task gets "Erledigt")
+    document.dispatchEvent(new CustomEvent('lt-detail', { detail: { message: { ...m, ...detail } } }));
     const accountId = accountOfMailbox(detail.mailboxId || state.current.mailboxId);
     renderMessage(els.read, detail, {
       accountId,
