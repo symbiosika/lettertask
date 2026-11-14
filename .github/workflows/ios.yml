@@ -1,0 +1,78 @@
+name: iOS (Machbarkeitstest)
+
+# Manually started: builds the demo build for the iOS simulator (arm64, no
+# signing), starts it once in a simulator and takes a screenshot.
+# gen/apple does not exist in the repo yet; this run generates it and uploads
+# it as an artifact so it can be checked in afterwards.
+on:
+  workflow_dispatch:
+
+jobs:
+  simulator:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install tauri-cli --version "^2" --locked
+      # tauri ios init refuses to run without a team. The simulator does not
+      # check it, so a placeholder is enough until the secret is set.
+      - name: Development Team
+        env:
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+        run: |
+          if [ -z "$TEAM" ]; then
+            echo "::warning::Secret APPLE_DEVELOPMENT_TEAM fehlt – Platzhalter, nur für den Simulator brauchbar"
+            TEAM=XXXXXXXXXX
+          fi
+          echo "APPLE_DEVELOPMENT_TEAM=$TEAM" >> "$GITHUB_ENV"
+      - name: XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Xcode-Projekt anlegen (gen/apple)
+        if: hashFiles('src-tauri/gen/apple/project.yml') == ''
+        working-directory: src-tauri
+        run: cargo tauri ios init --ci
+      - name: App-Icons übernehmen
+        run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+      - name: Für den Simulator bauen
+        working-directory: src-tauri
+        run: cargo tauri ios build --target aarch64-sim --ci
+      - name: App einpacken
+        run: |
+          APP=$(find src-tauri/gen/apple/build -name '*.app' -type d -path '*sim*' | head -n 1)
+          [ -n "$APP" ] || APP=$(find src-tauri/gen/apple/build -name '*.app' -type d | head -n 1)
+          echo "App: $APP"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent "$APP" lettertask-ios-simulator-demo.zip
+      # Smoke test: does the app start and render the UI?
+      - name: Im Simulator starten
+        continue-on-error: true
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for r in d if "iOS" in r for x in d[r] if x["name"].startswith("iPhone")))')
+          xcrun simctl boot "$DEVICE"
+          xcrun simctl bootstatus "$DEVICE"
+          xcrun simctl install "$DEVICE" "$APP"
+          xcrun simctl launch "$DEVICE" de.symbiosika.lettertask
+          sleep 30
+          xcrun simctl io "$DEVICE" screenshot ios-simulator.png
+          xcrun simctl spawn "$DEVICE" log show --last 2m --predicate 'process == "lettertask"' > ios-simulator.log || true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lettertask-ios-simulator-demo
+          path: |
+            lettertask-ios-simulator-demo.zip
+            ios-simulator.png
+            ios-simulator.log
+          if-no-files-found: warn
+      # Generated Xcode project, to be checked in once the build works.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gen-apple
+          path: |
+            src-tauri/gen/apple
+            !src-tauri/gen/apple/build
+            !src-tauri/gen/apple/Externals
