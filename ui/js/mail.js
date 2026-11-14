@@ -4,7 +4,7 @@ import { h, esc, $, load, store, debounce, dateGroup, fmtListDate, displayName, 
 import { icon } from './icons.js';
 import { isImap, isGoogle, kindLabel, kindClass, accountAvatar, accountLabel } from './accounts.js';
 import { showMenu, showMenuAt, reportError, toast, confirmDialog, promptDialog, modal } from './dialogs.js';
-import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName } from './categories.js';
+import { chipHtml, getCategories, presetHex, swatchHtml, visibleCats, hiddenCats, isLaneCategory, laneCategory, laneName, isTaskMail } from './categories.js';
 import { renderMessage, printMessage } from './mailview.js';
 import { addrAttrs } from './contactcard.js';
 import { openTagPicker, countTagUse } from './tagpicker.js';
@@ -309,7 +309,7 @@ function folderNode(f, depth, opts = {}) {
     style: { paddingLeft: 8 + depth * 16 + 'px' }, dataset: { mailboxId: f.mailboxId, folderId: f.id, wk: f.wellKnown || '' }, title: f.displayName,
     role: 'treeitem', 'aria-selected': sel ? 'true' : 'false',
   });
-  const tw = h('span.twisty', { html: hasChildren ? icon(open ? 'chevronDown' : 'chevronRight', 14) : '' });
+  const tw = h('span.twisty' + (open ? '.open' : ''), { html: hasChildren ? icon(open ? 'chevronDown' : 'chevronRight', 14) : '' });
   if (hasChildren) tw.addEventListener('click', (e) => { e.stopPropagation(); toggleExpand(key); });
   node.append(tw, h('span.fic', { html: icon(WK_ICON[f.wellKnown] || 'folder', 18) }), h('span.fname', f.displayName), h('span.fcount', { html: folderCountHtml(f) }));
   node.addEventListener('click', () => selectFolder(f.mailboxId, f.id));
@@ -626,6 +626,7 @@ function renderListHead() {
     const o = list.search.opts || {};
     const scope = o.scope === 'all' ? 'alle Ordner' : (f ? f.displayName : 'aktueller Ordner');
     els.searchbar.innerHTML = '';
+    els.searchbar.classList.remove('local');
     els.searchbar.append(
       h('span', { html: icon('search', 15) }),
       h('span.sb-text', `Suchergebnisse für „${list.search.text}“`),
@@ -635,6 +636,7 @@ function renderListHead() {
     els.searchbar.classList.remove('hidden');
   } else if (list.text) {
     els.searchbar.innerHTML = '';
+    els.searchbar.classList.add('local');
     els.searchbar.append(h('span', { html: icon('filter', 15) }), h('span.sb-text', `Gefiltert: „${list.text}“`),
       h('button.icon-btn.sm', { type: 'button', title: 'Filter entfernen', html: icon('close', 14), onclick: () => clearSearch() }));
     els.searchbar.classList.remove('hidden');
@@ -875,8 +877,18 @@ function paintListFooter() {
   if (!items.length && listLoading()) {
     els.list.appendChild(h('div.loading-state', { dataset: { testid: 'list-loading' } }, h('span.busy'), h('div', 'Nachrichten werden geladen…')));
   } else if (!items.length) {
-    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(list.search ? 'search' : isToday() ? 'sun' : isDelegated() ? 'people' : 'inbox', 40) }),
-      h('div', list.search ? 'Keine Ergebnisse gefunden.' : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.')));
+    const q = list.search ? list.search.text : list.text;
+    let action = null;
+    if (isMobile && list.text && !list.search) {
+      action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-server-search' }, html: icon('search', 18) + `<span>${mobileScope === 'all' ? 'Alle Ordner durchsuchen' : 'Ordner auf dem Server durchsuchen'}</span>` });
+      action.addEventListener('click', () => serverSearch(list.text, { scope: mobileScope }).catch(reportError));
+    } else if (isMobile && isToday()) {
+      action = h('button.m-empty-action', { type: 'button', dataset: { testid: 'empty-new-task' }, html: icon('task', 18) + '<span>Aufgabe anlegen</span>' });
+      action.addEventListener('click', () => { const mb = state.current.mailboxId; openWindow('task', mb ? { mailboxId: mb } : {}).catch(reportError); });
+    }
+    els.list.appendChild(h('div.empty', h('div.empty-ic', { html: icon(q ? 'search' : isToday() ? 'sun' : isDelegated() ? 'people' : 'inbox', 40) }),
+      h('div', q ? `Keine Treffer für „${q}“${list.search ? (list.search.opts && list.search.opts.scope === 'all' ? ' in allen Ordnern.' : '.') : ' in den bereits geladenen Nachrichten.'}` : isToday() ? 'Für heute ist nichts mehr offen.' : isDelegated() ? 'Keine offenen delegierten Aufgaben.' : 'Keine Elemente in dieser Ansicht.'),
+      action));
   } else if (!list.search && !isVirtual() && (list.items.length < list.total || list.canLoadOlder || list.loading)) {
     const foot = h('div.load-more', { dataset: { testid: 'list-more' } });
     if (list.loading) foot.append(h('span.busy.on.inline-busy'), ' Weitere Elemente werden geladen…');
@@ -907,7 +919,9 @@ function verbIcon(verb) {
 }
 
 function msgRow(m, accountId, toMode, snoozedView) {
-  const who = toMode ? (m.to || []).map(displayName).join(', ') : displayName(m.from);
+  // Phone: a task shows as one (check mark, "Aufgabe") instead of a mail from yourself.
+  const task = isMobile && isTaskMail(m);
+  const who = task ? 'Aufgabe' : toMode ? (m.to || []).map(displayName).join(', ') : displayName(m.from);
   const avatarSrc = toMode ? (m.to && m.to[0]) || {} : (m.from || {});
   const sel = list.selection.has(m.id);
   const cls = 'div.msg' + (m.isRead ? '' : '.unread') + (sel ? '.selected' : '') + (list.cursor === m.id ? '.cursor' : '') + (m.flag === 'flagged' ? '.flagged' : '');
@@ -925,7 +939,9 @@ function msgRow(m, accountId, toMode, snoozedView) {
   el.innerHTML =
     (srcBar ? `<span class="m-src" data-testid="m-src" style="background:${mailboxColor(m.mailboxId)}" title="${esc((mailboxById(m.mailboxId) || {}).address || '')}"></span>` : '') +
     `<span class="m-dot readcell" title="${m.isRead ? 'Als ungelesen markieren' : 'Als gelesen markieren'}"></span>` +
-    `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>` +
+    (task
+      ? `<span class="avatar sm m-task-av" data-testid="m-task" title="Aufgabe">${icon('task', 20)}</span>`
+      : `<span class="avatar sm" style="background:${avatarColor(avatarSrc.address || avatarSrc.name)}">${esc(initials(avatarSrc.name, avatarSrc.address))}</span>`) +
     `<div class="m-main">` +
       `<div class="m-l1"><span class="m-from" title="${esc(who)}"${(toMode ? (m.to || []).length === 1 : true) ? addrAttrs(avatarSrc) : ''}>${m.isDraft ? '<span class="draft-tag">Entwurf</span>' : ''}${esc(who || '(Unbekannt)')}</span><span class="m-time">${time}</span></div>` +
       `<div class="m-l2">${verbIcon(m.lastVerb)}<span class="m-subj" title="${esc(m.subject || '')}">${esc(m.subject || '(Kein Betreff)')}</span>` +
@@ -1126,6 +1142,12 @@ const selectionChanged = debounce(() => {
 }, 50);
 
 /** Selects exactly these messages (phone: swipe, long press, selection mode). */
+// Phone search: the scope chip ("Alle Ordner" / "Dieser Ordner") the server search will use.
+let mobileScope = 'all';
+export function setMobileSearchScope(v) { mobileScope = v; if (list.text && !list.search) renderList(); }
+
+export function selectAllVisible() { selectIds(visibleItems().map((m) => m.id)); }
+
 export function selectIds(ids) {
   list.selection = new Set(ids);
   list.cursor = ids[0] || null; list.anchor = list.cursor;
@@ -1172,6 +1194,8 @@ async function showReading(m, text) {
     const delegation = await delegationP;
     if (token !== readToken) return;
     currentDetail = detail;
+    // the phone shell adapts its bottom actions (a task gets "Erledigt")
+    document.dispatchEvent(new CustomEvent('lt-detail', { detail: { message: { ...m, ...detail } } }));
     const accountId = accountOfMailbox(detail.mailboxId || state.current.mailboxId);
     renderMessage(els.read, detail, {
       accountId,
@@ -1348,6 +1372,26 @@ export async function deleteSelected(permanent = false) {
   if (s) await deleteIds(s.ids, permanent);
 }
 
+/** Phone: delete with a short "Rückgängig" window (permanent deletes keep their confirmation). */
+export async function deleteSelectedUndoable() {
+  const s = requireSelection(); if (!s) return;
+  const ids = [...s.ids];
+  const f = currentFolder();
+  if (byMailbox(ids).size > 1 || (f && f.wellKnown === 'deleteditems' && !list.search)) return deleteIds(ids, false);
+  const mailboxId = mbOf(ids);
+  await removeFromList(ids);
+  let undone = false;
+  const timer = setTimeout(() => {
+    if (undone) return;
+    whileInFlight(ids, { gone: true }, call('delete_messages', { mailboxId, ids, permanent: false }))
+      .then(() => refreshFolders(mailboxId)).then(() => checkInboxZero()).catch(reportError);
+  }, 6000);
+  toast(ids.length === 1 ? 'In „Gelöschte Elemente“ verschoben.' : `${ids.length} Elemente in „Gelöschte Elemente“ verschoben.`, 'info', 6000, {
+    icon: 'delete',
+    action: { label: 'Rückgängig', onClick: () => { undone = true; clearTimeout(timer); return reloadList({ keepCount: true }); } },
+  });
+}
+
 async function deleteIds(ids, permanent) {
   const groups = byMailbox(ids);
   if (groups.size > 1) {
@@ -1420,6 +1464,29 @@ async function transfer(ids, mailboxId, destMailboxId, destFolderId, kind) {
   toast(`${what} ${kind === 'move' ? 'verschoben' : 'kopiert'} nach ${target}.`);
   await Promise.all([refreshFolders(mailboxId), refreshFolders(destMailboxId)]);
   if (kind === 'move') checkInboxZero();
+}
+
+/**
+ * "Erledigt" for tasks (phone): gone from the list at once, archived after a
+ * few seconds – "Rückgängig" in the toast cancels it before anything reaches
+ * the server (archive_messages returns no new ids to move back).
+ */
+export async function completeSelected() {
+  const s = requireSelection();
+  if (!s) return;
+  const ids = [...s.ids];
+  const mailboxId = mbOf(ids);
+  burst(rowEl(ids[0]));
+  await removeFromList(ids);
+  let undone = false;
+  const timer = setTimeout(() => {
+    if (undone) return;
+    archiveOne(ids, { quiet: true, mailboxId, removed: true }).then(() => checkInboxZero()).catch(reportError);
+  }, 6000);
+  toast(ids.length === 1 ? 'Aufgabe erledigt.' : `${ids.length} Aufgaben erledigt.`, 'info', 6000, {
+    icon: 'check',
+    action: { label: 'Rückgängig', onClick: () => { undone = true; clearTimeout(timer); return reloadList({ keepCount: true }); } },
+  });
 }
 
 export async function archiveSelected() {

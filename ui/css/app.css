@@ -474,19 +474,19 @@ textarea.input { height: auto; min-height: 70px; resize: vertical; padding: 8px 
 .checkrow { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 /* Own checkbox: the native one draws its check mark off-centre in WebKitGTK. */
-input[type=checkbox]:not(.cal-check) {
+input[type=checkbox]:not(.cal-check):not(.m-switch) {
   appearance: none; -webkit-appearance: none; flex: none; margin: 0; width: 16px; height: 16px;
   border: 1.5px solid var(--border-strong); border-radius: 4px; background: var(--bg);
   display: inline-grid; place-content: center; cursor: pointer; vertical-align: middle;
 }
-input[type=checkbox]:not(.cal-check)::before {
+input[type=checkbox]:not(.cal-check):not(.m-switch)::before {
   content: ''; width: 9px; height: 5px; border: 2px solid #fff; border-top: 0; border-right: 0;
   transform: translateY(-1px) rotate(-45deg); opacity: 0;
 }
-input[type=checkbox]:not(.cal-check):checked { background: var(--accent); border-color: var(--accent); }
-input[type=checkbox]:not(.cal-check):checked::before { opacity: 1; }
-input[type=checkbox]:not(.cal-check):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input[type=checkbox]:not(.cal-check):disabled { opacity: .5; cursor: default; }
+input[type=checkbox]:not(.cal-check):not(.m-switch):checked { background: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:not(.cal-check):not(.m-switch):checked::before { opacity: 1; }
+input[type=checkbox]:not(.cal-check):not(.m-switch):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=checkbox]:not(.cal-check):not(.m-switch):disabled { opacity: .5; cursor: default; }
 input[type=radio] { margin: 0; flex: none; width: 15px; height: 15px; }
 fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px 12px; margin: 10px 0; }
 legend { color: var(--text-2); padding: 0 6px; font-weight: 600; }

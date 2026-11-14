@@ -3,12 +3,13 @@
 //
 // Layers (drawer, reader, sheets, dialogs, menus) sit on the browser history,
 // so the Android back button closes the topmost one.
-import { on } from './api.js';
+import { on, openUrl } from './api.js';
 import { h, esc, load, store } from './util.js';
 import { icon } from './icons.js';
 import { reportError, showSheetMenu } from './dialogs.js';
 import { state, mailboxes, wellKnown } from './state.js';
 import { accountAvatar } from './accounts.js';
+import { isTaskMail } from './categories.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
@@ -99,7 +100,7 @@ window.__lt = { pushLayer, openSheet, closeSheet };
 // ------------------------------------------------------------------ shell
 const ui = {};
 let hooks = {};
-const st = { reader: null, select: null, search: null, drawer: null, ctDetail: null, fabOpen: null };
+const st = { reader: null, select: null, search: null, drawer: null, ctDetail: null };
 
 /**
  * hooks: { appMenu(), snoozeItems(), focusMenu(), focusLabel(), setMode(mode), syncAll(), newTask() }
@@ -113,24 +114,36 @@ export function initMobile(h0) {
   ui.readactions = h('div.m-readactions');
   ui.ctbar = h('div.m-ctbar');
   ui.bottomnav = h('nav.m-bottomnav', { 'aria-label': 'Bereiche' });
-  ui.fab = h('div.m-fab-wrap');
   ui.scrim = h('div.m-scrim');
   ui.ptr = h('div.m-ptr', { html: icon('sync', 20) });
   document.body.prepend(ui.appbar, ui.searchrow);
-  document.body.append(ui.readbar, ui.readactions, ui.ctbar, ui.bottomnav, ui.fab, ui.scrim);
+  document.body.append(ui.readbar, ui.readactions, ui.ctbar, ui.bottomnav, ui.scrim);
   $('#msglist').before(ui.ptr);
-  ui.scrim.addEventListener('click', () => { if (st.drawer) st.drawer(); if (st.fabOpen) st.fabOpen(); });
+  ui.scrim.addEventListener('click', () => { if (st.drawer) st.drawer(); });
 
   setupDrawer();
+  // the folder tree re-renders (expand, counts): keep a single check mark
+  const nav = document.getElementById('navpane');
+  if (nav) new MutationObserver(() => markDupSelection()).observe(nav, { childList: true, subtree: true });
   setupList();
+  // Large titles above the mail and contact lists; they fold into the app bar on scroll.
+  ui.large = h('div.m-largetitle', { dataset: { testid: 'm-largetitle' } });
+  const lp = $('.listpane');
+  if (lp) lp.prepend(ui.large);
+  ui.largeCt = h('div.m-largetitle', h('span.m-lt-main', 'Kontakte'));
+  const cp = $('.ct-listpane');
+  if (cp) cp.prepend(ui.largeCt);
+  document.addEventListener('scroll', (e) => {
+    const t = e.target;
+    if (!t || !t.closest || !t.closest('.msglist, .ct-list, .kb-cols')) return;
+    document.body.classList.toggle('m-scrolled', t.scrollTop > 8);
+  }, true);
   setupBoard();
   setupContacts();
   renderReadbar();
   // Work week and week are too narrow for a phone: start with the agenda once.
-  if (!load('mCalViewSet', false)) {
-    store('mCalViewSet', true);
-    if (['workweek', 'week'].includes(calendar.getView())) calendar.setView('sprint');
-  }
+  store('mCalViewSet', true);
+  if (['workweek', 'week'].includes(calendar.getView())) calendar.setView('sprint');
   on('open-window', (p) => { if (p && p.kind) openSheet(p.kind, p.query || ''); });
   update();
 }
@@ -141,8 +154,73 @@ function $(sel) { return document.querySelector(sel); }
 export function update() {
   if (!ui.appbar) return;
   renderAppbar();
+  if (ui.large && state.mode === 'mail') {
+    const stats = mail.listStats();
+    ui.large.innerHTML = '';
+    ui.large.append(h('span.m-lt-main', folderTitle()), h('span.m-lt-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : ''));
+  }
+  // The app-bar title hides only while a large title is really on screen (not on the board).
+  const large = (state.mode === 'mail' && mail.getView() !== 'kanban') || state.mode === 'contacts';
+  document.body.classList.toggle('m-has-large', large);
+  if (st.lastMode !== state.mode) {
+    st.lastMode = state.mode;
+    // title and list belong together: the title stays folded while the list is still scrolled
+    requestAnimationFrame(() => {
+      const list = [...document.querySelectorAll('.msglist, .ct-list, .kb-cols')].find((e) => e.offsetParent);
+      document.body.classList.toggle('m-scrolled', !!list && list.scrollTop > 8);
+    });
+  }
   renderBottomNav();
-  if (ui.fabMode !== state.mode) renderFab();
+  renderTodayAgenda();
+}
+
+// ------------------------------------------------------------------ "Heute": today's meetings above the list
+let agendaDay = '';
+let agendaEvents = null;
+async function renderTodayAgenda() {
+  const show = state.mode === 'mail' && mail.isToday() && !st.select && !st.search;
+  if (!ui.agenda) { ui.agenda = h('div.m-agenda', { dataset: { testid: 'm-today-agenda' } }); $('#msglist').before(ui.agenda); }
+  ui.agenda.classList.toggle('hidden', !show);
+  if (!show) return;
+  const now = new Date();
+  const day = now.toDateString();
+  if (agendaDay !== day || !agendaEvents) {
+    agendaDay = day;
+    agendaEvents = [];
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(start.getTime() + 86400000);
+    try { agendaEvents = (await calendar.eventsBetween(start, end, { own: true })).filter((e) => !e.isCancelled); } catch (e) { console.warn(e); }
+    setTimeout(() => { agendaEvents = null; }, 5 * 60000); // refreshed every few minutes
+  }
+  const evs = agendaEvents
+    .filter((e) => (e.isAllDay ? calendar.allDayRange(e).end > new Date(now.getFullYear(), now.getMonth(), now.getDate()) : new Date(e.end) > now))
+    .sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
+  const pad = (n) => String(n).padStart(2, '0');
+  const time = (e) => (e.isAllDay ? 'ganztägig' : `${pad(new Date(e.start).getHours())}:${pad(new Date(e.start).getMinutes())}`);
+  ui.agenda.innerHTML = '';
+  const head = h('div.m-agenda-head', h('span', evs.length ? `Termine heute (${evs.length})` : 'Termine heute'));
+  const all = h('button.m-agenda-all', { type: 'button' }, 'Kalender');
+  all.addEventListener('click', () => { hooks.setMode('calendar'); calendar.goToday(); update(); });
+  head.appendChild(all);
+  ui.agenda.appendChild(head);
+  if (!evs.length) ui.agenda.appendChild(h('div.m-agenda-none', 'Keine weiteren Termine'));
+  for (const e of evs.slice(0, 3)) {
+    const row = h('div.m-agenda-row', { role: 'button', tabindex: '0' },
+      h('span.m-agenda-time', time(e)),
+      h('span.m-agenda-title', e.subject || '(Kein Betreff)'));
+    row.addEventListener('click', () => calendar.openEvent(e));
+    if (e.onlineMeetingUrl && !e.isAllDay) {
+      const join = h('button.m-agenda-join', { type: 'button', html: icon('teams', 16) + '<span>Beitreten</span>' });
+      join.addEventListener('click', (ev) => { ev.stopPropagation(); openUrl(e.onlineMeetingUrl); });
+      row.appendChild(join);
+    }
+    ui.agenda.appendChild(row);
+  }
+  if (evs.length > 3) {
+    const more = h('button.m-agenda-more', { type: 'button' }, `${evs.length - 3} weitere im Kalender`);
+    more.addEventListener('click', () => all.click());
+    ui.agenda.appendChild(more);
+  }
 }
 
 const btn = (ic, label, onClick, testid, extra = '') => {
@@ -178,19 +256,22 @@ function renderAppbar() {
     bar.append(
       btn('close', 'Auswahl beenden', () => st.select(), 'm-select-close'),
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-select-count' } }, `${n} ausgewählt`)),
+      (() => { const b = h('button.m-textbtn', { type: 'button', dataset: { testid: 'm-sel-all-btn' } }, 'Alle'); b.addEventListener('click', () => { mail.selectAllVisible(); update(); }); return b; })(),
       btn('archive', 'Archivieren', () => mail.archiveSelected().then(endSelect), 'm-sel-archive'),
       btn('snooze', 'Auf Wiedervorlage', () => snoozeSheet(endSelect), 'm-sel-snooze'),
-      btn('delete', 'Löschen', () => mail.deleteSelected(false).then(endSelect), 'm-sel-delete'),
       btn('more', 'Weitere Aktionen', () => showSheetMenu([
+        { label: 'Alle auswählen', icon: 'check', onClick: () => { mail.selectAllVisible(); update(); }, testid: 'm-sel-all' },
+        { separator: true },
         ...mail.moreItems(false).filter((it) => it && !it.separator && !/Fenster|Quelltext/.test(it.label || '')),
         { label: 'Kategorien', icon: 'tag', submenu: () => mail.categoryMenuItems() },
         { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
-      ]), 'm-sel-more'));
+      ]), 'm-sel-more'),
+      btn('delete', 'Löschen', () => mail.deleteSelectedUndoable().then(endSelect), 'm-sel-delete'));
     return;
   }
   if (state.mode === 'mail' && st.search) {
     bar.classList.add('searching');
-    const input = h('input.m-search-input', { type: 'search', placeholder: 'In Mails suchen', enterkeyhint: 'search', autocomplete: 'off', spellcheck: false, dataset: { testid: 'm-search-input' } });
+    const input = h('input.m-search-input', { type: 'search', placeholder: 'Suchen (Eingabe: auf dem Server)', enterkeyhint: 'search', autocomplete: 'off', spellcheck: false, dataset: { testid: 'm-search-input' } });
     input.value = st.searchText || '';
     input.addEventListener('input', () => {
       st.searchText = input.value;
@@ -206,10 +287,13 @@ function renderAppbar() {
     });
     bar.append(btn('chevronLeft', 'Suche schließen', () => st.search(), 'm-search-close'), input);
     renderSearchRow();
-    setTimeout(() => input.focus(), 30);
+    input.focus();
+    setTimeout(() => { if (document.activeElement !== input) input.focus(); }, 30);
     return;
   }
-  const menu = btn('menu', 'Menü', () => openDrawer(), 'm-menu');
+  // The folder/calendar list is a page of its own ("Postfächer"), opened from the left.
+  // Same leading glyph in every area: it opens the area's list page (Postfächer / Kalender / Adressbücher).
+  const menu = btn('folder', state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalender auswählen' : 'Adressbücher', () => openDrawer(), 'm-menu');
   if (state.mode === 'mail') {
     const stats = mail.listStats();
     const kanban = mail.getView() === 'kanban';
@@ -217,29 +301,74 @@ function renderAppbar() {
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-title' } }, folderTitle()),
         h('span.m-title-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : '')),
       btn('search', 'Suchen', () => openSearch(), 'm-search'),
-      mail.isVirtual() ? null : btn(kanban ? 'bullets' : 'kanban', kanban ? 'Als Liste' : 'Als Kanban', () => { mail.toggleView(); update(); }, 'm-view'),
-      accountButton());
+      composeButton());
+    void kanban;
   } else if (state.mode === 'calendar') {
     bar.append(menu,
       btn('chevronLeft', 'Zurück', () => { calendar.step(-1); setTimeout(update, 50); }, 'm-cal-prev'),
-      h('div.m-title.center', h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle())),
+      (() => {
+        // a tap on the period jumps to today (the separate "Heute" icon made the title too short)
+        const { start, end } = calendar.viewRange();
+        const now = new Date();
+        const away = now < start || now >= end;
+        const t = h('button.m-title.center.m-cal-titlebtn', { type: 'button', 'aria-label': 'Zu heute springen', dataset: { testid: 'm-cal-today' } },
+          h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle()),
+          // shown while today is out of view – a visible way back
+          away ? h('span.m-title-sub.m-cal-back', 'Zu heute') : null);
+        t.addEventListener('click', () => { calendar.goToday(); setTimeout(update, 50); });
+        return t;
+      })(),
       btn('chevronRight', 'Vor', () => { calendar.step(1); setTimeout(update, 50); }, 'm-cal-next'),
-      btn('today', 'Heute', () => { calendar.goToday(); setTimeout(update, 50); }, 'm-cal-today'),
-      btn(viewIcon(calendar.getView()), 'Ansicht', () => showSheetMenu(calViewItems(), { title: 'Ansicht' }), 'm-cal-view'));
+      viewButton(),
+      composeButton());
   } else {
     bar.append(menu,
       h('div.m-title', h('span.m-title-main', 'Kontakte')),
-      btn('sync', 'Synchronisieren', () => hooks.syncAll(), 'm-ct-sync'),
-      accountButton());
+      composeButton());
   }
 }
 
-function accountButton() {
-  const a = state.accounts[0];
-  const b = h('button.m-avatar', { type: 'button', title: a ? a.email : 'Konto', 'aria-label': 'Konto und Einstellungen', dataset: { testid: 'm-account' } });
-  if (a) b.appendChild(accountAvatar(a, 'sm')); else b.innerHTML = icon('user', 22);
-  b.addEventListener('click', () => showSheetMenu(hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')), { title: a ? a.email : 'lettertask' }));
+/**
+ * "Neu" in the app bar (replaces the floating button): a tap creates what the
+ * current area is about – mail, a task on "Heute", an event, a contact; a long
+ * press offers all three kinds.
+ */
+function composeButton() {
+  const today = state.mode === 'mail' && mail.isToday();
+  const [ic, label, run] = state.mode === 'calendar' ? ['plus', 'Neuer Termin', () => calendar.newEvent()]
+    : state.mode === 'contacts' ? ['plus', 'Neuer Kontakt', () => contacts.newContact()]
+    : today ? ['task', 'Neue Aufgabe', () => hooks.newTask()]
+    : ['edit', 'Neue E-Mail', () => mail.newMail()];
+  let longPressed = false;
+  let timer = null;
+  const b = btn(ic, label, () => { if (longPressed) { longPressed = false; return; } return run(); }, 'm-compose', '.m-compose');
+  // labelled: "Neu" next to the icon (an icon alone was a guess for some testers)
+  // calendar: icon only – the period title needs the room on 375–393pt phones
+  if (state.mode !== 'calendar') b.insertAdjacentHTML('beforeend', '<span class="m-compose-label">Neu</span>');
+  const sheet = () => showSheetMenu([
+    { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'm-new-mail' },
+    { label: 'Aufgabe', icon: 'task', onClick: () => hooks.newTask(), testid: 'm-new-task' },
+    { label: 'Termin', icon: 'calendarNew', onClick: () => calendar.newEvent(), testid: 'm-new-event' },
+  ], { title: 'Neu' });
+  b.addEventListener('pointerdown', () => { longPressed = false; timer = setTimeout(() => { longPressed = true; sheet(); }, 480); });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => clearTimeout(timer));
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
   return b;
+}
+
+/** Calendar view as a labelled button ("Agenda ▾") instead of a bare icon. */
+function viewButton() {
+  const cur = VIEWS.find((x) => x[0] === calendar.getView()) || VIEWS[0];
+  const b = h('button.m-textbtn', { type: 'button', 'aria-label': 'Ansicht wählen', dataset: { testid: 'm-cal-view' }, html: `<span>${cur[0] === 'sprint' ? 'Agenda' : cur[1]}</span>` + icon('chevronDown', 14) });
+  b.addEventListener('click', () => showSheetMenu(calViewItems(), { title: 'Ansicht' }));
+  return b;
+}
+
+/** Account menu (settings, accounts, about …) – opened from the account row on the folder page. */
+function openAccountSheet() {
+  const a = state.accounts[0];
+  if (st.drawer) st.drawer();
+  showSheetMenu(hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')), { title: a ? a.email : 'lettertask' });
 }
 
 const MONTHS_SHORT = ['Jan.', 'Feb.', 'März', 'Apr.', 'Mai', 'Juni', 'Juli', 'Aug.', 'Sep.', 'Okt.', 'Nov.', 'Dez.'];
@@ -251,16 +380,21 @@ function calTitle() {
   const last = new Date(end.getTime() - 86400000);
   const dm = (d) => `${d.getDate()}. ${MONTHS_SHORT[d.getMonth()]}`;
   if (v === 'day') return `${WD_SHORT[start.getDay()]}, ${dm(start)}`;
-  if (v === 'month') return calendar.periodTitle();
-  if (start.getMonth() === last.getMonth()) return `${start.getDate()}.–${dm(last)}`;
-  return `${dm(start)} – ${dm(last)}`;
+  if (v === 'month') return `${MONTHS_SHORT[start.getMonth() === last.getMonth() ? start.getMonth() : new Date(start.getTime() + 15 * 86400000).getMonth()]} ${new Date(start.getTime() + 15 * 86400000).getFullYear()}`;
+  if (start.getMonth() === last.getMonth()) return `${start.getDate()}.–${last.getDate()}.${last.getMonth() + 1}.`;
+  return `${start.getDate()}.${start.getMonth() + 1}.–${last.getDate()}.${last.getMonth() + 1}.`;
 }
 
-const VIEWS = [['sprint', 'Agenda (14 Tage)', 'bullets'], ['day', 'Tag', 'dayView'], ['week', 'Woche', 'weekView'], ['month', 'Monat', 'monthView']];
+// No week view on the phone: seven columns of 40px leave no room for a title.
+const VIEWS = [['sprint', 'Agenda (14 Tage)', 'bullets'], ['day', 'Tag', 'dayView'], ['month', 'Monat', 'monthView']];
 function viewIcon(v) { return (VIEWS.find((x) => x[0] === v) || VIEWS[0])[2]; }
 function calViewItems() {
   const cur = calendar.getView();
-  return VIEWS.map(([v, label, ic]) => ({ label, icon: ic, checked: cur === v, onClick: () => { calendar.setView(v); setTimeout(update, 50); } }));
+  return [
+    ...VIEWS.map(([v, label, ic]) => ({ label, icon: ic, checked: cur === v, onClick: () => { calendar.setView(v); setTimeout(update, 50); } })),
+    { separator: true },
+    { label: 'Heute', icon: 'today', onClick: () => { calendar.goToday(); setTimeout(update, 50); } },
+  ];
 }
 
 // ------------------------------------------------------------------ search
@@ -288,10 +422,11 @@ function renderSearchRow() {
   row.classList.remove('hidden');
   const chip = (v, label) => {
     const b = h('button.m-chip' + (st.searchScope === v ? '.on' : ''), { type: 'button' }, label);
-    b.addEventListener('click', () => { st.searchScope = v; renderSearchRow(); });
+    b.addEventListener('click', () => { st.searchScope = v; mail.setMobileSearchScope(v); renderSearchRow(); });
     return b;
   };
-  row.append(chip('all', 'Alle Ordner'), chip('folder', 'Dieser Ordner'), h('span.m-search-hint', 'Eingabe: auf dem Server suchen'));
+  mail.setMobileSearchScope(st.searchScope || 'all');
+  row.append(chip('all', 'Alle Ordner'), chip('folder', 'Dieser Ordner'));
 }
 
 // ------------------------------------------------------------------ drawer (the sidebar)
@@ -300,7 +435,9 @@ function setupDrawer() {
   nav.classList.add('m-drawer');
   ui.drawerHead = h('div.m-drawer-head');
   ui.drawerMenu = h('div.m-drawer-menu');
-  nav.prepend(ui.drawerHead);
+  // only the title bar stays pinned; account and folders scroll below it
+  ui.drawerBar = h('div.m-drawer-bar');
+  nav.prepend(ui.drawerBar, ui.drawerHead);
   $('#statusbar').before(ui.drawerMenu);
   // Choosing a folder (or calendar) closes the drawer.
   nav.addEventListener('click', (e) => {
@@ -314,13 +451,27 @@ function paintDrawerHead() {
   if (!ui.drawerHead) return;
   const a = state.accounts[0];
   ui.drawerHead.innerHTML = '';
-  const focusBtn = h('button.m-drawer-focus', { type: 'button', dataset: { testid: 'm-focus' }, html: icon('focus', 18) + `<span>${esc(hooks.focusLabel ? hooks.focusLabel() : 'Fokuszeit')}</span>` });
-  focusBtn.addEventListener('click', () => showSheetMenu(hooks.focusMenu(), { title: 'Fokuszeit' }));
-  ui.drawerHead.append(
-    h('div.m-drawer-brand', { html: icon('mail', 20) + '<span>lettertask</span>' }),
-    a ? h('div.m-drawer-account', accountAvatar(a, 'lg'), h('div.m-drawer-who', h('div.m-drawer-name', a.displayName || a.email), h('div.m-drawer-mail', a.email))) : null,
-    focusBtn);
+  ui.drawerBar.innerHTML = '';
+  const done = h('button.m-nav-action.m-drawer-done', { type: 'button', dataset: { testid: 'm-drawer-done' } }, 'Fertig');
+  done.addEventListener('click', () => { if (st.drawer) st.drawer(); });
+  ui.drawerBar.append(h('span.m-drawer-title', state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalender' : 'Adressbücher'), done);
+  // The account row opens the account menu (it replaced the avatar in the app bar).
+  const acc = a ? h('button.m-drawer-account', { type: 'button', dataset: { testid: 'm-account' }, 'aria-label': 'Konto und Einstellungen' },
+    accountAvatar(a, 'lg'), h('div.m-drawer-who', h('div.m-drawer-name', a.displayName || a.email), h('div.m-drawer-mail', a.email)), h('span.m-row-chev', { html: icon('chevronRight', 16) })) : null;
+  if (acc) acc.addEventListener('click', () => openAccountSheet());
+  // Fokuszeit belongs to mail: a row in the mail list page only.
+  const focusRow = state.mode === 'mail' ? h('button.m-drawer-item.m-drawer-focusrow', { type: 'button', dataset: { testid: 'm-focus' }, html: icon('focus', 20) + `<span>Fokuszeit</span><span class="m-row-value">${esc(hooks.focusLabel ? hooks.focusLabel().replace(/^Fokuszeit:?\s*/, '') || 'Aus' : 'Aus')}</span>` }) : null;
+  if (focusRow) focusRow.addEventListener('click', () => showSheetMenu(hooks.focusMenu(), { title: 'Fokuszeit' }));
+  ui.drawerHead.append(h('div.m-drawer-group', acc, focusRow));
   ui.drawerMenu.innerHTML = '';
+  ui.drawerMenu.classList.toggle('hidden', state.mode !== 'mail');
+  // Phone: the Kanban/list switch lives with the folders (the app bar has no avatar menu any more).
+  if (state.mode === 'mail' && !mail.isVirtual()) {
+    const kanban = mail.getView() === 'kanban';
+    const vb = h('button.m-drawer-item', { type: 'button', dataset: { testid: 'm-view' }, html: icon(kanban ? 'bullets' : 'kanban', 20) + `<span>${kanban ? 'Als Liste anzeigen' : 'Als Kanban-Board anzeigen'}</span>` });
+    vb.addEventListener('click', () => { if (st.drawer) st.drawer(); mail.toggleView(); update(); });
+    ui.drawerMenu.appendChild(vb);
+  }
   const items = hooks.appMenu().filter((it) => it && !it.separator && !it.header && /Einstellungen|Signaturen|Kategorien|Abwesenheit|Konto hinzufügen|Über/.test(it.label || ''));
   for (const it of items) {
     const b = h('button.m-drawer-item', { type: 'button', disabled: !!it.disabled, html: icon(it.icon || 'settings', 20) + `<span>${esc(it.label.replace(/…$/, ''))}</span>` });
@@ -329,9 +480,16 @@ function paintDrawerHead() {
   }
 }
 
+function markDupSelection() {
+  const sel = [...document.querySelectorAll('#navpane .tree-node.selected')];
+  sel.forEach((n, i) => n.classList.toggle('m-dup', i > 0));
+}
+
 function openDrawer() {
   if (st.drawer) return;
   paintDrawerHead();
+  // A folder that is also a favourite is marked once (in Favoriten) – not twice.
+  markDupSelection();
   document.body.classList.add('m-drawer-open');
   const pop = pushLayer(() => closeDrawer());
   st.drawer = () => pop();
@@ -379,46 +537,6 @@ function scrollListTop() {
   if (l) l.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// ------------------------------------------------------------------ FAB
-function renderFab() {
-  ui.fabMode = state.mode;
-  const wrap = ui.fab;
-  wrap.innerHTML = '';
-  closeFab();
-  const main = (ic, label, onClick, testid) => {
-    const b = h('button.m-fab', { type: 'button', 'aria-label': label, dataset: { testid }, html: icon(ic, 22) + `<span>${esc(label)}</span>` });
-    b.addEventListener('click', () => Promise.resolve().then(onClick).catch(reportError));
-    return b;
-  };
-  if (state.mode === 'calendar') { wrap.append(main('plus', 'Termin', () => calendar.newEvent(), 'm-fab')); return; }
-  if (state.mode === 'contacts') { wrap.append(main('plus', 'Kontakt', () => contacts.newContact(), 'm-fab')); return; }
-  const dial = h('div.m-dial');
-  const opt = (ic, label, onClick, testid) => {
-    const b = h('button.m-dial-opt', { type: 'button', dataset: { testid } }, h('span.m-dial-label', label), h('span.m-dial-ic', { html: icon(ic, 20) }));
-    b.addEventListener('click', () => { closeFab(); Promise.resolve().then(onClick).catch(reportError); });
-    return b;
-  };
-  dial.append(
-    opt('calendarNew', 'Termin', () => calendar.newEvent(), 'm-new-event'),
-    opt('task', 'Aufgabe', () => hooks.newTask(), 'm-new-task'),
-    opt('mail', 'E-Mail', () => mail.newMail(), 'm-new-mail'));
-  const fab = main('edit', 'Schreiben', () => {
-    if (wrap.classList.contains('open')) { closeFab(); mail.newMail(); return; }
-    wrap.classList.add('open');
-    ui.scrim.classList.add('fab');
-    const pop = pushLayer(() => closeFabNow());
-    st.fabOpen = () => pop();
-  }, 'm-fab');
-  wrap.append(dial, fab);
-}
-
-function closeFab() { if (st.fabOpen) st.fabOpen(); }
-function closeFabNow() {
-  st.fabOpen = null;
-  ui.fab.classList.remove('open');
-  ui.scrim.classList.remove('fab');
-}
-
 // ------------------------------------------------------------------ reader
 function renderReadbar() {
   ui.readbar.innerHTML = '';
@@ -427,20 +545,64 @@ function renderReadbar() {
     h('span.spacer'),
     btn('archive', 'Archivieren', () => mail.archiveSelected().then(closeReader), 'm-read-archive'),
     btn('snooze', 'Auf Wiedervorlage', () => snoozeSheet(closeReader), 'm-read-snooze'),
-    btn('delete', 'Löschen', () => mail.deleteSelected(false).then(closeReader), 'm-read-delete'),
     btn('more', 'Weitere Aktionen', () => showSheetMenu([
       ...mail.moreItems(false).filter((it) => it && !/Fenster|Quelltext/.test(it.label || '')),
       { separator: true },
       { label: 'Kategorien', icon: 'tag', submenu: () => mail.categoryMenuItems() },
       { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
-    ]), 'm-read-more'));
+    ]), 'm-read-more'),
+    btn('delete', 'Löschen', () => mail.deleteSelectedUndoable().then(closeReader), 'm-read-delete'));
+  renderReadActions(false);
+  // A task gets "Erledigt" (archive) and "Später" instead of reply buttons.
+  document.addEventListener('lt-detail', (e) => {
+    const m = e.detail && e.detail.message;
+    const task = isTaskMail(m);
+    renderReadActions(task);
+    // A task: no sender/recipient block (it is from you, to you) – a status line instead.
+    document.body.classList.toggle('m-task-open', task);
+    requestAnimationFrame(() => {
+      const pane = document.querySelector('.readpane');
+      if (!pane) return;
+      pane.querySelectorAll('.m-task-meta').forEach((x) => x.remove());
+      if (!task) return;
+      const row = pane.querySelector('.rp-fromrow');
+      const due = m.dueAt ? new Date(m.dueAt) : null;
+      const when = due ? due.toLocaleString('de-DE', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      const meta = h('div.m-task-meta', { dataset: { testid: 'm-task-meta' }, html: icon('task', 18) + `<span>Aufgabe · ${due ? 'fällig ' + esc(when) : 'ohne Fälligkeit'}</span>` });
+      if (row) row.before(meta);
+    });
+  });
+}
+
+function renderReadActions(task) {
+  if (ui.readactions.dataset.task === String(task)) return;
+  ui.readactions.dataset.task = String(task);
   ui.readactions.innerHTML = '';
-  const act = (ic, label, mode) => {
-    const b = h('button.m-readact', { type: 'button', dataset: { testid: 'm-' + mode }, html: icon(ic, 20) + `<span>${label}</span>` });
-    b.addEventListener('click', () => mail.respond(mode));
+  const act = (ic, label, testid, onClick, cls = '') => {
+    const b = h('button.m-readact' + cls, { type: 'button', dataset: { testid }, html: icon(ic, 20) + `<span>${label}</span>` });
+    b.addEventListener('click', () => Promise.resolve().then(onClick).catch(reportError));
     return b;
   };
-  ui.readactions.append(act('reply', 'Antworten', 'reply'), act('replyAll', 'Allen', 'replyAll'), act('forward', 'Weiterleiten', 'forward'));
+  if (task) {
+    ui.readactions.append(
+      act('check', 'Erledigt', 'm-done', () => mail.completeSelected().then(closeReader), '.m-done'),
+      act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)),
+      act('delete', 'Löschen', 'm-task-delete', () => mail.deleteSelectedUndoable().then(closeReader), '.m-readact-danger'));
+  } else {
+    // A toolbar as in Mail: archive, the three answers, delete (red, at the far end).
+    const tool = (ic, label, testid, onClick, cls = '') => {
+      const b = h('button.m-tool' + cls, { type: 'button', dataset: { testid }, 'aria-label': label, html: icon(ic, 22) + `<span>${label}</span>` });
+      b.addEventListener('click', () => Promise.resolve().then(onClick).catch(reportError));
+      return b;
+    };
+    ui.readactions.append(
+      tool('archive', 'Archiv', 'm-archive', () => mail.archiveSelected().then(closeReader)),
+      tool('reply', 'Antworten', 'm-reply', () => mail.respond('reply')),
+      tool('replyAll', 'Allen', 'm-replyAll', () => mail.respond('replyAll')),
+      tool('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')),
+      tool('delete', 'Löschen', 'm-delete', () => mail.deleteSelectedUndoable().then(closeReader), '.m-tool-danger'));
+  }
+  ui.readactions.classList.toggle('m-toolbar', !task);
 }
 
 function openReader() {
@@ -616,6 +778,28 @@ function setupBoard() {
 function setupContacts() {
   const list = $('.ct-list');
   if (!list) return;
+  // A–Z index on the right edge: tap or slide to jump to a letter.
+  const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('');
+  const idx = h('div.m-az', { dataset: { testid: 'm-az' }, 'aria-label': 'Alphabet-Index' }, ...LETTERS.map((l) => h('span', l)));
+  const bubble = h('div.m-az-bubble');
+  list.parentElement.append(idx, bubble);
+  const jump = (y) => {
+    const r = idx.getBoundingClientRect();
+    const i = Math.max(0, Math.min(LETTERS.length - 1, Math.floor((y - r.top) / (r.height / LETTERS.length))));
+    const want = LETTERS[i];
+    const heads = [...list.querySelectorAll('.ct-letter')];
+    const target = heads.find((el) => el.textContent.trim().toUpperCase() >= want) || heads[heads.length - 1];
+    if (target) list.scrollTop = target.offsetTop - list.offsetTop;
+    idx.querySelectorAll('span').forEach((s, j) => s.classList.toggle('on', j === i));
+    bubble.textContent = want;
+    bubble.classList.add('show');
+  };
+  let sliding = false;
+  idx.addEventListener('pointerdown', (e) => { sliding = true; idx.setPointerCapture(e.pointerId); jump(e.clientY); e.preventDefault(); });
+  idx.addEventListener('pointermove', (e) => { if (sliding) jump(e.clientY); });
+  const stop = () => { sliding = false; setTimeout(() => { idx.querySelectorAll('span.on').forEach((s) => s.classList.remove('on')); bubble.classList.remove('show'); }, 500); };
+  idx.addEventListener('pointerup', stop);
+  idx.addEventListener('pointercancel', stop);
   ui.ctbar.append(btn('chevronLeft', 'Zurück', () => { if (st.ctDetail) st.ctDetail(); }, 'm-ct-back'), h('span.m-ctbar-title', 'Kontakt'));
   list.addEventListener('click', (e) => {
     if (!e.target.closest('.ct-row')) return;

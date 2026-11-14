@@ -74,10 +74,10 @@ export function snoozeOptions(config) {
 }
 
 export const BASE_LABELS = [
-  ['hours', 'In N Stunden'],
+  ['hours', 'In einigen Stunden'],
   ['today', 'Heute'],
   ['tomorrow', 'Morgen'],
-  ['days', 'In N Tagen'],
+  ['days', 'In einigen Tagen'],
   ['weekend', 'Am Wochenende (Sa)'],
   ['nextWeek', 'Nächste Woche (Mo)'],
 ];

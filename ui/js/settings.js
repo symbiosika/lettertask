@@ -1,5 +1,5 @@
 // Dialogs: settings, category manager, auto reply, welcome / account setup.
-import { call, isMobile } from './api.js';
+import { call, isMobile, isIOS } from './api.js';
 import { h, esc, toLocalIso, load, store } from './util.js';
 import { icon } from './icons.js';
 import { modal, confirmDialog, reportError, toast, field, busyClick, loadingPill } from './dialogs.js';
@@ -34,9 +34,35 @@ const TAB_ALIASES = { compose: 'signatures', account: 'accounts' };
 function snoozeEditor(initial) {
   let rows = initial.map((o) => ({ label: o.label, ...(parseRule(o.rule) || parseRule('tomorrow@08:00')) }));
   const host = h('div.snooze-editor', { dataset: { testid: 'snooze-editor' } });
+  // Phone: one grouped list of "Bezeichnung → Zeitpunkt ›" rows; a tap opens that row's editor.
+  let openIdx = -1;
   const render = () => {
     host.innerHTML = '';
-    rows.forEach((r, i) => {
+    if (isMobile) {
+      const list = h('div.sn-list');
+      rows.forEach((r, i) => {
+        const d = computeSnooze(formatRule(r));
+        const sum = h('button.sn-sum', { type: 'button', dataset: { testid: 'snooze-row' }, 'aria-expanded': String(i === openIdx) },
+          h('span.sn-sum-label', r.label || 'Ohne Bezeichnung'),
+          h('span.sn-sum-val', d ? fmtSnoozeTarget(d) : ''),
+          h('span.sn-sum-chev', { html: icon(i === openIdx ? 'chevronDown' : 'chevronRight', 16) }));
+        sum.addEventListener('click', () => { openIdx = i === openIdx ? -1 : i; render(); });
+        list.appendChild(sum);
+        if (i === openIdx) list.appendChild(rowEditor(r, i));
+      });
+      host.appendChild(list);
+    } else {
+      rows.forEach((r, i) => host.appendChild(rowEditor(r, i)));
+    }
+    host.appendChild(h('div.sn-actions',
+      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); openIdx = rows.length - 1; render(); } }),
+      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-reset' }, onclick: async () => {
+        if (isMobile && !(await confirmDialog('Alle Zeitpunkte auf den Standard zurücksetzen? Eigene Einträge gehen dabei verloren.', { danger: true, ok: 'Zurücksetzen', cancel: 'Abbrechen', title: 'Standard wiederherstellen' }))) return;
+        rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); openIdx = -1; render();
+      } }, 'Standard wiederherstellen')));
+  };
+  const rowEditor = (r, i) => {
+    {
       const label = h('input.input.sn-label', { value: r.label, placeholder: 'Bezeichnung', name: `snoozeLabel${i}`, 'aria-label': 'Bezeichnung' });
       label.addEventListener('input', () => { r.label = label.value; });
       const base = select(BASE_LABELS, r.base);
@@ -54,25 +80,45 @@ function snoozeEditor(initial) {
         atLbl.classList.toggle('hidden', r.base === 'hours');
         time.classList.toggle('hidden', r.base === 'hours');
       };
-      base.addEventListener('change', () => { r.base = base.value; sync(); preview(); });
+      base.addEventListener('change', () => { r.base = base.value; if (isMobile) { render(); return; } sync(); preview(); });
       days.addEventListener('input', () => { r.days = Math.max(1, parseInt(days.value, 10) || 1); preview(); });
+      if (isMobile) days.addEventListener('change', render);
       const time = h('input.input.sn-time', { type: 'time', value: `${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`, name: `snoozeTime${i}`, 'aria-label': 'Uhrzeit' });
-      time.addEventListener('change', () => { const [hh, mm] = (time.value || '08:00').split(':').map(Number); r.hour = hh || 0; r.minute = mm || 0; preview(); });
+      time.addEventListener('change', () => { const [hh, mm] = (time.value || '08:00').split(':').map(Number); r.hour = hh || 0; r.minute = mm || 0; preview(); if (isMobile) render(); });
       const pv = h('span.sn-preview.dim');
       sync();
       const preview = () => { const d = computeSnooze(formatRule(r)); pv.textContent = d ? '→ ' + fmtSnoozeTarget(d) : ''; };
       preview();
-      const mv = (d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; render(); };
-      host.appendChild(h('div.sn-row',
+      const mv = (d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; if (openIdx === i) openIdx = j; render(); };
+      const del = () => { rows.splice(i, 1); openIdx = -1; render(); };
+      if (isMobile) {
+        // the summary row above shows label and target; the editor holds the fields and the row tools
+        label.addEventListener('change', render);
+        // "− 4 Stunden +": a stepper reads as something you can change
+        const stepper = () => {
+          const step = (d) => { r.days = Math.min(365, Math.max(1, (r.days || 1) + d)); render(); };
+          return h('span.sn-stepper', daysWrap, h('span.m-stepper',
+            h('button.sn-step', { type: 'button', 'aria-label': 'Weniger', disabled: (r.days || 1) <= 1, onclick: () => step(-1), dataset: { testid: 'snooze-minus' } }, '−'),
+            h('button.sn-step', { type: 'button', 'aria-label': 'Mehr', onclick: () => step(1), dataset: { testid: 'snooze-plus' } }, '+')));
+        };
+        const fieldRow = (name, ...ctl) => h('label.sn-field', h('span.sn-fname', name), ...ctl);
+        return h('div.sn-row.sn-open', { dataset: { testid: 'snooze-editrow' } },
+          fieldRow('Bezeichnung', label),
+          fieldRow('Wann', base, h('span.sn-chev', { html: icon('chevronRight', 16) })),
+          h('div.sn-field' + ((r.base === 'days' || r.base === 'hours') ? '' : '.hidden'), { dataset: { k: 'days' } }, h('span.sn-fname', 'Anzahl'), stepper()),
+          h('label.sn-field' + (r.base === 'hours' ? '.hidden' : ''), { dataset: { k: 'time' } }, h('span.sn-fname', 'Uhrzeit'), time),
+          h('div.sn-tools',
+            h('button.sn-tool', { type: 'button', disabled: i === 0, onclick: () => mv(-1), html: icon('up', 18) + '<span>Nach oben</span>' }),
+            h('button.sn-tool', { type: 'button', disabled: i === rows.length - 1, onclick: () => mv(1), html: icon('down', 18) + '<span>Nach unten</span>' }),
+            h('button.sn-tool.sn-del', { type: 'button', dataset: { testid: 'snooze-del' }, onclick: del, html: icon('delete', 18) + '<span>Entfernen</span>' })));
+      }
+      return h('div.sn-row',
         h('div.sn-top', label, pv, h('span.spacer'),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', html: icon('up', 14), disabled: i === 0, onclick: () => mv(-1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', html: icon('down', 14), disabled: i === rows.length - 1, onclick: () => mv(1) }),
-          h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 14), onclick: () => { rows.splice(i, 1); render(); } })),
-        h('div.sn-rule', base, daysWrap, atLbl, time)));
-    });
-    host.appendChild(h('div.sn-actions',
-      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); render(); } }),
-      h('button.btn.small', { type: 'button', onclick: () => { rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); render(); } }, 'Standard wiederherstellen')));
+          h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 14), onclick: del })),
+        h('div.sn-rule', base, daysWrap, atLbl, time));
+    }
   };
   render();
   return { el: host, get: () => rows.filter((r) => r.label.trim()).map((r) => ({ label: r.label.trim(), rule: formatRule(r) })) };
@@ -172,14 +218,15 @@ function lanesPanel(initialAccountId) {
   };
 }
 
-export async function openSettings(initialTab = 'general', { accountId = null } = {}) {
-  initialTab = TAB_ALIASES[initialTab] || initialTab;
+export async function openSettings(initialTab = null, { accountId = null } = {}) {
+  const explicitTab = !!initialTab;
+  initialTab = TAB_ALIASES[initialTab] || initialTab || 'general';
   const c = { ...state.config };
   // OAuth fields only hold the user's own overrides; empty = built-in default (never shown).
   const clientId = h('input.input', { value: c.clientId || '', placeholder: c.builtinClientId ? 'Standard' : '00000000-0000-0000-0000-000000000000', name: 'clientId', spellcheck: false });
   const tenant = h('input.input', { value: c.tenant || '', placeholder: 'Standard', name: 'tenant', spellcheck: false });
   const googleId = h('input.input', { value: c.googleClientId || '', placeholder: c.builtinGoogleClient ? 'Standard' : '….apps.googleusercontent.com', name: 'googleClientId', spellcheck: false });
-  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', placeholder: c.builtinGoogleClient ? 'Standard' : '', name: 'googleClientSecret', autocomplete: 'off' });
+  const googleSecret = h('input.input', { type: 'password', value: c.googleClientSecret || '', placeholder: c.builtinGoogleClient ? 'Standard' : 'Clientschlüssel eingeben', name: 'googleClientSecret', autocomplete: 'off' });
   const interval = h('input.input', { type: 'number', min: '30', step: '30', value: String(c.syncIntervalSecs ?? 120), name: 'syncIntervalSecs', style: { width: '100px' } });
   const remote = h('input', { type: 'checkbox', checked: !!c.loadRemoteImages, name: 'loadRemoteImages' });
   const confetti = h('input', { type: 'checkbox', checked: load('confetti', true) !== false, name: 'confetti', dataset: { testid: 'set-confetti' } });
@@ -209,20 +256,22 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
   const panels = {
     general: h('div.set-panel',
       h('h3', 'Allgemein'),
-      field('Abgleich alle', h('span.inline', interval, h('span.dim', 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
-      h('label.checkrow', confetti, 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
+      field('Abgleich alle', h('span.inline', interval, h('span.m-unit', 'Sekunden'), h('span.dim', isMobile ? 'Standard, je Konto unter „Konten“ änderbar' : 'Sekunden (Standard, je Konto unter „Konten“ änderbar)'))),
+      h('label.checkrow', confetti, isMobile ? 'Konfetti bei erledigten Aufgaben' : 'Konfetti bei erledigten Aufgaben (Archivieren, Erledigt, leerer Posteingang)'),
       c.demo ? h('p.note', 'Demo-Modus aktiv – es wird ein eingebauter Testserver mit Beispieldaten verwendet.') : null,
       h('h3', 'Neue E-Mails'),
       // Only the phone has a separate pass while the app is closed.
-      isMobile ? field('Abruf bei geschlossener App', bgInterval, 'Android ruft höchstens alle 15 Minuten ab, im Energiesparmodus auch seltener. Fällige Wiedervorlagen kommen trotzdem pünktlich zurück.') : null,
-      h('label.checkrow', push, 'Sofort benachrichtigen (Push)'),
-      h('p.note', 'Bei IMAP- und Gmail-Konten hält lettertask eine Verbindung zum Server offen und meldet neue E-Mails ohne Verzögerung. '
+      // iPhone: no background worker and no push service (yet) – say what happens instead.
+      isIOS ? h('p.note', 'Auf dem iPhone ruft lettertask neue E-Mails ab, solange die App geöffnet ist, und beim nächsten Öffnen.') : null,
+      isMobile && !isIOS ? field('Abruf bei geschlossener App', bgInterval, 'Android ruft höchstens alle 15 Minuten ab, im Energiesparmodus auch seltener. Fällige Wiedervorlagen kommen trotzdem pünktlich zurück.') : null,
+      isIOS ? null : h('label.checkrow', push, 'Sofort benachrichtigen (Push)'),
+      isIOS ? null : h('p.note', 'Bei IMAP- und Gmail-Konten hält lettertask eine Verbindung zum Server offen und meldet neue E-Mails ohne Verzögerung. '
         + (isMobile ? 'Android zeigt dafür eine dauerhafte Benachrichtigung, der Akkuverbrauch ist etwas höher. ' : '')
         + 'Microsoft-365-Konten werden weiterhin im eingestellten Intervall abgerufen.'),
-      pushStatus()),
+      isIOS ? null : pushStatus()),
     reading: h('div.set-panel',
       h('h3', 'Lesen'),
-      field('Lesebereich', pane),
+      isMobile ? null : field('Lesebereich', pane),
       field('Als gelesen markieren', markRead),
       field('Nachrichtenliste', listMode),
       h('label.checkrow', seps, 'Datumstrenner (Heute, Gestern, …) in der Liste anzeigen'),
@@ -237,11 +286,13 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       snooze.el),
     kanban: h('div.set-panel',
       h('h3', 'Kanban'),
-      h('p.note', 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen. Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.'),
+      h('p.note', isMobile
+        ? 'Lanes sind die Spalten des Kanban-Boards. Eine Mail liegt in der Lane, die ihr zugeordnet ist – das bleibt auch in anderen Mailprogrammen erhalten.'
+        : 'Lanes sind die Spalten der Kanban-Ansicht (Mail › „Kanban“). Technisch sind es Kategorien „[K_Name]“ – sie werden in der normalen Ansicht ausgeblendet, funktionieren aber auch in anderen Mailprogrammen. Tasten 1–9 verschieben die ausgewählte Mail in die jeweilige Lane.'),
       lanes ? lanes.el : h('p.dim', 'Fügen Sie zuerst ein Konto hinzu.'),
-      field('Lesebereich im Kanban', kbPane)),
+      isMobile ? null : field('Lesebereich im Kanban', kbPane)),
     accounts: h('div.set-panel', h('h3', 'Konten'), accounts.el),
-    m365: h('div.set-panel',
+    m365: h('div.set-panel', { dataset: { testid: 'm365-panel' } },
       h('h3', 'Microsoft 365'),
       h('p.note', c.builtinClientId
         ? 'Diese Version enthält bereits eine App-Registrierung für die Anmeldung bei Microsoft 365. Eigene Werte sind nur für Sonderfälle nötig, etwa wenn Ihre Organisation eine eigene App-Registrierung vorschreibt.'
@@ -254,27 +305,62 @@ export async function openSettings(initialTab = 'general', { accountId = null } 
       h('h3', 'Google'),
       c.builtinGoogleClient
         ? h('p.note', 'Diese Version enthält bereits einen Google-OAuth-Client für „Mit Google anmelden“. Eigene Werte sind nur für Sonderfälle nötig.')
-        : h('div', h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp()),
+        : isMobile
+          // phone: the setup tutorial folds away (administrators do this once, usually on a computer)
+          ? h('details.m-details', h('summary', 'So richten Sie den OAuth-Client ein'), h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp())
+          : h('div', h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp()),
       field('Client-ID', overridable(googleId, googleSecret)),
       field('Clientschlüssel', overridable(googleSecret), 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'),
       h('p.note', 'Änderungen gelten für neue Anmeldungen. Bereits angemeldete Konten melden Sie unter Konten mit „Erneut mit Google anmelden“ neu an.')),
   };
   const nav = h('div.set-nav', { role: 'tablist' });
   const content = h('div.set-content');
+  const root = h('div.settings' + (isMobile ? '.m-settings' : ''), nav, content);
+  // Phone: a list of sections like the Settings app; a section pushes its page.
+  // The back button replaces "Abbrechen" in the dialog header while a section is open.
+  const back = isMobile ? h('button.m-modal-back', { type: 'button', dataset: { testid: 'settings-back' }, html: icon('chevronLeft', 20) + '<span>Zurück</span>' }) : null;
+  const header = (key) => {
+    const dlg = root.closest('.modal');
+    if (!dlg || !back) return;
+    const bar = dlg.querySelector('.modal-title');
+    const t = bar.querySelector('.m-modal-title');
+    if (!back.isConnected) bar.prepend(back);
+    dlg.classList.toggle('m-sub-open', !!key);
+    if (t) t.textContent = key ? (TABS.find((x) => x[0] === key) || [0, 'Einstellungen'])[1] : 'Einstellungen';
+  };
+  if (back) back.addEventListener('click', () => {
+    // one level up: an open account page returns to the account list first
+    const accOpen = root.querySelector('.acc-panel.m-acc-open');
+    if (accOpen) { accOpen.classList.remove('m-acc-open'); header('accounts'); content.scrollTop = 0; return; }
+    root.classList.remove('m-sub'); header(null);
+  });
+  root.addEventListener('lt-subpage', (e) => {
+    const t = root.closest('.modal') && root.closest('.modal').querySelector('.m-modal-title');
+    if (t) t.textContent = e.detail.title;
+    content.scrollTop = 0;
+  });
   const show = (key) => {
     nav.querySelectorAll('.set-tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === key));
     content.innerHTML = '';
     content.appendChild(panels[key]);
+    root.classList.add('m-sub');
+    content.scrollTop = 0;
+    header(key);
   };
+  // The header exists once the dialog is in the page.
+  if (isMobile) requestAnimationFrame(() => header(root.classList.contains('m-sub') ? [...nav.querySelectorAll('.set-tab.on')].map((t) => t.dataset.tab)[0] : null));
   for (const [key, label, ic] of TABS) {
-    const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, 16) + `<span>${esc(label)}</span>` });
+    // Phone: the OAuth client pages are for administrators – grouped under "Erweitert".
+    if (isMobile && key === 'm365') nav.appendChild(h('div.m-set-sep', { dataset: { testid: 'settings-advanced' } }, 'Erweitert (Administratoren)'));
+    const t = h('button.set-tab', { type: 'button', role: 'tab', dataset: { tab: key, testid: 'settings-tab-' + key }, html: icon(ic, isMobile ? 20 : 16) + `<span>${esc(label)}</span>` + (isMobile ? icon('chevronRight', 16) : '') });
     t.addEventListener('click', () => show(key));
     nav.appendChild(t);
   }
   show(panels[initialTab] ? initialTab : 'general');
+  if (isMobile && !explicitTab) root.classList.remove('m-sub');
 
   const res = await modal({
-    title: 'Einstellungen', body: h('div.settings', nav, content), width: 880, className: 'settings-modal',
+    title: 'Einstellungen', body: root, width: 880, className: 'settings-modal',
     buttons: [{ label: 'Speichern', value: 'ok', primary: true, id: 'settings-ok' }, { label: 'Abbrechen', value: null, cancel: true }],
     onBeforeClose: async () => {
       const iv = parseInt(interval.value, 10);
@@ -347,7 +433,13 @@ function accountsPanel({ initialAccountId }) {
         n > 1 ? h('span.acc-order',
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', 'aria-label': 'Nach oben', html: icon('up', 14), disabled: i === 0, dataset: { testid: 'acc-up' }, onclick: (e) => mv(e, -1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', 'aria-label': 'Nach unten', html: icon('down', 14), disabled: i === n - 1, dataset: { testid: 'acc-down' }, onclick: (e) => mv(e, 1) })) : null);
-      row.addEventListener('click', () => { selected = a.id; render(); });
+      // Phone: a row pushes the account's own page (the header "‹ Zurück" returns to the list).
+      row.addEventListener('click', () => {
+        selected = a.id;
+        if (isMobile) { panel.classList.add('m-acc-open'); panel.dispatchEvent(new CustomEvent('lt-subpage', { bubbles: true, detail: { title: a.label || a.displayName || a.email } })); }
+        render();
+      });
+      if (isMobile) row.appendChild(h('span.acc-chev', { html: icon('chevronRight', 16) }));
       listEl.appendChild(row);
     });
     if (!state.accounts.length) listEl.appendChild(h('div.dim.acc-none', 'Noch kein Konto eingerichtet.'));
@@ -383,18 +475,19 @@ function accountsPanel({ initialAccountId }) {
     render();
     await call('set_account_order', { accountIds: list.map((a) => a.id) }, { silent: true });
   };
-  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + ' Konto hinzufügen…' });
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + (isMobile ? ' Konto hinzufügen' : ' Konto hinzufügen…') });
   add.addEventListener('click', busyClick(async () => {
     const acc = await addAccountFlow();
     if (acc) { await reloadAccounts(); selected = acc.id; render(); }
   }));
-  render();
   // List on top, details below in the full width (side by side was too narrow
   // for the server settings).
-  return { el: h('div.acc-panel',
+  const panel = h('div.acc-panel',
     h('div.acc-side', listEl,
       h('div.acc-side-foot', add, state.accounts.length > 1 ? h('span.note.acc-hint', 'Reihenfolge, Kontobild und Darstellung werden sofort übernommen.') : null)),
-    detailHost) };
+    detailHost);
+  render();
+  return { el: panel };
 }
 
 async function removeAccount(acc) {

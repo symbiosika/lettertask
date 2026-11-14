@@ -270,3 +270,18 @@ async fn archive_and_mark_read_of_mail_deleted_on_server_meanwhile() {
     let left = ctx.list(&inbox.id).await.items;
     assert!(!left.iter().any(|x| x.id == a.id || x.id == b.id), "gone mails leave the cache");
 }
+
+#[tokio::test]
+async fn new_task_carries_the_hidden_task_marker() {
+    let ctx = setup().await;
+    let t: MessageSummary = call(
+        &ctx.svc,
+        "create_task",
+        json!({"mailboxId": ctx.account, "subject": "Markiert", "bodyHtml": "", "due": null}),
+    )
+    .await;
+    assert!(t.categories.contains(&"[T_Aufgabe]".to_string()), "{:?}", t.categories);
+    // the marker survives the sync from the server
+    let m = find_in(&ctx, "inbox", "Markiert").await.expect("task in the inbox");
+    assert!(m.categories.contains(&"[T_Aufgabe]".to_string()), "{:?}", m.categories);
+}

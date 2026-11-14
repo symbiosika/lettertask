@@ -2,7 +2,8 @@
 // (docs/API.md); a mail without a configured lane sits in "Ohne Lane".
 import { h, esc, fmtListDate, displayName, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
-import { chipHtml, visibleCats, laneName, isLaneCategory } from './categories.js';
+import { isMobile } from './api.js';
+import { chipHtml, visibleCats, laneName, isLaneCategory, isTaskMail } from './categories.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
 import { recurrenceOf, recurrenceBadgeHtml } from './recurrence.js';
 
@@ -82,9 +83,10 @@ export function createBoard(host, ctx) {
     const icons = recurrenceBadgeHtml(recurrenceOf(m), { short: true }) + (m.importance === 'high' ? icon('important', 13, 'imp') : '')
       + (m.hasAttachments ? icon('attach', 13) : '')
       + (m.flag === 'flagged' ? icon('flag', 13, 'flagged') : m.flag === 'complete' ? icon('check', 13, 'done') : '');
+    const task = isMobile && isTaskMail(m);
     el.innerHTML =
-      `<div class="kb-l1"><span class="avatar xs" style="background:${avatarColor(from.address || from.name)}">${esc(initials(from.name, from.address))}</span>` +
-      `<span class="kb-from">${esc(displayName(m.from) || '(Unbekannt)')}</span><span class="kb-time">${time}</span></div>` +
+      `<div class="kb-l1">${task ? `<span class="avatar xs m-task-av">${icon('task', 14)}</span>` : `<span class="avatar xs" style="background:${avatarColor(from.address || from.name)}">${esc(initials(from.name, from.address))}</span>`}` +
+      `<span class="kb-from">${task ? 'Aufgabe' : esc(displayName(m.from) || '(Unbekannt)')}</span><span class="kb-time">${time}</span></div>` +
       `<div class="kb-subj">${esc(m.subject || '(Kein Betreff)')}</div>` +
       (tags || icons ? `<div class="kb-l3"><span class="kb-tags">${tags}</span><span class="kb-icons">${icons}</span></div>` : '');
     return el;
@@ -129,12 +131,37 @@ export function createBoard(host, ctx) {
       if (scrolls.has(d.lane)) body.scrollTop = scrolls.get(d.lane);
       void idx;
     });
+    if (isMobile) renderTabs(byLane);
     if (!lanes.length) {
       cols.appendChild(h('div.kb-nolanes', { dataset: { testid: 'kb-empty-lanes' } },
         h('div.empty-ic', { html: icon('kanban', 40) }),
         h('div', 'Noch keine Lanes – in den Einstellungen anlegen.'),
         h('button.btn.primary', { type: 'button', dataset: { testid: 'kb-setup' }, onclick: () => ctx.onEditLanes() }, 'Lanes einrichten…')));
     }
+  }
+
+  // Phone: one lane per screen – a tab row names the lanes and jumps between them.
+  let tabs = null;
+  function renderTabs(byLane) {
+    if (!tabs) {
+      tabs = h('div.kb-tabs', { role: 'tablist', dataset: { testid: 'kb-tabs' } });
+      head.after(tabs);
+      cols.addEventListener('scroll', () => {
+        const i = Math.round(cols.scrollLeft / Math.max(1, cols.clientWidth - 16));
+        tabs.querySelectorAll('.kb-tab').forEach((t, j) => t.classList.toggle('on', i === j));
+      }, { passive: true });
+    }
+    tabs.innerHTML = '';
+    const defs = columnDefs();
+    const cur = Math.round(cols.scrollLeft / Math.max(1, cols.clientWidth - 16));
+    defs.forEach((d, i) => {
+      const t = h('button.kb-tab' + (i === cur ? '.on' : ''), { type: 'button', role: 'tab' }, h('span', d.label), h('span.kb-tab-n', String((byLane.get(d.lane) || []).length)));
+      t.addEventListener('click', () => { const col = cols.querySelectorAll('.kb-col')[i]; if (col) cols.scrollTo({ left: col.offsetLeft - 16, behavior: 'smooth' }); });
+      tabs.appendChild(t);
+    });
+    const edit = h('button.kb-tab.kb-tab-edit', { type: 'button', dataset: { testid: 'kb-tab-edit' }, html: icon('settings', 16) + `<span>${ctx.lanes().length ? 'Lanes' : 'Lanes einrichten'}</span>` });
+    edit.addEventListener('click', () => ctx.onEditLanes());
+    tabs.appendChild(edit);
   }
 
   function setupDrop(col, lane) {

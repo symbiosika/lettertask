@@ -17,6 +17,9 @@ export const isMobile = (() => {
   return /Android|iPhone|iPod/i.test(navigator.userAgent) || new URLSearchParams(location.search).has('mobile');
 })();
 if (isMobile) document.documentElement.classList.add('mobile');
+/** iPhone/iPad (the app or Safari): no background fetch or push service as on Android. */
+export const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+if (isIOS) document.documentElement.classList.add('ios');
 
 // A page shown as a full-screen layer on the phone gets a close button top left
 // (the window has no title bar). The page may object to closing (unsaved changes).

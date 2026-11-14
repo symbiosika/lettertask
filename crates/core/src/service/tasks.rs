@@ -136,6 +136,10 @@ pub(crate) fn delegated_subject(subject: &str, todo_prefix: bool) -> String {
     }
 }
 
+/// Hidden category marking a mail as a task ("Aufgabe (Mail)"), so the
+/// lists can show it as a task and offer "Erledigt".
+pub(crate) const TASK_CATEGORY: &str = "[T_Aufgabe]";
+
 pub(crate) fn recurrence_category(rule: &str) -> String {
     format!("[#{rule}]")
 }
@@ -234,7 +238,7 @@ impl Service {
         let TaskInput { mailbox_id, subject, body_html, due, recurrence, .. } = &t;
         let (mailbox_id, body_html, due, recurrence) = (mailbox_id.as_str(), body_html.as_str(), due.as_deref(), recurrence.as_deref());
         let subject = subject.trim();
-        let mut categories = Vec::new();
+        let mut categories = vec![TASK_CATEGORY.to_string()];
         if let Some(r) = recurrence.filter(|r| !r.is_empty()) {
             if !RECURRENCES.contains(&r) {
                 return Err(Error::invalid(format!("Unbekannte Wiederholung: {r}")));

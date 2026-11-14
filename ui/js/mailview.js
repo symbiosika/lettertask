@@ -133,7 +133,7 @@ export function buildSrcdoc(bodyHtml, allowRemote) {
   head.insertAdjacentHTML('afterbegin',
     `<meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
-    `<style>html{background:#fff}body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;margin:4px 2px 24px;word-wrap:break-word;overflow-wrap:anywhere}` +
+    `<style>html{background:#fff${isMobile ? ';zoom:1.14' : ''}}body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:${isMobile ? 15 : 14}px;line-height:${isMobile ? 1.45 : 1.5};color:#1f2328;margin:4px 2px 24px;word-wrap:break-word;overflow-wrap:anywhere}` +
     `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font-family:Consolas,"Cascadia Mono",monospace;font-size:13px}blockquote{margin:0 0 0 .8ex;border-left:2px solid #c9d3e3;padding-left:1.2ex;color:#57606a}a{color:#2f6fe4}` +
     `::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#d0d4da;border-radius:5px;border:2px solid #fff}</style>`);
   return '<!doctype html>' + doc.documentElement.outerHTML;
@@ -467,7 +467,7 @@ export function renderMessage(container, msg, opts) {
   const renderTags = () => {
     tags.innerHTML = cats.map((c) => pillHtml(accountId, c, !!opts.setCategories)).join('');
     if (opts.setCategories) {
-      const add = h('button.tag-add', { type: 'button', title: 'Kategorien zuweisen (T)', dataset: { testid: 'tag-add' }, html: icon('tag', 15) + `<span>${cats.length ? '' : 'Tag'}</span>` + icon('plus', 12) });
+      const add = h('button.tag-add', { type: 'button', title: 'Kategorien zuweisen (T)', dataset: { testid: 'tag-add' }, html: icon('tag', 15) + `<span>${isMobile ? 'Kategorie' : cats.length ? '' : 'Tag'}</span>` + icon('plus', 12) });
       add.addEventListener('click', () => openPicker(add));
       tags.appendChild(add);
     }
