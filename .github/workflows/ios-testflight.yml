@@ -23,6 +23,15 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      # App Store Connect only accepts builds made with the iOS 26 SDK
+      # (Xcode 26); the runner's default is still Xcode 16. Beta Xcodes are
+      # rejected as well, so take the newest release.
+      - name: Xcode 26 auswählen
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          [ -n "$XCODE" ] || { echo "::error::Kein Xcode 26 auf dem Runner"; ls -d /Applications/Xcode*.app; exit 1; }
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          echo "Xcode: $XCODE, iOS-SDK $(xcrun --sdk iphoneos --show-sdk-version)"
       - name: Secrets prüfen
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
