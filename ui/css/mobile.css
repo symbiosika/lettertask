@@ -1317,3 +1317,47 @@ html.mobile .m-drawer .tree-node { border-radius: 12px; }
 .m-drawer-menu { padding: 6px 12px; }
 .m-drawer-item { border-radius: 12px; }
 html.mobile body.m-drawer-open .sidebar.m-drawer { transform: none; }
+
+/* ================================================================ round 10 (iOS + Android) */
+/* "Neu" as a labelled pill */
+.m-icon.m-compose { width: auto; padding: 0 12px 0 10px; gap: 4px; border-radius: 22px; background: var(--accent-weak-2); }
+.m-compose-label { font-size: 15px; font-weight: 650; color: var(--accent); }
+.m-compose .ico { width: 18px; height: 18px; }
+/* calendar header: tappable period title */
+.m-cal-titlebtn { border: 0; background: transparent; padding: 0 2px; min-height: 44px; cursor: pointer; }
+.m-cal-titlebtn:active { background: var(--hover); border-radius: 10px; }
+html.mobile .m-appbar .m-title.center .m-title-main { font-size: 16px; }
+.m-textbtn { padding: 0 6px; }
+/* Postfächer page: grouped list, sticky header, no pill highlight */
+html.mobile .sidebar.m-drawer { background: var(--canvas); }
+.m-drawer-head { background: var(--canvas); }
+.m-drawer-bar { position: sticky; top: 0; z-index: 2; background: var(--bg); margin: 0 0 12px; }
+html.mobile .m-drawer .sidebar-head, html.mobile .m-drawer-head { position: sticky; top: 0; z-index: 3; }
+.m-drawer-account { padding: 4px 18px 8px; }
+html.mobile .m-drawer .sb-scroll { padding: 4px 16px 8px; }
+html.mobile .m-drawer .tree-section { margin-bottom: 22px; }
+html.mobile .m-drawer .tree-root { background: transparent; padding-left: 4px; min-height: 36px; font-size: 13px; text-transform: uppercase; letter-spacing: .02em; color: var(--text-dim); font-weight: 600; }
+html.mobile .m-drawer .tree-root .twisty { display: none; }
+html.mobile .m-drawer .tree-root .avatar, html.mobile .m-drawer .tree-root .kind-badge { display: none; }
+html.mobile .m-drawer .tree-node { background: var(--bg); border-radius: 0; min-height: 50px; position: relative; }
+html.mobile .m-drawer .tree-root + .tree-node { border-radius: 12px 12px 0 0; }
+html.mobile .m-drawer .tree-node:last-child { border-radius: 0 0 12px 12px; }
+html.mobile .m-drawer .tree-root + .tree-node:last-child { border-radius: 12px; }
+html.mobile .m-drawer .tree-node + .tree-node::before { content: ''; position: absolute; top: 0; left: 52px; right: 0; height: 1px; background: var(--border); }
+html.mobile .m-drawer .tree-node.selected, html.mobile .m-drawer .tree-node.selected.m-dup { background: var(--bg); color: var(--accent); font-weight: 650; }
+html.mobile .m-drawer .tree-node.selected .fic { color: var(--accent); }
+html.mobile .m-drawer .fcount .count { background: transparent; color: var(--text-dim); font-weight: 500; }
+.m-drawer-focus { background: var(--bg); border: 0; }
+.m-drawer-menu { margin: 0 16px 16px; padding: 0; border-top: 0; background: var(--bg); border-radius: 12px; overflow: hidden; }
+.m-drawer-item { border-radius: 0; position: relative; }
+.m-drawer-item + .m-drawer-item::before { content: ''; position: absolute; top: 0; left: 50px; right: 0; height: 1px; background: var(--border); }
+html.mobile .m-drawer .sb-status { background: var(--canvas); border-top: 0; }
+/* task reader: status line instead of the from/to block */
+body.m-task-open .readpane .rp-fromrow { display: none; }
+.m-task-meta { display: flex; align-items: center; gap: 8px; margin: 4px 16px 12px; padding: 12px 14px; border-radius: 12px; background: var(--accent-weak); color: var(--accent); font-size: 15px; font-weight: 600; }
+/* account page: rows instead of a desktop form */
+html.mobile .acc-detail .note { font-size: 13px; color: var(--text-dim); }
+html.mobile .acc-detail .btn:not(.danger) { width: 100%; justify-content: flex-start; min-height: 48px; padding: 0 4px; background: transparent !important; color: var(--accent); border: 0; border-top: 1px solid var(--border); border-radius: 0; font-size: 16px; }
+html.mobile .acc-avatar-edit .btn { border-top: 0 !important; justify-content: center !important; }
+html.mobile .acc-detail input[type=number]::placeholder { color: var(--text-dim); }
+html.mobile .m-drawer .tree-root { min-height: 44px; }

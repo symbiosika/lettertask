@@ -261,8 +261,8 @@ function renderAppbar() {
     return;
   }
   // The folder/calendar list is a page of its own ("Postfächer"), opened from the left.
-  const menu = btn(state.mode === 'mail' ? 'folder' : state.mode === 'calendar' ? 'listView' : 'contacts',
-    state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalenderliste' : 'Adressbücher', () => openDrawer(), 'm-menu');
+  // Same leading glyph in every area: it opens the area's list page (Postfächer / Kalender / Adressbücher).
+  const menu = btn('folder', state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalender auswählen' : 'Adressbücher', () => openDrawer(), 'm-menu');
   if (state.mode === 'mail') {
     const stats = mail.listStats();
     const kanban = mail.getView() === 'kanban';
@@ -275,9 +275,13 @@ function renderAppbar() {
   } else if (state.mode === 'calendar') {
     bar.append(menu,
       btn('chevronLeft', 'Zurück', () => { calendar.step(-1); setTimeout(update, 50); }, 'm-cal-prev'),
-      h('div.m-title.center', h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle())),
+      (() => {
+        // a tap on the period jumps to today (the separate "Heute" icon made the title too short)
+        const t = h('button.m-title.center.m-cal-titlebtn', { type: 'button', 'aria-label': 'Zu heute springen', dataset: { testid: 'm-cal-today' } }, h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle()));
+        t.addEventListener('click', () => { calendar.goToday(); setTimeout(update, 50); });
+        return t;
+      })(),
       btn('chevronRight', 'Vor', () => { calendar.step(1); setTimeout(update, 50); }, 'm-cal-next'),
-      btn('today', 'Heute', () => { calendar.goToday(); setTimeout(update, 50); }, 'm-cal-today'),
       viewButton(),
       composeButton());
   } else {
@@ -302,6 +306,8 @@ function composeButton() {
   let longPressed = false;
   let timer = null;
   const b = btn(ic, label, () => { if (longPressed) { longPressed = false; return; } return run(); }, 'm-compose', '.m-compose');
+  // labelled: "Neu" next to the icon (an icon alone was a guess for some testers)
+  b.insertAdjacentHTML('beforeend', '<span class="m-compose-label">Neu</span>');
   const sheet = () => showSheetMenu([
     { label: 'E-Mail', icon: 'mail', onClick: () => mail.newMail(), testid: 'm-new-mail' },
     { label: 'Aufgabe', icon: 'task', onClick: () => hooks.newTask(), testid: 'm-new-task' },
@@ -342,8 +348,8 @@ function calTitle() {
   const dm = (d) => `${d.getDate()}. ${MONTHS_SHORT[d.getMonth()]}`;
   if (v === 'day') return `${WD_SHORT[start.getDay()]}, ${dm(start)}`;
   if (v === 'month') return `${MONTHS_SHORT[start.getMonth() === last.getMonth() ? start.getMonth() : new Date(start.getTime() + 15 * 86400000).getMonth()]} ${new Date(start.getTime() + 15 * 86400000).getFullYear()}`;
-  if (start.getMonth() === last.getMonth()) return `${start.getDate()}.–${dm(last)}`;
-  return `${dm(start)} – ${dm(last)}`;
+  if (start.getMonth() === last.getMonth()) return `${start.getDate()}.–${last.getDate()}.${last.getMonth() + 1}.`;
+  return `${start.getDate()}.${start.getMonth() + 1}.–${last.getDate()}.${last.getMonth() + 1}.`;
 }
 
 // No week view on the phone: seven columns of 40px leave no room for a title.
@@ -351,7 +357,11 @@ const VIEWS = [['sprint', 'Agenda (14 Tage)', 'bullets'], ['day', 'Tag', 'dayVie
 function viewIcon(v) { return (VIEWS.find((x) => x[0] === v) || VIEWS[0])[2]; }
 function calViewItems() {
   const cur = calendar.getView();
-  return VIEWS.map(([v, label, ic]) => ({ label, icon: ic, checked: cur === v, onClick: () => { calendar.setView(v); setTimeout(update, 50); } }));
+  return [
+    ...VIEWS.map(([v, label, ic]) => ({ label, icon: ic, checked: cur === v, onClick: () => { calendar.setView(v); setTimeout(update, 50); } })),
+    { separator: true },
+    { label: 'Heute', icon: 'today', onClick: () => { calendar.goToday(); setTimeout(update, 50); } },
+  ];
 }
 
 // ------------------------------------------------------------------ search
@@ -493,7 +503,24 @@ function renderReadbar() {
     btn('delete', 'Löschen', () => mail.deleteSelected(false).then(closeReader), 'm-read-delete'));
   renderReadActions(false);
   // A task gets "Erledigt" (archive) and "Später" instead of reply buttons.
-  document.addEventListener('lt-detail', (e) => renderReadActions(isTaskMail(e.detail && e.detail.message)));
+  document.addEventListener('lt-detail', (e) => {
+    const m = e.detail && e.detail.message;
+    const task = isTaskMail(m);
+    renderReadActions(task);
+    // A task: no sender/recipient block (it is from you, to you) – a status line instead.
+    document.body.classList.toggle('m-task-open', task);
+    requestAnimationFrame(() => {
+      const pane = document.querySelector('.readpane');
+      if (!pane) return;
+      pane.querySelectorAll('.m-task-meta').forEach((x) => x.remove());
+      if (!task) return;
+      const row = pane.querySelector('.rp-fromrow');
+      const due = m.dueAt ? new Date(m.dueAt) : null;
+      const when = due ? due.toLocaleString('de-DE', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      const meta = h('div.m-task-meta', { dataset: { testid: 'm-task-meta' }, html: icon('task', 18) + `<span>Aufgabe${due ? ' · fällig ' + esc(when) : ''}</span>` });
+      if (row) row.before(meta);
+    });
+  });
 }
 
 function renderReadActions(task) {
@@ -507,9 +534,8 @@ function renderReadActions(task) {
   };
   if (task) {
     ui.readactions.append(
-      act('check', 'Erledigt', 'm-done', () => mail.archiveSelected().then(closeReader), '.m-done'),
-      act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)),
-      act('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')));
+      act('check', 'Erledigt', 'm-done', () => mail.completeSelected().then(closeReader), '.m-done'),
+      act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)));
   } else {
     ui.readactions.append(
       act('reply', 'Antworten', 'm-reply', () => mail.respond('reply')),

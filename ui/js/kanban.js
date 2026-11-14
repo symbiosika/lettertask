@@ -3,7 +3,7 @@
 import { h, esc, fmtListDate, displayName, initials, avatarColor } from './util.js';
 import { icon } from './icons.js';
 import { isMobile } from './api.js';
-import { chipHtml, visibleCats, laneName, isLaneCategory } from './categories.js';
+import { chipHtml, visibleCats, laneName, isLaneCategory, isTaskMail } from './categories.js';
 import { fmtDueShort, fmtSnoozeTarget } from './snooze.js';
 import { recurrenceOf, recurrenceBadgeHtml } from './recurrence.js';
 
@@ -83,9 +83,10 @@ export function createBoard(host, ctx) {
     const icons = recurrenceBadgeHtml(recurrenceOf(m), { short: true }) + (m.importance === 'high' ? icon('important', 13, 'imp') : '')
       + (m.hasAttachments ? icon('attach', 13) : '')
       + (m.flag === 'flagged' ? icon('flag', 13, 'flagged') : m.flag === 'complete' ? icon('check', 13, 'done') : '');
+    const task = isMobile && isTaskMail(m);
     el.innerHTML =
-      `<div class="kb-l1"><span class="avatar xs" style="background:${avatarColor(from.address || from.name)}">${esc(initials(from.name, from.address))}</span>` +
-      `<span class="kb-from">${esc(displayName(m.from) || '(Unbekannt)')}</span><span class="kb-time">${time}</span></div>` +
+      `<div class="kb-l1">${task ? `<span class="avatar xs m-task-av">${icon('task', 14)}</span>` : `<span class="avatar xs" style="background:${avatarColor(from.address || from.name)}">${esc(initials(from.name, from.address))}</span>`}` +
+      `<span class="kb-from">${task ? 'Aufgabe' : esc(displayName(m.from) || '(Unbekannt)')}</span><span class="kb-time">${time}</span></div>` +
       `<div class="kb-subj">${esc(m.subject || '(Kein Betreff)')}</div>` +
       (tags || icons ? `<div class="kb-l3"><span class="kb-tags">${tags}</span><span class="kb-icons">${icons}</span></div>` : '');
     return el;

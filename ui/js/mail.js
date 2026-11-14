@@ -1446,6 +1446,28 @@ async function transfer(ids, mailboxId, destMailboxId, destFolderId, kind) {
   if (kind === 'move') checkInboxZero();
 }
 
+/**
+ * "Erledigt" for tasks (phone): gone from the list at once, archived after a
+ * few seconds – "Rückgängig" in the toast cancels it before anything reaches
+ * the server (archive_messages returns no new ids to move back).
+ */
+export async function completeSelected() {
+  const s = requireSelection();
+  if (!s) return;
+  const ids = [...s.ids];
+  const mailboxId = mbOf(ids);
+  burst(rowEl(ids[0]));
+  await removeFromList(ids);
+  let undone = false;
+  const timer = setTimeout(() => {
+    if (undone) return;
+    archiveOne(ids, { quiet: true, mailboxId, removed: true }).then(() => checkInboxZero()).catch(reportError);
+  }, 6000);
+  toast(ids.length === 1 ? 'Aufgabe erledigt.' : `${ids.length} Aufgaben erledigt.`, 'info', 6000, {
+    action: { label: 'Rückgängig', onClick: () => { undone = true; clearTimeout(timer); return reloadList({ keepCount: true }); } },
+  });
+}
+
 export async function archiveSelected() {
   const s = requireSelection();
   if (s) await archiveIds(s.ids);

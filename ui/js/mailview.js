@@ -467,7 +467,7 @@ export function renderMessage(container, msg, opts) {
   const renderTags = () => {
     tags.innerHTML = cats.map((c) => pillHtml(accountId, c, !!opts.setCategories)).join('');
     if (opts.setCategories) {
-      const add = h('button.tag-add', { type: 'button', title: 'Kategorien zuweisen (T)', dataset: { testid: 'tag-add' }, html: icon('tag', 15) + `<span>${cats.length ? '' : isMobile ? 'Kategorie' : 'Tag'}</span>` + icon('plus', 12) });
+      const add = h('button.tag-add', { type: 'button', title: 'Kategorien zuweisen (T)', dataset: { testid: 'tag-add' }, html: icon('tag', 15) + `<span>${isMobile ? 'Kategorie' : cats.length ? '' : 'Tag'}</span>` + icon('plus', 12) });
       add.addEventListener('click', () => openPicker(add));
       tags.appendChild(add);
     }
