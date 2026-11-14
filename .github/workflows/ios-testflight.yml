@@ -65,9 +65,14 @@ jobs:
                       raw = decoded
               except (binascii.Error, UnicodeDecodeError):
                   pass
-          m = re.search(r"-----BEGIN [A-Z ]+-----(.*?)-----END [A-Z ]+-----", raw, re.S)
-          body = re.sub(r"\s+", "", m.group(1) if m else raw)
-          print(f"Schlüssel: BEGIN/END {'gefunden' if m else 'fehlt (ergänzt)'}, {len(body)} Base64-Zeichen")
+          # Drop the BEGIN/END markers whatever their dashes look like (missing
+          # dash, en dash from a word processor), then keep only base64.
+          found = re.search(r"\bBEGIN\b", raw) is not None
+          body = re.sub(r"[^A-Za-z0-9+/=]*\b(BEGIN|END)\b[A-Z ]*?KEY[^A-Za-z0-9+/=]*", " ", raw)
+          stray = len(re.sub(r"[A-Za-z0-9+/=\s]", "", body))
+          body = re.sub(r"[^A-Za-z0-9+/=]", "", body)
+          print(f"Schlüssel: BEGIN/END {'gefunden' if found else 'fehlt (ergänzt)'}, {len(body)} Base64-Zeichen"
+                + (f", {stray} fremde Zeichen entfernt" if stray else ""))
           lines = [body[i:i + 64] for i in range(0, len(body), 64)]
           with open(sys.argv[1], "w") as f:
               f.write("-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n")
