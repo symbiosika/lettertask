@@ -752,7 +752,7 @@ function renderMonth() {
   for (let i = 0; i < 42; i++) {
     const d = addDays(start, i);
     const cell = h('div.mg-cell' + (d.getMonth() !== m ? '.other' : '') + (sameDay(d, today) ? '.today' : '') + (isMobile && sameDay(d, mSelDay) ? '.sel' : ''), { dataset: { date: toLocalIso(d).slice(0, 10) } });
-    cell.appendChild(h('div.mg-date', d.getDate() === 1 ? `${d.getDate()}. ${MONTHS[d.getMonth()].slice(0, 3)}` : String(d.getDate())));
+    cell.appendChild(h('div.mg-date', d.getDate() === 1 && !isMobile ? `${d.getDate()}. ${MONTHS[d.getMonth()].slice(0, 3)}` : String(d.getDate())));
     const evs = cal.events.filter((ev) => {
       if (ev.isAllDay) { const r = allDayRange(ev); return r.start <= d && r.end > d; }
       const s = new Date(ev.start), e = new Date(ev.end);
