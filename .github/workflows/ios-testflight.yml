@@ -50,8 +50,33 @@ jobs:
           # altool looks for the key here; tauri gets the path explicitly.
           dir="$HOME/.appstoreconnect/private_keys"
           mkdir -p "$dir"
-          printf '%s\n' "$P8" > "$dir/AuthKey_$KEY_ID.p8"
-          echo "APPLE_API_KEY_PATH=$dir/AuthKey_$KEY_ID.p8" >> "$GITHUB_ENV"
+          key="$dir/AuthKey_$KEY_ID.p8"
+          python3 - "$key" <<'PY'
+          # Writes the App Store Connect key from $P8 as a clean PEM file to argv[1].
+          # Accepts the .p8 as pasted: with/without BEGIN/END lines, CRLF, line breaks
+          # replaced by spaces or "\n", or the whole file base64-encoded.
+          import base64, binascii, os, re, sys
+
+          raw = os.environ.get("P8", "").replace("\r", "").replace("\\n", "\n").strip()
+          if "BEGIN" not in raw:
+              try:
+                  decoded = base64.b64decode(re.sub(r"\s+", "", raw), validate=True).decode()
+                  if "BEGIN" in decoded:
+                      raw = decoded
+              except (binascii.Error, UnicodeDecodeError):
+                  pass
+          m = re.search(r"-----BEGIN [A-Z ]+-----(.*?)-----END [A-Z ]+-----", raw, re.S)
+          body = re.sub(r"\s+", "", m.group(1) if m else raw)
+          print(f"Schlüssel: BEGIN/END {'gefunden' if m else 'fehlt (ergänzt)'}, {len(body)} Base64-Zeichen")
+          lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+          with open(sys.argv[1], "w") as f:
+              f.write("-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n")
+          PY
+          if ! openssl pkey -in "$key" -noout 2>/dev/null; then
+            echo "::error::APPLE_API_KEY_P8 ist kein gültiger privater Schlüssel. Den kompletten Inhalt der AuthKey_….p8 einfügen."
+            exit 1
+          fi
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
       - name: Xcode-Projekt anlegen (gen/apple)
         if: hashFiles('src-tauri/gen/apple/project.yml') == ''
         working-directory: src-tauri
