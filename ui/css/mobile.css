@@ -1486,5 +1486,13 @@ html.mobile .editor-wrap .m-quote-pill { position: absolute; left: 0; margin-top
 .m-lt-sub { font-size: 14px; color: var(--text-dim); white-space: nowrap; }
 body.m-scrolled .m-largetitle, body.m-select .m-largetitle, body.m-searching .m-largetitle { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
 /* while the large title shows, the app bar's own title stays empty (mail, contacts) */
-body.m-app:not(.m-scrolled):not(.m-select):not(.m-searching) .m-appbar:not(:has(.m-cal-titlebtn)):not(.contextual) .m-title { opacity: 0; transition: opacity .15s; }
+body.m-app.m-has-large:not(.m-scrolled):not(.m-select):not(.m-searching) .m-appbar:not(:has(.m-cal-titlebtn)):not(.contextual) .m-title { opacity: 0; transition: opacity .15s; }
 body.m-app .m-appbar .m-title { transition: opacity .15s; }
+
+/* ================================================================ round 15 (iOS + Android) */
+.m-largetitle { background: transparent; }
+.m-tool span { font-size: 13px; }
+.m-tool-danger { margin-left: 10px; }
+/* a task: delete sits in the bottom bar, like in the mail reader */
+body.m-task-open .m-readbar [data-testid=m-read-delete] { display: none; }
+.m-readact.m-readact-danger { flex: 0 0 56px; background: transparent; color: var(--danger); }

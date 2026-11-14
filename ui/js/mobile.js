@@ -127,7 +127,7 @@ export function initMobile(h0) {
   ui.large = h('div.m-largetitle', { dataset: { testid: 'm-largetitle' } });
   const lp = $('.listpane');
   if (lp) lp.prepend(ui.large);
-  ui.largeCt = h('div.m-largetitle', 'Kontakte');
+  ui.largeCt = h('div.m-largetitle', h('span.m-lt-main', 'Kontakte'));
   const cp = $('.ct-listpane');
   if (cp) cp.prepend(ui.largeCt);
   document.addEventListener('scroll', (e) => {
@@ -156,6 +156,10 @@ export function update() {
     ui.large.innerHTML = '';
     ui.large.append(h('span.m-lt-main', folderTitle()), h('span.m-lt-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : ''));
   }
+  // The app-bar title hides only while a large title is really on screen (not on the board).
+  const large = (state.mode === 'mail' && mail.getView() !== 'kanban') || state.mode === 'contacts';
+  document.body.classList.toggle('m-has-large', large);
+  if (st.lastMode !== state.mode) { st.lastMode = state.mode; document.body.classList.remove('m-scrolled'); }
   renderBottomNav();
   renderTodayAgenda();
 }
@@ -252,7 +256,7 @@ function renderAppbar() {
         { label: 'Kategorien', icon: 'tag', submenu: () => mail.categoryMenuItems() },
         { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
       ]), 'm-sel-more'),
-      btn('delete', 'Löschen', () => mail.deleteSelected(false).then(endSelect), 'm-sel-delete'));
+      btn('delete', 'Löschen', () => mail.deleteSelectedUndoable().then(endSelect), 'm-sel-delete'));
     return;
   }
   if (state.mode === 'mail' && st.search) {
@@ -533,7 +537,7 @@ function renderReadbar() {
       { label: 'Kategorien', icon: 'tag', submenu: () => mail.categoryMenuItems() },
       { label: 'Kanban-Lane', icon: 'kanban', submenu: () => mail.laneMenuItems() },
     ]), 'm-read-more'),
-    btn('delete', 'Löschen', () => mail.deleteSelected(false).then(closeReader), 'm-read-delete'));
+    btn('delete', 'Löschen', () => mail.deleteSelectedUndoable().then(closeReader), 'm-read-delete'));
   renderReadActions(false);
   // A task gets "Erledigt" (archive) and "Später" instead of reply buttons.
   document.addEventListener('lt-detail', (e) => {
@@ -568,7 +572,9 @@ function renderReadActions(task) {
   if (task) {
     ui.readactions.append(
       act('check', 'Erledigt', 'm-done', () => mail.completeSelected().then(closeReader), '.m-done'),
-      act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)));
+      act('snooze', 'Später', 'm-later', () => snoozeSheet(closeReader)),
+      act('delete', '', 'm-task-delete', () => mail.deleteSelectedUndoable().then(closeReader), '.m-readact-danger'));
+    ui.readactions.lastChild.setAttribute('aria-label', 'Löschen');
   } else {
     // A toolbar as in Mail: archive, the three answers, delete (red, at the far end).
     const tool = (ic, label, testid, onClick, cls = '') => {
@@ -581,7 +587,7 @@ function renderReadActions(task) {
       tool('reply', 'Antworten', 'm-reply', () => mail.respond('reply')),
       tool('replyAll', 'Allen', 'm-replyAll', () => mail.respond('replyAll')),
       tool('forward', 'Weiterleiten', 'm-forward', () => mail.respond('forward')),
-      tool('delete', 'Löschen', 'm-delete', () => mail.deleteSelected(false).then(closeReader), '.m-tool-danger'));
+      tool('delete', 'Löschen', 'm-delete', () => mail.deleteSelectedUndoable().then(closeReader), '.m-tool-danger'));
   }
   ui.readactions.classList.toggle('m-toolbar', !task);
 }

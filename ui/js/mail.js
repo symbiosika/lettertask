@@ -1372,6 +1372,26 @@ export async function deleteSelected(permanent = false) {
   if (s) await deleteIds(s.ids, permanent);
 }
 
+/** Phone: delete with a short "Rückgängig" window (permanent deletes keep their confirmation). */
+export async function deleteSelectedUndoable() {
+  const s = requireSelection(); if (!s) return;
+  const ids = [...s.ids];
+  const f = currentFolder();
+  if (byMailbox(ids).size > 1 || (f && f.wellKnown === 'deleteditems' && !list.search)) return deleteIds(ids, false);
+  const mailboxId = mbOf(ids);
+  await removeFromList(ids);
+  let undone = false;
+  const timer = setTimeout(() => {
+    if (undone) return;
+    whileInFlight(ids, { gone: true }, call('delete_messages', { mailboxId, ids, permanent: false }))
+      .then(() => refreshFolders(mailboxId)).then(() => checkInboxZero()).catch(reportError);
+  }, 6000);
+  toast(ids.length === 1 ? 'In „Gelöschte Elemente“ verschoben.' : `${ids.length} Elemente in „Gelöschte Elemente“ verschoben.`, 'info', 6000, {
+    icon: 'delete',
+    action: { label: 'Rückgängig', onClick: () => { undone = true; clearTimeout(timer); return reloadList({ keepCount: true }); } },
+  });
+}
+
 async function deleteIds(ids, permanent) {
   const groups = byMailbox(ids);
   if (groups.size > 1) {

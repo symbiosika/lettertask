@@ -202,3 +202,18 @@ test('Handy: Konten als Liste, ein Konto öffnet seine eigene Seite', async ({ p
   await page.locator('[data-testid=settings-back]').tap();
   await expect(page.locator('[data-testid=settings-tab-accounts]')).toBeVisible();
 });
+
+test('Handy: Löschen lässt sich rückgängig machen', async ({ page }) => {
+  await page.goto('/');
+  const mb = (await api(page, 'list_accounts'))[0].mailboxes[0].id;
+  const subject = `Lösch-Test ${Date.now()}`;
+  await api(page, 'create_task', { mailboxId: mb, subject, bodyHtml: '', due: null });
+  await openApp(page);
+  await row(page, subject).tap();
+  await page.locator('[data-testid=m-task-delete]').tap();
+  await expect(row(page, subject)).toHaveCount(0);
+  const t = page.locator('.toast', { hasText: 'Gelöschte Elemente' });
+  await expect(t).toBeVisible();
+  await t.locator('button', { hasText: 'Rückgängig' }).tap();
+  await expect(row(page, subject)).toBeVisible();
+});
