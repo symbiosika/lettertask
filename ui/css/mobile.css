@@ -1211,3 +1211,49 @@ html.mobile .acc-side { background: transparent; }
 html.mobile .m-settings .set-panel > div:has(.snooze-editor, .sig-panel, .acc-panel, .lane-editor) { background: transparent !important; padding: 0 !important; }
 html.mobile .sn-top .icon-btn .ico { width: 18px; height: 18px; }
 html.mobile .sn-row .sn-rule select, html.mobile .sn-row .sn-rule input { background: var(--canvas); border: 0; }
+
+/* ================================================================ round 8 */
+/* editors on settings pages are not one white block – their cards are */
+html.mobile .m-settings .set-panel > :is(.snooze-editor, .sig-panel, .acc-panel, .lane-editor) { background: transparent !important; padding: 0 !important; border-radius: 0 !important; }
+html.mobile .m-settings .set-panel > .note + :is(.field, .checkrow, div) { border-radius: 12px 12px 0 0; margin-top: 8px; }
+html.mobile .m-settings .set-panel > div:not(.field):not(.checkrow):not(:is(.snooze-editor, .sig-panel, .acc-panel, .lane-editor)) { border-radius: 12px; padding-top: 12px; padding-bottom: 12px; margin-bottom: 8px; }
+html.mobile .m-settings .set-panel > .note { padding-top: 0; margin: 4px 0 8px; }
+/* Wiedervorlage: clearly separate cards, readable controls */
+html.mobile .sn-row { box-shadow: 0 0 0 1px var(--border); }
+html.mobile .sn-top .icon-btn { color: #424a53; }
+html.mobile .sn-top .icon-btn:disabled { opacity: .25; }
+html.mobile .sn-top .icon-btn .ico { width: 20px; height: 20px; }
+html.mobile .sn-top .icon-btn:last-child { margin-left: 16px; color: var(--danger); }
+/* signatures / lanes: content inside cards with padding; empty states on canvas */
+html.mobile .sig-side, html.mobile .lane-editor > * { margin-top: 0; }
+html.mobile .sig-empty, html.mobile .lane-none { background: transparent; border: 0; padding: 4px 4px 8px; text-align: left; color: var(--text-dim); font-size: 15px; }
+html.mobile .sig-side .btn, html.mobile .lane-add .btn { margin-top: 4px; }
+html.mobile .sig-flags { background: var(--bg); border-radius: 12px; padding: 4px 16px; border-top: 0; margin-top: 18px; }
+html.mobile .sig-flags-title { margin: 8px 0 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; color: var(--text-dim); }
+html.mobile .lane-add { background: var(--bg); border-radius: 12px; padding: 12px 16px; }
+html.mobile .lane-add .input { border: 0; background: var(--canvas); }
+/* accounts: red remove row, borderless interval, swatch hint */
+html.mobile .acc-actions { flex-direction: column; align-items: stretch; }
+html.mobile .acc-actions .btn { justify-content: center; }
+html.mobile .acc-panel .btn.danger, html.mobile [data-testid=acc-remove] { width: 100%; min-height: 50px; justify-content: center; background: var(--bg) !important; color: var(--danger) !important; border: 0; border-radius: 12px; font-size: 16px; }
+html.mobile .acc-panel input[type=number] { border: 0; background: var(--canvas); text-align: right; width: 96px !important; }
+.acc-swatch-hint { flex-basis: 100%; font-size: 13px; color: var(--text-dim); }
+html.mobile .acc-detail .input::placeholder { text-overflow: ellipsis; }
+html.mobile .acc-detail { padding-bottom: 20px; }
+/* Google tutorial folded */
+.m-details { background: var(--bg); border-radius: 12px; padding: 0 16px; margin-bottom: 8px; }
+.m-details > summary { min-height: 48px; display: flex; align-items: center; font-size: 16px; color: var(--accent); cursor: pointer; list-style: none; }
+.m-details > summary::-webkit-details-marker { display: none; }
+.m-details > summary::after { content: '›'; margin-left: auto; color: var(--text-dim); font-size: 20px; transition: transform .15s; }
+.m-details[open] > summary::after { transform: rotate(90deg); }
+/* "Standard" reset as a text button */
+html.mobile .m-settings .set-panel .field .btn.small { border: 0; background: transparent; color: var(--accent); min-height: 44px; padding: 0 4px; }
+/* contact detail: the container's own padding made the margins 28px */
+html.mobile body.m-app .ct-detail { padding-left: 0 !important; padding-right: 0 !important; }
+/* today date row on canvas */
+html.mobile .list-head:has(.today-sub) { border-bottom: 0; }
+html.mobile .today-sub { background: transparent; }
+/* speed dial: label and icon form one pill (one target) */
+.m-dial-opt { background: var(--bg); border-radius: 26px; padding: 0 4px 0 16px; height: 52px; box-shadow: var(--shadow-lg); }
+.m-dial-label { background: transparent; box-shadow: none; padding: 0; }
+.m-dial-ic { box-shadow: none; width: 44px; height: 44px; margin: 0; border-radius: 22px; background: var(--accent-weak-2); }

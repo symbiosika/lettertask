@@ -1,5 +1,8 @@
 // Account setup: chooser (Microsoft 365 / Google / IMAP), IMAP wizard, server settings editor.
-import { call, on, openUrl } from './api.js';
+import { call, on, openUrl, isMobile } from './api.js';
+
+/** Phone: no trailing "…" on buttons (iOS uses it sparingly). */
+const btnLabel = (s) => (isMobile ? s.replace(/…$/, '') : s);
 import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
 import { modal, toast, reportError, busyClick, confirmDialog, promptDialog } from './dialogs.js';
@@ -390,7 +393,7 @@ export function avatarFromFile(file) {
 /** Picture of the account: choose (PNG/JPG, shown round) or remove. */
 function avatarEditor(acc, onChanged) {
   const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' }, dataset: { testid: 'acc-avatar-file' } });
-  const pick = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-pick' } }, acc.avatar ? 'Bild ändern…' : 'Bild wählen…');
+  const pick = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-pick' } }, btnLabel(acc.avatar ? 'Bild ändern…' : 'Bild wählen…'));
   const remove = acc.avatar ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-remove' } }, 'Bild entfernen') : null;
   const set = async (avatar) => {
     await call('set_account_avatar', { accountId: acc.id, avatar });
@@ -430,6 +433,7 @@ function lookEditor(acc, { onPreview, onChanged }) {
       onclick: () => { color = c; renderSwatches(); save(); },
     }, c ? null : 'A');
     swatches.appendChild(sw(null, 'Automatisch'));
+    if (isMobile) swatches.appendChild(h('span.acc-swatch-hint', '„A“ = automatisch aus der Adresse'));
     for (const c of AVATAR_COLORS) swatches.appendChild(sw(c, c));
     picker.value = color || avatarColor(acc.email);
     swatches.appendChild(picker);
@@ -510,7 +514,7 @@ function sharedMailboxes(acc, { onSaved, onRelogin }) {
       rm));
   }
   if (!shared.length) list.appendChild(h('div.dim', 'Keine freigegebenen Postfächer eingebunden.'));
-  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'shared-mb-add' }, html: icon('plus', 14) + ' Postfach hinzufügen…' });
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'shared-mb-add' }, html: icon('plus', 14) + ' ' + btnLabel('Postfach hinzufügen…') });
   add.addEventListener('click', busyClick(async () => {
     const address = await promptDialog('E-Mail-Adresse des freigegebenen Postfachs (Sie brauchen in Exchange Vollzugriff darauf):', { title: 'Freigegebenes Postfach hinzufügen', placeholder: 'team@firma.de', ok: 'Hinzufügen' });
     if (!address || !address.trim()) return;
@@ -518,7 +522,7 @@ function sharedMailboxes(acc, { onSaved, onRelogin }) {
     toast(`Postfach ${mb.address} wurde hinzugefügt.`);
     onSaved && onSaved();
   }));
-  const relogin = onRelogin ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-relogin' }, html: icon('user', 14) + ' Erneut anmelden…' }) : null;
+  const relogin = onRelogin ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-relogin' }, html: icon('user', 14) + ' ' + btnLabel('Erneut anmelden…') }) : null;
   if (relogin) relogin.addEventListener('click', busyClick(() => onRelogin(acc)));
   return h('div.shared-mbs',
     h('div.acc-sub', 'Freigegebene Postfächer'),

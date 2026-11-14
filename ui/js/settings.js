@@ -259,7 +259,10 @@ export async function openSettings(initialTab = null, { accountId = null } = {})
       h('h3', 'Google'),
       c.builtinGoogleClient
         ? h('p.note', 'Diese Version enthält bereits einen Google-OAuth-Client für „Mit Google anmelden“. Eigene Werte sind nur für Sonderfälle nötig.')
-        : h('div', h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp()),
+        : isMobile
+          // phone: the setup tutorial folds away (administrators do this once, usually on a computer)
+          ? h('details.m-details', h('summary', 'So richten Sie den OAuth-Client ein'), h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp())
+          : h('div', h('p.note', 'Für „Mit Google anmelden“ (Gmail, Google Workspace) wird ein OAuth-Client aus der Google Cloud Console benötigt:'), googleClientHelp()),
       field('Client-ID', overridable(googleId, googleSecret)),
       field('Clientschlüssel', overridable(googleSecret), 'Google gibt Desktop-Apps einen Clientschlüssel mit; er gilt bei Desktop-Apps nicht als geheim.'),
       h('p.note', 'Änderungen gelten für neue Anmeldungen. Bereits angemeldete Konten melden Sie unter Konten mit „Erneut mit Google anmelden“ neu an.')),
@@ -410,7 +413,7 @@ function accountsPanel({ initialAccountId }) {
     render();
     await call('set_account_order', { accountIds: list.map((a) => a.id) }, { silent: true });
   };
-  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + ' Konto hinzufügen…' });
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-add' }, html: icon('plus', 14) + (isMobile ? ' Konto hinzufügen' : ' Konto hinzufügen…') });
   add.addEventListener('click', busyClick(async () => {
     const acc = await addAccountFlow();
     if (acc) { await reloadAccounts(); selected = acc.id; render(); }
