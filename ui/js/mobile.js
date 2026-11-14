@@ -277,7 +277,13 @@ function renderAppbar() {
       btn('chevronLeft', 'Zurück', () => { calendar.step(-1); setTimeout(update, 50); }, 'm-cal-prev'),
       (() => {
         // a tap on the period jumps to today (the separate "Heute" icon made the title too short)
-        const t = h('button.m-title.center.m-cal-titlebtn', { type: 'button', 'aria-label': 'Zu heute springen', dataset: { testid: 'm-cal-today' } }, h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle()));
+        const { start, end } = calendar.viewRange();
+        const now = new Date();
+        const away = now < start || now >= end;
+        const t = h('button.m-title.center.m-cal-titlebtn', { type: 'button', 'aria-label': 'Zu heute springen', dataset: { testid: 'm-cal-today' } },
+          h('span.m-title-main', { dataset: { testid: 'm-cal-title' } }, calTitle()),
+          // shown while today is out of view – a visible way back
+          away ? h('span.m-title-sub.m-cal-back', 'Zu heute') : null);
         t.addEventListener('click', () => { calendar.goToday(); setTimeout(update, 50); });
         return t;
       })(),
@@ -426,6 +432,7 @@ function paintDrawerHead() {
   if (focusRow) focusRow.addEventListener('click', () => showSheetMenu(hooks.focusMenu(), { title: 'Fokuszeit' }));
   ui.drawerHead.append(h('div.m-drawer-group', acc, focusRow));
   ui.drawerMenu.innerHTML = '';
+  ui.drawerMenu.classList.toggle('hidden', state.mode !== 'mail');
   // Phone: the Kanban/list switch lives with the folders (the app bar has no avatar menu any more).
   if (state.mode === 'mail' && !mail.isVirtual()) {
     const kanban = mail.getView() === 'kanban';

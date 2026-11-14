@@ -477,7 +477,22 @@ function lookEditor(acc, { onPreview, onChanged }) {
 }
 
 /** Own sync interval of the account; empty = the global setting. Saved right away. */
+/** Phone: the sync interval as a value row with a picker ("Abgleich · Standard ›"). */
+function intervalRow(acc) {
+  const opts = [['', 'Standard'], ['30', '30 Sekunden'], ['60', '1 Minute'], ['120', '2 Minuten'], ['300', '5 Minuten'], ['900', '15 Minuten'], ['1800', '30 Minuten'], ['3600', '1 Stunde']];
+  const cur = acc.syncIntervalSecs ? String(acc.syncIntervalSecs) : '';
+  if (cur && !opts.some(([v]) => v === cur)) opts.push([cur, `${cur} Sekunden`]);
+  const sel = h('select.m-select', { name: 'accSyncInterval', dataset: { testid: 'acc-sync-interval' }, 'aria-label': 'Abgleich' },
+    ...opts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)));
+  sel.addEventListener('change', async () => {
+    const secs = sel.value === '' ? null : parseInt(sel.value, 10);
+    try { await call('set_account_sync_interval', { accountId: acc.id, syncIntervalSecs: secs }); acc.syncIntervalSecs = secs; } catch (e) { reportError(e); }
+  });
+  return h('label.m-row.m-row-select', { dataset: { testid: 'acc-interval' } }, h('span.m-row-label', 'Abgleich'), h('span.m-row-value', sel), h('span.m-row-chev', { html: icon('chevronRight', 16) }));
+}
+
 function intervalEditor(acc) {
+  if (isMobile) return intervalRow(acc);
   const input = h('input.input', { type: 'number', min: '30', max: '3600', step: '30', name: 'accSyncInterval', value: acc.syncIntervalSecs ? String(acc.syncIntervalSecs) : '', placeholder: 'Standard', style: { width: '100px' }, dataset: { testid: 'acc-sync-interval' } });
   input.addEventListener('change', async () => {
     const raw = input.value.trim();
@@ -549,9 +564,20 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRel
     avatar.replaceWith(next);
     avatar = next;
   };
-  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc));
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));
+  // Phone (Microsoft 365): groups like a settings page – identity, a group of rows,
+  // a one-line footnote, shared mailboxes, and "Konto entfernen" on its own.
+  if (isMobile && !isGoogle(acc) && !isImap(acc)) {
+    box.classList.add('m-acc');
+    box.append(header,
+      h('div.m-acc-group', lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc)),
+      h('div.m-acc-foot', 'Microsoft-365-Konto, angebunden über Microsoft Graph. Der Name kommt aus Microsoft 365.'),
+      sharedMailboxes(acc, { onSaved, onRelogin }),
+      h('div.m-acc-group.m-acc-danger', remove));
+    return box;
+  }
+  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc));
   if (isGoogle(acc)) return googleDetail(acc, box, remove, onSaved);
   if (!isImap(acc)) {
     box.append(
