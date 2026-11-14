@@ -621,18 +621,7 @@ impl Service {
 
             // ---- categories ----
             // ---- inbox zero ----
-            "create_task" => ok(self
-                .create_task(
-                    &arg::<String>(a, "mailboxId")?,
-                    &arg::<String>(a, "subject")?,
-                    &arg::<Option<String>>(a, "bodyHtml")?.unwrap_or_default(),
-                    arg::<Option<String>>(a, "due")?.as_deref(),
-                    arg::<Option<String>>(a, "recurrence")?.as_deref(),
-                    arg::<Option<crate::model::Address>>(a, "delegate")?
-                        .as_ref()
-                        .map(|d| (d, arg::<Option<bool>>(a, "todoPrefix").ok().flatten().unwrap_or(true))),
-                )
-                .await?),
+            "create_task" => ok(self.create_task(serde_json::from_value(a.clone()).map_err(|e| Error::invalid(e.to_string()))?).await?),
             "list_delegations" => ok(self.list_delegations()?),
             "find_delegation" => ok(self.find_delegation(&arg::<String>(a, "mailboxId")?, &arg::<String>(a, "messageId")?)?),
             "set_recurrence" => {

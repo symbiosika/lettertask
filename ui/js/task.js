@@ -1,4 +1,4 @@
-// "Aufgabe (Mail)": a mail from yourself to yourself – only subject, notes and due time.
+// "Aufgabe (Mail)": a mail from yourself to yourself – subject, notes, attachments and due time.
 // Created directly on the server (create_task): "Sofort" → inbox, otherwise → Wiedervorlage.
 // "Andere Person" (Delegation): the task goes out as a mail ("ToDo: …"); the copy for
 // yourself carries the hidden marker "[D_<address>]" and is followed up like a task.
@@ -12,11 +12,14 @@ import { duePicker } from './due.js';
 import { broadcast } from './bus.js';
 import { RECURRENCE_OPTIONS } from './recurrence.js';
 import { recipientField } from './recipients.js';
+import { readFile, readPastedPaths, installFileDrop, attachmentChip } from './attachments.js';
 
 const P = params();
 const st = { mailboxId: P.mailboxId || null, dirty: false, busy: false, closing: false };
 let subject, editor, due, createBtn, repeat, assignee, todoPrefix;
 let delegated = false;
+let attachments = []; // { name, contentType, contentBase64, size }
+let attList;
 
 function markDirty() { st.dirty = true; }
 
@@ -69,8 +72,19 @@ function render() {
     repeatRow,
   );
 
-  editor = createEditor({ onInput: markDirty, minHeight: 180 });
+  // Attachments: picked, dropped onto the window or pasted (files from the file manager).
+  attList = h('div.cw-atts.task-atts.hidden', { dataset: { testid: 'task-attachments' } });
+  const fileInput = h('input', { type: 'file', multiple: true, style: { display: 'none' }, dataset: { testid: 'task-file-input' } });
+  fileInput.addEventListener('change', async () => {
+    await addFiles(fileInput.files);
+    fileInput.value = '';
+  });
+  const attachBtn = h('button.ed-btn', { type: 'button', title: 'Datei anfügen', 'aria-label': 'Datei anfügen', dataset: { testid: 'task-attach' }, html: icon('attach', 18), onclick: () => fileInput.click() });
+  editor = createEditor({ onInput: markDirty, minHeight: 180, lead: [attachBtn, fileInput], onDropFiles: addFiles, onPasteFiles: addFiles,
+    onPastePaths: (p) => readPastedPaths(p).then((list) => list.forEach(addAttachment)).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
+  $('#editor').after(attList);
+  installFileDrop(addAttachment);
 
   createBtn = h('button.btn.primary', { type: 'button', dataset: { testid: 'task-create' }, title: 'Aufgabe anlegen (Strg+Eingabe)', html: icon('task', 16) + '<span>Aufgabe anlegen</span>' });
   createBtn.addEventListener('click', () => create().catch(reportError));
@@ -78,6 +92,29 @@ function render() {
   cancel.addEventListener('click', () => confirmClose().then((ok) => ok && closeWindow()));
   $('#foot').append(h('span.task-kbd', 'Strg+Eingabe: anlegen · Esc: abbrechen'), h('span.spacer'), cancel, createBtn);
   paint();
+}
+
+async function addFiles(files) {
+  for (const f of files) addAttachment(await readFile(f).catch((e) => { reportError(e); return null; }));
+}
+
+function addAttachment(a) {
+  if (!a) return;
+  attachments.push(a);
+  markDirty();
+  renderAttachments();
+}
+
+function renderAttachments() {
+  attList.innerHTML = '';
+  attList.classList.toggle('hidden', !attachments.length);
+  for (const a of attachments) {
+    attList.appendChild(attachmentChip(a, () => {
+      attachments = attachments.filter((x) => x !== a);
+      markDirty();
+      renderAttachments();
+    }));
+  }
 }
 
 async function create() {
@@ -98,7 +135,8 @@ async function create() {
   createBtn.disabled = true;
   setPending(createBtn, true);
   try {
-    await call('create_task', { mailboxId: st.mailboxId, subject: text, bodyHtml: editor.getHtml(), due: d.date ? d.date.toISOString() : null, recurrence: delegated ? null : repeat.value || null, delegate, todoPrefix: todoPrefix.checked });
+    await call('create_task', { mailboxId: st.mailboxId, subject: text, bodyHtml: editor.getHtml(), due: d.date ? d.date.toISOString() : null, recurrence: delegated ? null : repeat.value || null, delegate, todoPrefix: todoPrefix.checked,
+      attachments: attachments.map(({ name, contentType, contentBase64 }) => ({ name, contentType, contentBase64 })) });
     broadcast({ type: 'task-created', subject: text, due: d.date ? due.label() : null, delegate });
     st.dirty = false; st.closing = true;
     await closeWindow();
@@ -111,7 +149,7 @@ async function create() {
 
 /** Nothing typed yet: closing loses nothing worth asking about. */
 function isBlank() {
-  return !subject.value.trim() && !editor.getHtml().replace(/<[^>]*>|&nbsp;/g, '').trim();
+  return !subject.value.trim() && !attachments.length && !editor.getHtml().replace(/<[^>]*>|&nbsp;/g, '').trim();
 }
 
 async function confirmClose() {

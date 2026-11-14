@@ -191,6 +191,13 @@ pub struct InviteInfo {
     /// iCalendar UID (IMAP/Gmail), empty for Graph.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub uid: String,
+    /// A reply proposing another time (Graph `proposedNewTime`, iCalendar
+    /// `METHOD:COUNTER`): the time the attendee asks for. `start`/`end` stay
+    /// the meeting's current time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_end: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

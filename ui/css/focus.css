@@ -88,6 +88,7 @@ body.task .cw-head .ico { color: var(--accent); }
 .task-subject:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 111, 228, .15); }
 .task-subject::placeholder { font-weight: 400; color: #9aa1ab; }
 .task-due { align-items: flex-start; }
+.cw-atts.task-atts { padding: 10px 22px; border-top: 1px solid var(--border); }
 .task-due .task-lbl { padding-top: 5px; }
 body.task .editor-wrap { flex: 1; min-height: 0; border-top: 1px solid var(--border); }
 .task-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--side); }

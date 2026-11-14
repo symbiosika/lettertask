@@ -484,6 +484,7 @@ impl Service {
             html: m.body_html.clone(),
             importance: "normal".into(),
             message_id: mime::new_message_id(&me.address),
+            attachments: m.attachments.clone(),
             ..Default::default()
         };
         let keywords_ok = self.imap_keywords_ok(mb, &folder.id).await?;

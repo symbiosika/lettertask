@@ -305,6 +305,8 @@ pub fn invite_from_ics(ics: &str) -> Option<InviteInfo> {
     let mut seen_event = false;
     let mut out = InviteInfo::default();
     let mut status = String::new();
+    // COUNTER (Outlook): the meeting's current time next to the proposed one.
+    let mut original: (Option<String>, Option<String>) = (None, None);
     for l in &lines {
         let Some((head, value)) = l.split_once(':') else { continue };
         let mut parts = head.split(';');
@@ -324,7 +326,7 @@ pub fn invite_from_ics(ics: &str) -> Option<InviteInfo> {
             }
             "END" if value.eq_ignore_ascii_case("VEVENT") => in_event = false,
             _ if !in_event => {}
-            "DTSTART" | "DTEND" => {
+            "DTSTART" | "DTEND" | "X-MS-OLK-ORIGINALSTART" | "X-MS-OLK-ORIGINALEND" => {
                 let v = value.trim();
                 let date_only = param("VALUE") == Some("DATE") || v.len() == 8;
                 let ts = if date_only {
@@ -344,7 +346,12 @@ pub fn invite_from_ics(ics: &str) -> Option<InviteInfo> {
                     })
                 };
                 let ts = ts.map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true));
-                if name == "DTSTART" { out.start = ts } else { out.end = ts }
+                match name.as_str() {
+                    "DTSTART" => out.start = ts,
+                    "DTEND" => out.end = ts,
+                    "X-MS-OLK-ORIGINALSTART" => original.0 = ts,
+                    _ => original.1 = ts,
+                }
             }
             "LOCATION" => out.location = unescape(value).trim().to_string(),
             "UID" => out.uid = value.trim().to_string(),
@@ -359,9 +366,16 @@ pub fn invite_from_ics(ics: &str) -> Option<InviteInfo> {
     if !seen_event || out.start.is_none() {
         return None;
     }
+    if method == "COUNTER" {
+        // DTSTART/DTEND are the proposed time.
+        out.proposed_start = out.start.take();
+        out.proposed_end = out.end.take();
+        out.start = original.0.take();
+        out.end = original.1.take();
+    }
     out.message_type = match method.as_str() {
         "CANCEL" => "meetingCancelled",
-        "REPLY" => "meetingResponse",
+        "REPLY" | "COUNTER" => "meetingResponse",
         _ if status == "CANCELLED" => "meetingCancelled",
         _ => "meetingRequest",
     }
@@ -386,7 +400,16 @@ pub fn invite_info(v: &Value) -> Option<InviteInfo> {
     let (previous_start, previous_end) = (when("previousStartDateTime"), when("previousEndDateTime"));
     let location = s(&v["location"], "displayName");
     let previous_location = s(&v["previousLocation"], "displayName");
+    // eventMessageResponse with a counter-proposal.
+    let proposed = &v["proposedNewTime"];
+    let slot = |key: &str| Some(&proposed[key]).filter(|x| !s(x, "dateTime").is_empty()).map(dt_tz);
+    let (proposed_start, proposed_end) = match (slot("start"), slot("end")) {
+        (Some(ps), Some(pe)) => (Some(ps), Some(pe)),
+        _ => (None, None),
+    };
     Some(InviteInfo {
+        proposed_start,
+        proposed_end,
         message_type: s(v, "meetingMessageType"),
         // An unchanged value is no change worth showing.
         previous_start: previous_start.filter(|p| Some(p) != start.as_ref()),
@@ -816,6 +839,42 @@ pub fn auto_reply_to_graph(a: &AutoReply) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counter_proposal_from_ics() {
+        let ics = "BEGIN:VCALENDAR\r\nMETHOD:COUNTER\r\nBEGIN:VEVENT\r\nUID:abc\r\n\
+DTSTART;TZID=W. Europe Standard Time:20261112T110000\r\nDTEND;TZID=W. Europe Standard Time:20261112T113000\r\n\
+X-MS-OLK-ORIGINALSTART;TZID=W. Europe Standard Time:20261112T103000\r\n\
+X-MS-OLK-ORIGINALEND;TZID=W. Europe Standard Time:20261112T110000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let i = invite_from_ics(ics).expect("counter");
+        assert_eq!(i.message_type, "meetingResponse");
+        assert_eq!(i.proposed_start.as_deref(), Some("2026-11-12T10:00:00Z"));
+        assert_eq!(i.proposed_end.as_deref(), Some("2026-11-12T10:30:00Z"));
+        assert_eq!(i.start.as_deref(), Some("2026-11-12T09:30:00Z"));
+        assert_eq!(i.end.as_deref(), Some("2026-11-12T10:00:00Z"));
+    }
+
+    #[test]
+    fn counter_proposal_from_graph() {
+        let v = json!({
+            "@odata.type": "#microsoft.graph.eventMessageResponse",
+            "meetingMessageType": "meetingTenativelyAccepted",
+            "startDateTime": {"dateTime": "2026-11-12T09:30:00.0000000", "timeZone": "UTC"},
+            "endDateTime": {"dateTime": "2026-11-12T10:00:00.0000000", "timeZone": "UTC"},
+            "proposedNewTime": {
+                "start": {"dateTime": "2026-11-12T11:00:00", "timeZone": "W. Europe Standard Time"},
+                "end": {"dateTime": "2026-11-12T11:30:00", "timeZone": "W. Europe Standard Time"},
+            },
+        });
+        let i = invite_info(&v).expect("response");
+        assert_eq!(i.start.as_deref(), Some("2026-11-12T09:30:00Z"));
+        assert_eq!(i.proposed_start.as_deref(), Some("2026-11-12T10:00:00Z"));
+        assert_eq!(i.proposed_end.as_deref(), Some("2026-11-12T10:30:00Z"));
+        // A plain answer carries no proposal.
+        let mut plain = v.clone();
+        plain["proposedNewTime"] = Value::Null;
+        assert_eq!(invite_info(&plain).expect("response").proposed_start, None);
+    }
 
     #[test]
     fn normalizes_timestamps() {

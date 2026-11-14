@@ -1179,9 +1179,9 @@ async function showReading(m, text) {
       snoozed: inSnoozedFolder(),
       onChanged: () => {},
       // An answered invitation is done: it leaves the inbox like in Outlook.
-      onResponded: () => archiveIds([m.id], { quiet: true, mailboxId: detail.mailboxId || state.current.mailboxId })
-        .then(() => toast('Antwort gesendet – Einladung archiviert.'))
-        .catch((e) => { console.warn(e); toast('Antwort gesendet.'); refreshFolders(detail.mailboxId).catch(() => {}); }),
+      onResponded: (_response, text) => archiveIds([m.id], { quiet: true, mailboxId: detail.mailboxId || state.current.mailboxId })
+        .then(() => toast(text ? text.replace(/\.$/, '') + ' – Mail archiviert.' : 'Antwort gesendet – Einladung archiviert.'))
+        .catch((e) => { console.warn(e); toast(text || 'Antwort gesendet.'); refreshFolders(detail.mailboxId).catch(() => {}); }),
       setCategories: (cats) => setCategoriesFor([{ m: findItem(m.id) || m, cats }]),
       setRecurrence: (rule) => setRecurrenceFor([m.id], rule),
       delegation: delegation ? { name: delegateName(delegation), subject: delegation.subject } : null,
