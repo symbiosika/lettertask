@@ -358,11 +358,13 @@ function eventTitle(ev) { return ev.subject || '(Kein Betreff)'; }
 
 // ------------------------------------------------------------- shared with the mail panel
 /** Events of all visible calendars in [start, end) (same calendars as the calendar view).
- *  `cached`: only the last known events from the local store (no server round trip). */
-export async function eventsBetween(start, end, { cached = false } = {}) {
+ *  `cached`: only the last known events from the local store (no server round trip).
+ *  `own`: only calendars the user can write to and does not borrow from someone else. */
+export async function eventsBetween(start, end, { cached = false, own = false } = {}) {
   if (!cal.calendars.size) await loadCalendars();
   const res = await Promise.all(calAccounts().map(async (a) => {
-    const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id)).map((c) => c.id);
+    // own: only the user's calendars, not those of colleagues ("Kalender von Personen").
+    const ids = (cal.calendars.get(a.id) || []).filter((c) => !cal.hidden.has(c.id) && (!own || (!c.owner && c.canEdit))).map((c) => c.id);
     if (!ids.length) return [];
     try { return (await call('list_events', { accountId: a.id, calendarIds: ids, start: start.toISOString(), end: end.toISOString(), cached }, { silent: true })) || []; }
     catch (e) { console.warn(e); return []; }

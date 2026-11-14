@@ -707,10 +707,13 @@ impl Service {
                 )
                 .await
             {
-                if is_meeting {
+                invite = convert::invite_info(&ev);
+                // Requests: the attendee's copy to answer. Counter-proposals:
+                // the organizer's own event, to move to the proposed time.
+                let proposal = invite.as_ref().is_some_and(|i| i.proposed_start.is_some());
+                if is_meeting || proposal {
                     event_id = ev["event"]["id"].as_str().map(str::to_string);
                 }
-                invite = convert::invite_info(&ev);
             }
         }
 

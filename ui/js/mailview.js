@@ -251,7 +251,12 @@ function renderInvite(host, ev, inv) {
   const start = (inv && inv.start) || ev.start;
   const end = (inv && inv.end) || ev.end;
   const allDay = inv && inv.start ? inv.isAllDay : ev.isAllDay;
-  if (start) {
+  if (inv && inv.proposedStart) {
+    // Counter-proposal: the time asked for first, the meeting's time below.
+    host.appendChild(row('clock', `<span class="dim">Vorgeschlagen:</span> <b>${esc(inviteRange(inv.proposedStart, inv.proposedEnd, allDay))}</b>`, 'invite-proposed'));
+    const curStart = ev.start || start, curEnd = ev.start ? ev.end : end;
+    if (curStart) host.appendChild(row('calendar', `<span class="dim">Bisher:</span> ${esc(inviteRange(curStart, curEnd, ev.start ? ev.isAllDay : allDay))}`, 'invite-current'));
+  } else if (start) {
     let html = `<b>${esc(inviteRange(start, end, allDay))}</b>`;
     if (inv && inv.previousStart) {
       html += ` <s class="dim" data-testid="invite-previous">${esc(inviteRange(inv.previousStart, inv.previousEnd || inv.previousStart, allDay))}</s>`;
@@ -309,6 +314,132 @@ function bindAttachmentDrag(el, msg, a) {
     e.dataTransfer.setData('application/x-lt-attachment', JSON.stringify({ ...ref, name: a.name, contentType: a.contentType, size: a.size }));
     e.dataTransfer.setData('text/plain', a.name);
   });
+}
+
+/** "Mit Vorbehalt zugesagt" for the meetingMessageType of an answer (Graph spells "Tenatively"). */
+function responseText(type) {
+  if (!type) return '';
+  if (/^meetingAccepted/.test(type)) return 'Zugesagt';
+  if (/^meetingTen?t?atively/i.test(type)) return 'Mit Vorbehalt';
+  if (/^meetingDeclined/.test(type)) return 'Abgelehnt';
+  return '';
+}
+
+const toLocalInput = (iso) => { const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+
+/** An attendee proposed another time for a meeting the user organizes:
+ *  take the proposal (moves the meeting, attendees are informed), move it to
+ *  a time of one's own, or decline by replying. Shows what else is in the
+ *  calendar around the chosen time. */
+function proposalPanel(msg, inv, bar, accountId, opts) {
+  const slot = { start: inv.proposedStart, end: inv.proposedEnd || inv.proposedStart };
+  const conflicts = h('div.prop-conflicts', { dataset: { testid: 'proposal-conflicts' } });
+  let token = 0;
+  const showConflicts = async (start, end) => {
+    const my = ++token;
+    const s = new Date(start), e = new Date(end);
+    if (isNaN(s) || isNaN(e) || e <= s) { conflicts.innerHTML = ''; return; }
+    const from = new Date(s.getTime() - 3600e3), to = new Date(e.getTime() + 3600e3);
+    let events = [];
+    try {
+      const { eventsBetween } = await import('./calendar.js');
+      events = await eventsBetween(from, to, { own: true });
+    } catch (err) { console.warn(err); }
+    if (my !== token) return;
+    const seen = new Set();
+    const around = events
+      .filter((ev) => !ev.isAllDay && !ev.isCancelled && ev.id !== msg.eventId)
+      .filter((ev) => new Date(ev.start) < to && new Date(ev.end) > from)
+      .filter((ev) => { const k = ev.subject + '|' + ev.start + '|' + ev.end; if (seen.has(k)) return false; seen.add(k); return true; })
+      .map((ev) => ({ ev, s: new Date(ev.start), e: new Date(ev.end) }));
+    const hits = around.filter((x) => x.s < e && x.e > s && x.ev.showAs !== 'free');
+    conflicts.innerHTML = '';
+    conflicts.appendChild(h('div.prop-head' + (hits.length ? '.warn' : '.ok'), { dataset: { testid: 'proposal-conflict-summary' },
+      html: icon(hits.length ? 'warning' : 'check', 15) + ' ' + esc(hits.length
+        ? `${hits.length === 1 ? '1 Konflikt' : hits.length + ' Konflikte'} im Kalender zu dieser Zeit`
+        : 'Keine Konflikte im Kalender zu dieser Zeit') }));
+    const rows = [...around.map((x) => ({ ...x, hit: hits.includes(x) })), { s, e, self: true }]
+      .sort((a, b) => a.s - b.s || (a.self ? -1 : 1));
+    for (const r of rows) {
+      conflicts.appendChild(h('div.prop-row' + (r.self ? '.self' : r.hit ? '.hit' : ''), { dataset: { testid: r.self ? 'proposal-slot' : r.hit ? 'proposal-conflict' : 'proposal-around' } },
+        h('span.prop-time', `${fmtTime(r.s)} – ${fmtTime(r.e)}`),
+        h('span.prop-title', r.self ? 'Vorgeschlagene Zeit' : (r.ev.subject || '(Kein Betreff)'))));
+    }
+  };
+
+  const otherStart = h('input', { type: 'datetime-local', dataset: { testid: 'proposal-other-start' } });
+  const otherEnd = h('input', { type: 'datetime-local', dataset: { testid: 'proposal-other-end' } });
+  const other = h('div.rsp-propose', { hidden: true }, h('label', 'Beginn ', otherStart), h('label', 'Ende ', otherEnd));
+  const onOther = () => {
+    const s = new Date(otherStart.value), e = new Date(otherEnd.value);
+    if (!isNaN(s) && !isNaN(e) && e > s) showConflicts(s.toISOString(), e.toISOString());
+  };
+  otherStart.addEventListener('change', () => {
+    // Keep the length when the start moves.
+    const len = new Date(slot.end) - new Date(slot.start);
+    const s = new Date(otherStart.value);
+    if (!isNaN(s) && len > 0) otherEnd.value = toLocalInput(new Date(s.getTime() + len).toISOString());
+    onOther();
+  });
+  otherEnd.addEventListener('change', onOther);
+
+  const panel = h('div.rp-respond.rp-proposal', { dataset: { testid: 'proposal-respond' } });
+  const done = (text) => {
+    for (const b of panel.querySelectorAll('.btn')) b.remove();
+    other.remove();
+    bar.dataset.answered = 'moved';
+    bar.appendChild(h('span.ib-done', { dataset: { testid: 'proposal-done' } }, text));
+  };
+  const move = async (start, end) => {
+    if (bar.dataset.answered) return;
+    await call('move_event', { accountId, eventId: msg.eventId, start, end, sendUpdates: true });
+    done('Termin verschoben auf ' + inviteRange(start, end, false));
+    if (opts.onResponded) await opts.onResponded('moved', 'Termin verschoben – Teilnehmer werden informiert.');
+    else { toast('Termin verschoben – Teilnehmer werden informiert.'); opts.onChanged && opts.onChanged(); }
+  };
+
+  const foot = h('div.rsp-foot', other, h('span.spacer'));
+  const canMove = !!msg.eventId && !inv.isAllDay;
+  if (canMove) {
+    const accept = h('button.btn.small.primary', { type: 'button', dataset: { testid: 'proposal-accept' }, html: icon('accept', 15) + ' Vorschlag annehmen' });
+    accept.addEventListener('click', busyClick(() => move(slot.start, slot.end), accept));
+    const sendOther = h('button.btn.small.primary', { type: 'button', hidden: true, dataset: { testid: 'proposal-other-send' } }, 'Auf diese Zeit verschieben');
+    sendOther.addEventListener('click', busyClick(async () => {
+      const s = new Date(otherStart.value), e = new Date(otherEnd.value);
+      if (isNaN(s) || isNaN(e) || e <= s) { toast('Bitte Beginn und Ende prüfen.'); return; }
+      await move(s.toISOString(), e.toISOString());
+    }, sendOther));
+    const otherBtn = h('button.btn.small', { type: 'button', dataset: { testid: 'proposal-other-toggle' }, html: icon('clock', 15) + ' Andere Zeit…' });
+    otherBtn.addEventListener('click', () => {
+      const open = other.hidden;
+      other.hidden = !open; sendOther.hidden = !open; accept.hidden = open;
+      if (open && !otherStart.value) { otherStart.value = toLocalInput(slot.start); otherEnd.value = toLocalInput(slot.end); }
+      if (open) onOther(); else showConflicts(slot.start, slot.end);
+    });
+    foot.append(sendOther, accept, otherBtn);
+  }
+  if (opts.onAction) {
+    const decline = h('button.btn.small', { type: 'button', dataset: { testid: 'proposal-decline' }, title: 'Vorschlag ablehnen: dem Absender antworten, der Termin bleibt',
+      html: icon('decline', 15) + ' Ablehnen & antworten' });
+    decline.addEventListener('click', () => opts.onAction('reply', decline));
+    foot.appendChild(decline);
+  }
+  panel.append(
+    h('div.rsp-head', h('b', canMove ? 'Auf den Zeitvorschlag reagieren' : 'Zeitvorschlag'), h('span.spacer'),
+      canMove ? h('span.dim', 'Teilnehmer werden über die neue Zeit informiert') : null),
+    conflicts, foot);
+  // The event as it is now: already on the proposed time, or not the user's to move.
+  panel._setEvent = (ev) => {
+    if (bar.dataset.answered) return;
+    const same = (a, b) => a && b && new Date(a).getTime() === new Date(b).getTime();
+    if (same(ev.start, slot.start) && same(ev.end, slot.end)) done('Termin liegt bereits auf der vorgeschlagenen Zeit');
+    else if (ev.isOrganizer === false) {
+      for (const b of panel.querySelectorAll('[data-testid^="proposal-accept"], [data-testid^="proposal-other"]')) b.remove();
+      other.remove();
+    }
+  };
+  showConflicts(slot.start, slot.end);
+  return panel;
 }
 
 const FLAG_TEXT = { flagged: 'Zur Nachverfolgung gekennzeichnet', complete: 'Als erledigt markiert' };
@@ -438,15 +569,17 @@ export function renderMessage(container, msg, opts) {
   const cancelled = inv && inv.messageType === 'meetingCancelled';
   const response = inv && /^meeting(Accepted|TenativelyAccepted|TentativelyAccepted|Declined|Response)/.test(inv.messageType);
   if (msg.isMeetingRequest || inv) {
-    const title = cancelled ? 'Termin abgesagt' : response ? 'Antwort auf eine Besprechung'
+    const proposal = !!(inv && inv.proposedStart);
+    const title = cancelled ? 'Termin abgesagt' : proposal ? 'Neue Zeit vorgeschlagen' : response ? 'Antwort auf eine Besprechung'
       : inv && inv.previousStart ? 'Besprechungsanfrage – Termin verschoben' : 'Besprechungsanfrage';
     const bar = h('div.infobar.meeting', { dataset: { testid: 'meeting-bar' } }, h('span.ib-text', { html: icon('calendar', 16) + ' ' + esc(title) }), h('span.spacer'));
+    const answerText = responseText(inv && inv.messageType);
+    if (response && answerText) bar.appendChild(h('span.ib-answer', { dataset: { testid: 'meeting-answer' } }, answerText));
     const DONE = { accept: 'Zugesagt', tentativelyAccept: 'Mit Vorbehalt zugesagt', decline: 'Abgelehnt' };
     // Outlook-like answer panel: note to the organizer, notify on/off, other time.
     const canAnswer = msg.isMeetingRequest && msg.eventId;
     const note = h('textarea.rsp-note', { rows: 2, placeholder: 'Optionale Nachricht an Organisator', dataset: { testid: 'meeting-note' } });
     const notify = h('input', { type: 'checkbox', checked: true, dataset: { testid: 'meeting-notify' } });
-    const toLocalInput = (iso) => { const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
     const propStart = h('input', { type: 'datetime-local', dataset: { testid: 'propose-start' } });
     const propEnd = h('input', { type: 'datetime-local', dataset: { testid: 'propose-end' } });
     const propose = h('div.rsp-propose', { hidden: true },
@@ -492,6 +625,7 @@ export function renderMessage(container, msg, opts) {
         note,
         h('div.rsp-foot', propose, h('span.spacer'), sendProposal, proposeBtn));
     }
+    if (proposal) panel = proposalPanel(msg, inv, bar, accountId, opts);
     bars.appendChild(bar);
     // When, how long, how often: the mail body (e.g. a bare Teams link) rarely says.
     // The mail's own times show at once; the event adds series, organizer, attendees.
@@ -501,7 +635,7 @@ export function renderMessage(container, msg, opts) {
     if (inv) renderInvite(details, null, inv);
     if (msg.eventId) {
       call('get_event', { accountId, eventId: msg.eventId }, { silent: true })
-        .then((ev) => { if (ev) renderInvite(details, ev, inv); })
+        .then((ev) => { if (ev) { renderInvite(details, ev, inv); if (panel && panel._setEvent) panel._setEvent(ev); } })
         .catch(() => {});
     }
   }

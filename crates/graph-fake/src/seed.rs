@@ -132,7 +132,7 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
     for (who, hex) in [(LAURA, "#d97706"), (JONAS, "#0d9488")] {
         mb.calendars.push(Cal { id: new_id("AAMkAC"), name: who.0.into(), color: "auto".into(), hex_color: hex.into(), can_edit: false, is_default: false, group: "Kalender von Personen".into(), owner: Some((who.0.into(), who.1.into())) });
     }
-    let invite_event = seed_events(mb, now);
+    let (invite_event, alpha_event) = seed_events(mb, now);
 
     let pdf = crate::png::tiny_pdf("Rechnung 2026-1043 - Fabrikam AG - 4.284,00 EUR");
     let banner = crate::png::banner();
@@ -179,6 +179,32 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
         m.event_id = Some(eid.clone());
         m.json["startDateTime"] = json!({ "dateTime": graph_dt(*start), "timeZone": "UTC" });
         m.json["endDateTime"] = json!({ "dateTime": graph_dt(*end), "timeZone": "UTC" });
+    }
+
+    // A customer proposes another time for a meeting the user organizes.
+    if let Some((eid, start, end)) = &alpha_event {
+        let id = add(mb, "inbox", THOMAS, "Neue vorgeschlagene Zeit: Kundentermin Alpha – Anforderungen", html(&[
+            "Passt bei uns leider nicht, eine Stunde später wäre ideal.",
+        ], "Thomas Müller"), 1.0, json!({
+            "isRead": false,
+            "@odata.type": "#microsoft.graph.eventMessageResponse",
+            "meetingMessageType": "meetingTenativelyAccepted",
+            "responseType": "tentativelyAccepted",
+            "isOutOfDate": false,
+            "isAllDay": false,
+            "isDelegated": false,
+            "type": "singleInstance",
+            "location": { "displayName": "Alpha Industries, Leopoldstraße 10, München" },
+        }));
+        let hour = Duration::hours(1);
+        let m = mb.messages.get_mut(&id).expect("inserted");
+        m.event_id = Some(eid.clone());
+        m.json["startDateTime"] = json!({ "dateTime": graph_dt(*start), "timeZone": "UTC" });
+        m.json["endDateTime"] = json!({ "dateTime": graph_dt(*end), "timeZone": "UTC" });
+        m.json["proposedNewTime"] = json!({
+            "start": { "dateTime": graph_dt(*start + hour), "timeZone": "UTC" },
+            "end": { "dateTime": graph_dt(*end + hour), "timeZone": "UTC" },
+        });
     }
 
     let id = add(mb, "inbox", ERIKA, "Rechnung 2026-1043", html(&[
@@ -357,7 +383,11 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
 }
 
 /// Creates demo events; returns (id, start utc, end utc) of the invitation event.
-fn seed_events(mb: &mut Mailbox, now: DateTime<Utc>) -> Option<(String, chrono::NaiveDateTime, chrono::NaiveDateTime)> {
+type EvTimes = Option<(String, chrono::NaiveDateTime, chrono::NaiveDateTime)>;
+
+/// Seeds the calendars; returns the event of the demo invitation and the
+/// event (organized by the user) a customer proposes a new time for.
+fn seed_events(mb: &mut Mailbox, now: DateTime<Utc>) -> (EvTimes, EvTimes) {
     let default_cal = mb.default_calendar_id();
     let team = mb.calendars.iter().find(|c| c.name == "Team").map(|c| c.id.clone()).unwrap_or_default();
     let holidays = mb.calendars.iter().find(|c| c.name == "Feiertage").map(|c| c.id.clone()).unwrap_or_default();
@@ -430,7 +460,7 @@ fn seed_events(mb: &mut Mailbox, now: DateTime<Utc>) -> Option<(String, chrono::
                         "range": { "type": "noEnd", "startDate": bday.format("%Y-%m-%d").to_string() } },
     }), json!({}));
 
-    add(mb, &default_cal, json!({
+    let alpha = add(mb, &default_cal, json!({
         "subject": "Kundentermin Alpha – Anforderungen",
         "start": dt(day(1), 11, 0), "end": dt(day(1), 12, 0),
         "location": { "displayName": "Alpha Industries, Leopoldstraße 10, München" },
@@ -541,7 +571,8 @@ fn seed_events(mb: &mut Mailbox, now: DateTime<Utc>) -> Option<(String, chrono::
         }
     }
 
-    invite.and_then(|id| mb.events.get(&id).map(|e| (id.clone(), e.start, e.end)))
+    let times = |id: Option<String>| id.and_then(|id| mb.events.get(&id).map(|e| (id.clone(), e.start, e.end)));
+    (times(invite), times(alpha))
 }
 
 fn easter(y: i32) -> NaiveDate {

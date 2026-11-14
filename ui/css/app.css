@@ -378,6 +378,18 @@ kbd { font-family: inherit; }
 .rp-respond .rsp-propose { display: flex; gap: 10px; flex-wrap: wrap; color: var(--text-2); }
 .rp-respond .rsp-propose[hidden], .rp-respond .btn[hidden] { display: none; }
 .rp-respond input[type=datetime-local] { font: inherit; padding: 2px 4px; }
+.infobar.meeting .ib-answer { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--warn-bg); color: #8a5a00; }
+.rp-proposal .rsp-head .dim { color: var(--text-2); font-size: 12px; }
+.prop-conflicts { display: flex; flex-direction: column; gap: 2px; }
+.prop-conflicts:empty { display: none; }
+.prop-head { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 2px; }
+.prop-head.ok { color: #107c10; }
+.prop-head.warn { color: #8a5a00; }
+.prop-row { display: flex; gap: 10px; padding: 3px 8px; border-left: 3px solid var(--border-strong); border-radius: 2px; color: var(--text-2); }
+.prop-row .prop-time { flex: none; min-width: 96px; font-variant-numeric: tabular-nums; }
+.prop-row .prop-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-row.self { border-left-color: var(--accent); background: var(--accent-weak); color: var(--text); font-weight: 600; }
+.prop-row.hit { border-left-color: var(--danger); background: var(--warn-bg); color: var(--text); }
 .rp-invite { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--accent-weak); font-size: 13px; color: var(--text); }
 .rp-invite:empty { display: none; }
 .rp-invite .inv-row { display: flex; align-items: center; gap: 8px; }
