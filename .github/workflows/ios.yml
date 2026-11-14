@@ -17,21 +17,27 @@ jobs:
           targets: aarch64-apple-ios-sim,aarch64-apple-ios
       - uses: Swatinem/rust-cache@v2
       - run: cargo install tauri-cli --version "^2" --locked
+      # tauri ios init refuses to run without a team. The simulator does not
+      # check it, so a placeholder is enough until the secret is set.
+      - name: Development Team
+        env:
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+        run: |
+          if [ -z "$TEAM" ]; then
+            echo "::warning::Secret APPLE_DEVELOPMENT_TEAM fehlt – Platzhalter, nur für den Simulator brauchbar"
+            TEAM=XXXXXXXXXX
+          fi
+          echo "APPLE_DEVELOPMENT_TEAM=$TEAM" >> "$GITHUB_ENV"
       - name: XcodeGen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Xcode-Projekt anlegen (gen/apple)
         if: hashFiles('src-tauri/gen/apple/project.yml') == ''
         working-directory: src-tauri
-        env:
-          # Optional; a simulator build does not need it.
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
         run: cargo tauri ios init --ci
       - name: App-Icons übernehmen
         run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
       - name: Für den Simulator bauen
         working-directory: src-tauri
-        env:
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
         run: cargo tauri ios build --target aarch64-sim --ci
       - name: App einpacken
         run: |
