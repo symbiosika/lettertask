@@ -1,0 +1,92 @@
+name: iOS TestFlight
+
+# Manually started: builds a signed iOS build (arm64) and uploads it to
+# App Store Connect, from where it is distributed through TestFlight.
+#
+# Secrets:
+#   APPLE_DEVELOPMENT_TEAM  team ID (developer.apple.com → Membership)
+#   APPLE_API_KEY_ID        App Store Connect API key (role App Manager)
+#   APPLE_API_ISSUER        issuer ID of that key
+#   APPLE_API_KEY_P8        contents of the AuthKey_<id>.p8 file
+# Xcode signs automatically with the API key (certificate and provisioning
+# profile are created on demand); the app must exist in App Store Connect.
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: Demo-Build (fest eingebaute Beispieldaten statt echter Konten)
+        type: boolean
+        default: true
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secrets prüfen
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          missing=0
+          for name in APPLE_DEVELOPMENT_TEAM APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            if [ -z "${!name}" ]; then echo "::error::Secret $name fehlt"; missing=1; fi
+          done
+          exit $missing
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install tauri-cli --version "^2" --locked
+      - name: XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: API-Key ablegen
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          # altool looks for the key here; tauri gets the path explicitly.
+          dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$dir"
+          printf '%s\n' "$P8" > "$dir/AuthKey_$KEY_ID.p8"
+          echo "APPLE_API_KEY_PATH=$dir/AuthKey_$KEY_ID.p8" >> "$GITHUB_ENV"
+      - name: Xcode-Projekt anlegen (gen/apple)
+        if: hashFiles('src-tauri/gen/apple/project.yml') == ''
+        working-directory: src-tauri
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+        run: cargo tauri ios init --ci
+      - name: App-Icons übernehmen
+        run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+      - name: Exportkontrolle (nur Standard-TLS)
+        # Saves answering the encryption question for every TestFlight build.
+        run: /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" src-tauri/gen/apple/lettertask_iOS/Info.plist
+      - name: Bauen und signieren
+        working-directory: src-tauri
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          LETTERTASK_DEMO: ${{ inputs.demo && '1' || '0' }}
+        # Every upload needs a new build number: version.run_number.
+        run: cargo tauri ios build --target aarch64 --export-method app-store-connect --build-number ${{ github.run_number }} --ci
+      - name: IPA suchen
+        run: |
+          IPA=$(find src-tauri/gen/apple/build -name '*.ipa' | head -n 1)
+          [ -n "$IPA" ] || { echo "::error::keine .ipa gefunden"; exit 1; }
+          echo "IPA: $IPA"
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lettertask-ios-ipa
+          path: ${{ env.IPA }}
+      - name: Zu App Store Connect hochladen
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+      - name: Schlüssel entfernen
+        if: always()
+        run: rm -rf "$HOME/.appstoreconnect"
