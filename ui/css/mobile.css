@@ -1361,3 +1361,50 @@ html.mobile .acc-detail .btn:not(.danger) { width: 100%; justify-content: flex-s
 html.mobile .acc-avatar-edit .btn { border-top: 0 !important; justify-content: center !important; }
 html.mobile .acc-detail input[type=number]::placeholder { color: var(--text-dim); }
 html.mobile .m-drawer .tree-root { min-height: 44px; }
+
+/* ================================================================ round 11 (iOS + Android) */
+/* app bar: no avatar any more – "Neu" keeps the 16pt edge */
+.m-appbar { padding-right: 10px; }
+/* folder page: only the title bar is pinned */
+html.mobile .m-drawer-head { position: static !important; padding: 0; }
+.m-drawer-bar { position: sticky; top: 0; z-index: 4; margin: 0; }
+.m-drawer-group { margin: 12px 16px 18px; background: var(--bg); border-radius: 12px; overflow: hidden; }
+.m-drawer-account { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 8px 12px 8px 16px; margin: 0; border: 0; background: transparent; text-align: left; }
+.m-drawer-account:active { background: var(--hover); }
+.m-drawer-account .m-drawer-who { flex: 1; min-width: 0; }
+.m-drawer-account .m-row-chev { color: var(--text-dim); opacity: .6; }
+.m-drawer-focusrow { border-top: 1px solid var(--border); }
+.m-drawer-focusrow .m-row-value { margin-left: auto; color: var(--text-dim); font-size: 15px; }
+/* current mailbox: accent + check; unread shows as the count only */
+html.mobile .m-drawer .tree-node { font-weight: 400 !important; }
+html.mobile .m-drawer .tree-node.selected:not(.m-dup) { color: var(--accent); }
+html.mobile .m-drawer .tree-node.selected:not(.m-dup)::after { content: '✓'; margin-left: 8px; color: var(--accent); font-weight: 700; }
+html.mobile .m-drawer .tree-node.m-dup, html.mobile .m-drawer .tree-node.m-dup .fic { color: var(--text); }
+html.mobile .m-drawer .fcount .count { font-weight: 600; color: var(--text-dim); }
+html.mobile .m-drawer .tree-root.account { text-transform: none; letter-spacing: 0; font-size: 14px; }
+/* calendar page: grouped list, no mini month, coloured check circles */
+html.mobile .m-drawer .minical { display: none; }
+html.mobile .m-drawer .cal-list { border-top: 0; padding: 4px 16px 8px; }
+html.mobile .m-drawer .cal-list .tree-root { margin-top: 8px; }
+html.mobile .m-drawer .cal-item { height: auto; min-height: 50px; padding: 0 16px; background: var(--bg); border-radius: 0; color: var(--text); font-size: 16px; gap: 14px; position: relative; }
+html.mobile .m-drawer .tree-root + .cal-item, html.mobile .m-drawer .cal-group + .cal-item { border-radius: 12px 12px 0 0; }
+html.mobile .m-drawer .cal-item:has(+ :not(.cal-item)), html.mobile .m-drawer .cal-item:last-child { border-radius: 0 0 12px 12px; }
+html.mobile .m-drawer :is(.tree-root, .cal-group) + .cal-item:has(+ :not(.cal-item)) { border-radius: 12px; }
+html.mobile .m-drawer .cal-item + .cal-item::before { content: ''; position: absolute; top: 0; left: 52px; right: 0; height: 1px; background: var(--border); }
+html.mobile .m-drawer .cal-check { width: 22px; height: 22px; border-radius: 50%; border-width: 2px; }
+html.mobile .m-drawer .cal-check:checked::after { width: 10px; height: 5px; }
+html.mobile .m-drawer .cal-group { padding: 18px 4px 6px; font-size: 13px; }
+html.mobile .m-drawer .cal-add { min-height: 48px; margin-top: 8px; padding: 0 16px; background: var(--bg); border-radius: 12px; color: var(--accent); font-size: 16px; }
+/* task reader: the top bar keeps back, "…" and delete only */
+body.m-task-open .m-readbar [data-testid=m-read-archive], body.m-task-open .m-readbar [data-testid=m-read-snooze] { display: none; }
+/* toasts: completion with a check, a real close target */
+html.mobile .toast-x .ico { width: 16px; height: 16px; }
+/* day view: "ganztägig" in full */
+html.mobile .tg-gutter, html.mobile .tg-times { width: 66px; }
+html.mobile .tg-allday .tg-gutter::after { content: 'ganztägig'; font-size: 12px; padding: 6px 6px 0 0; }
+/* account page: navigation rows read as navigation */
+html.mobile .acc-look.m-details > summary { color: var(--text); }
+html.mobile .acc-panel input[type=number] { width: 112px !important; }
+html.mobile .m-drawer .tree-node .fname { font-weight: 400 !important; }
+html.mobile .m-drawer .tree-node.selected:not(.m-dup) .fname { font-weight: 600 !important; }
+html.mobile .m-drawer .tr-sub { text-transform: none; font-size: 12.5px; letter-spacing: 0; }

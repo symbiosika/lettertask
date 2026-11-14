@@ -136,6 +136,8 @@ test('Handy: Verfassen öffnet als Ebene und schließt wieder', async ({ page })
 
 test('Handy: Menüs erscheinen als Sheet von unten', async ({ page }) => {
   await openApp(page);
+  // the account menu opens from the account row on the folder page
+  await page.locator('[data-testid=m-menu]').tap();
   await page.locator('[data-testid=m-account]').tap();
   await expect(page.locator('.msheet')).toBeVisible();
   await expect(page.locator('.menu')).toHaveCount(0);
@@ -146,6 +148,8 @@ test('Handy: Menüs erscheinen als Sheet von unten', async ({ page }) => {
 
 test('Handy: Abruf bei geschlossener App einstellen', async ({ page }) => {
   await openApp(page);
+  // the account menu opens from the account row on the folder page
+  await page.locator('[data-testid=m-menu]').tap();
   await page.locator('[data-testid=m-account]').tap();
   await page.locator('.msheet-item', { hasText: 'Einstellungen' }).tap();
   // Phone: settings open as a list of sections; "Allgemein" pushes its page.
@@ -181,6 +185,8 @@ test('Handy: Aufgaben sind als Aufgabe markiert und lassen sich erledigen', asyn
 
 test('Handy: Konten als Liste, ein Konto öffnet seine eigene Seite', async ({ page }) => {
   await openApp(page);
+  // the account menu opens from the account row on the folder page
+  await page.locator('[data-testid=m-menu]').tap();
   await page.locator('[data-testid=m-account]').tap();
   await page.locator('.msheet-item', { hasText: 'Einstellungen' }).tap();
   await page.locator('[data-testid=settings-tab-accounts]').tap();

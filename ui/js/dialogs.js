@@ -149,8 +149,10 @@ let toastHost;
 export function toast(message, kind = 'info', ms = 4500, opts = {}) {
   if (!toastHost) { toastHost = h('div.toast-host'); document.body.appendChild(toastHost); }
   const actionBtn = opts.action ? h('button.toast-action', { type: 'button', dataset: { testid: 'toast-action' } }, opts.action.label) : null;
+  // Phone: one message at a time – a new one replaces the previous (they used to stack over the list).
+  if (isMobile) toastHost.querySelectorAll('.toast').forEach((x) => x.remove());
   const t = h('div.toast.' + kind, { role: kind === 'error' ? 'alert' : 'status', title: opts.title || null },
-    h('span', { html: icon(kind === 'error' ? 'warning' : 'info', 16) }), h('span.toast-msg', message),
+    h('span', { html: icon(opts.icon || (kind === 'error' ? 'warning' : 'info'), 16) }), h('span.toast-msg', message),
     actionBtn,
     h('button.toast-x', { html: icon('close', 10), onclick: () => t.remove() }));
   if (actionBtn) actionBtn.addEventListener('click', () => { t.remove(); Promise.resolve().then(opts.action.onClick).catch(reportError); });

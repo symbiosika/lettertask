@@ -270,8 +270,8 @@ function renderAppbar() {
       h('div.m-title', h('span.m-title-main', { dataset: { testid: 'm-title' } }, folderTitle()),
         h('span.m-title-sub', stats.unread ? `${stats.unread} ungelesen` : stats.total ? `${stats.total} Elemente` : '')),
       btn('search', 'Suchen', () => openSearch(), 'm-search'),
-      composeButton(),
-      accountButton(mail.isVirtual() ? null : { label: kanban ? 'Als Liste anzeigen' : 'Als Kanban-Board anzeigen', icon: kanban ? 'bullets' : 'kanban', onClick: () => { mail.toggleView(); update(); }, testid: 'm-view' }));
+      composeButton());
+    void kanban;
   } else if (state.mode === 'calendar') {
     bar.append(menu,
       btn('chevronLeft', 'Zurück', () => { calendar.step(-1); setTimeout(update, 50); }, 'm-cal-prev'),
@@ -287,8 +287,7 @@ function renderAppbar() {
   } else {
     bar.append(menu,
       h('div.m-title', h('span.m-title-main', 'Kontakte')),
-      composeButton(),
-      accountButton());
+      composeButton());
   }
 }
 
@@ -327,15 +326,11 @@ function viewButton() {
   return b;
 }
 
-function accountButton(viewItem = null) {
+/** Account menu (settings, accounts, about …) – opened from the account row on the folder page. */
+function openAccountSheet() {
   const a = state.accounts[0];
-  const b = h('button.m-avatar', { type: 'button', title: a ? a.email : 'Konto', 'aria-label': 'Konto und Einstellungen', dataset: { testid: 'm-account' } });
-  if (a) b.appendChild(accountAvatar(a, 'sm')); else b.innerHTML = icon('user', 22);
-  b.addEventListener('click', () => showSheetMenu([
-    ...hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')),
-    ...(viewItem ? [{ separator: true }, viewItem] : []),
-  ], { title: a ? a.email : 'lettertask' }));
-  return b;
+  if (st.drawer) st.drawer();
+  showSheetMenu(hooks.appMenu().filter((it) => !it || !/^Ansicht$/.test(it.label || '')), { title: a ? a.email : 'lettertask' });
 }
 
 const MONTHS_SHORT = ['Jan.', 'Feb.', 'März', 'Apr.', 'Mai', 'Juni', 'Juli', 'Aug.', 'Sep.', 'Okt.', 'Nov.', 'Dez.'];
@@ -402,7 +397,9 @@ function setupDrawer() {
   nav.classList.add('m-drawer');
   ui.drawerHead = h('div.m-drawer-head');
   ui.drawerMenu = h('div.m-drawer-menu');
-  nav.prepend(ui.drawerHead);
+  // only the title bar stays pinned; account and folders scroll below it
+  ui.drawerBar = h('div.m-drawer-bar');
+  nav.prepend(ui.drawerBar, ui.drawerHead);
   $('#statusbar').before(ui.drawerMenu);
   // Choosing a folder (or calendar) closes the drawer.
   nav.addEventListener('click', (e) => {
@@ -416,15 +413,26 @@ function paintDrawerHead() {
   if (!ui.drawerHead) return;
   const a = state.accounts[0];
   ui.drawerHead.innerHTML = '';
-  const focusBtn = h('button.m-drawer-focus', { type: 'button', dataset: { testid: 'm-focus' }, html: icon('focus', 18) + `<span>${esc(hooks.focusLabel ? hooks.focusLabel() : 'Fokuszeit')}</span>` });
-  focusBtn.addEventListener('click', () => showSheetMenu(hooks.focusMenu(), { title: 'Fokuszeit' }));
+  ui.drawerBar.innerHTML = '';
   const done = h('button.m-nav-action.m-drawer-done', { type: 'button', dataset: { testid: 'm-drawer-done' } }, 'Fertig');
   done.addEventListener('click', () => { if (st.drawer) st.drawer(); });
-  ui.drawerHead.append(
-    h('div.m-drawer-bar', h('span.m-drawer-title', state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalender' : 'Adressbücher'), done),
-    a ? h('div.m-drawer-account', accountAvatar(a, 'lg'), h('div.m-drawer-who', h('div.m-drawer-name', a.displayName || a.email), h('div.m-drawer-mail', a.email))) : null,
-    focusBtn);
+  ui.drawerBar.append(h('span.m-drawer-title', state.mode === 'mail' ? 'Postfächer' : state.mode === 'calendar' ? 'Kalender' : 'Adressbücher'), done);
+  // The account row opens the account menu (it replaced the avatar in the app bar).
+  const acc = a ? h('button.m-drawer-account', { type: 'button', dataset: { testid: 'm-account' }, 'aria-label': 'Konto und Einstellungen' },
+    accountAvatar(a, 'lg'), h('div.m-drawer-who', h('div.m-drawer-name', a.displayName || a.email), h('div.m-drawer-mail', a.email)), h('span.m-row-chev', { html: icon('chevronRight', 16) })) : null;
+  if (acc) acc.addEventListener('click', () => openAccountSheet());
+  // Fokuszeit belongs to mail: a row in the mail list page only.
+  const focusRow = state.mode === 'mail' ? h('button.m-drawer-item.m-drawer-focusrow', { type: 'button', dataset: { testid: 'm-focus' }, html: icon('focus', 20) + `<span>Fokuszeit</span><span class="m-row-value">${esc(hooks.focusLabel ? hooks.focusLabel().replace(/^Fokuszeit:?\s*/, '') || 'Aus' : 'Aus')}</span>` }) : null;
+  if (focusRow) focusRow.addEventListener('click', () => showSheetMenu(hooks.focusMenu(), { title: 'Fokuszeit' }));
+  ui.drawerHead.append(h('div.m-drawer-group', acc, focusRow));
   ui.drawerMenu.innerHTML = '';
+  // Phone: the Kanban/list switch lives with the folders (the app bar has no avatar menu any more).
+  if (state.mode === 'mail' && !mail.isVirtual()) {
+    const kanban = mail.getView() === 'kanban';
+    const vb = h('button.m-drawer-item', { type: 'button', dataset: { testid: 'm-view' }, html: icon(kanban ? 'bullets' : 'kanban', 20) + `<span>${kanban ? 'Als Liste anzeigen' : 'Als Kanban-Board anzeigen'}</span>` });
+    vb.addEventListener('click', () => { if (st.drawer) st.drawer(); mail.toggleView(); update(); });
+    ui.drawerMenu.appendChild(vb);
+  }
   const items = hooks.appMenu().filter((it) => it && !it.separator && !it.header && /Einstellungen|Signaturen|Kategorien|Abwesenheit|Konto hinzufügen|Über/.test(it.label || ''));
   for (const it of items) {
     const b = h('button.m-drawer-item', { type: 'button', disabled: !!it.disabled, html: icon(it.icon || 'settings', 20) + `<span>${esc(it.label.replace(/…$/, ''))}</span>` });
@@ -517,7 +525,7 @@ function renderReadbar() {
       const row = pane.querySelector('.rp-fromrow');
       const due = m.dueAt ? new Date(m.dueAt) : null;
       const when = due ? due.toLocaleString('de-DE', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
-      const meta = h('div.m-task-meta', { dataset: { testid: 'm-task-meta' }, html: icon('task', 18) + `<span>Aufgabe${due ? ' · fällig ' + esc(when) : ''}</span>` });
+      const meta = h('div.m-task-meta', { dataset: { testid: 'm-task-meta' }, html: icon('task', 18) + `<span>Aufgabe · ${due ? 'fällig ' + esc(when) : 'ohne Fälligkeit'}</span>` });
       if (row) row.before(meta);
     });
   });

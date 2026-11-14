@@ -217,7 +217,7 @@ export function renderNav() {
       sec.appendChild(item);
     }
     if (!isGoogle(a)) sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
-      h('span', { html: icon('plus', 13) }), 'Kalender einer Person hinzufügen…'));
+      h('span', { html: icon('plus', 13) }), isMobile ? 'Kalender einer Person hinzufügen' : 'Kalender einer Person hinzufügen…'));
     els.nav.appendChild(sec);
   }
 }

@@ -1464,6 +1464,7 @@ export async function completeSelected() {
     archiveOne(ids, { quiet: true, mailboxId, removed: true }).then(() => checkInboxZero()).catch(reportError);
   }, 6000);
   toast(ids.length === 1 ? 'Aufgabe erledigt.' : `${ids.length} Aufgaben erledigt.`, 'info', 6000, {
+    icon: 'check',
     action: { label: 'Rückgängig', onClick: () => { undone = true; clearTimeout(timer); return reloadList({ keepCount: true }); } },
   });
 }
