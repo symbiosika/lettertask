@@ -309,7 +309,7 @@ function folderNode(f, depth, opts = {}) {
     style: { paddingLeft: 8 + depth * 16 + 'px' }, dataset: { mailboxId: f.mailboxId, folderId: f.id, wk: f.wellKnown || '' }, title: f.displayName,
     role: 'treeitem', 'aria-selected': sel ? 'true' : 'false',
   });
-  const tw = h('span.twisty', { html: hasChildren ? icon(open ? 'chevronDown' : 'chevronRight', 14) : '' });
+  const tw = h('span.twisty' + (open ? '.open' : ''), { html: hasChildren ? icon(open ? 'chevronDown' : 'chevronRight', 14) : '' });
   if (hasChildren) tw.addEventListener('click', (e) => { e.stopPropagation(); toggleExpand(key); });
   node.append(tw, h('span.fic', { html: icon(WK_ICON[f.wellKnown] || 'folder', 18) }), h('span.fname', f.displayName), h('span.fcount', { html: folderCountHtml(f) }));
   node.addEventListener('click', () => selectFolder(f.mailboxId, f.id));

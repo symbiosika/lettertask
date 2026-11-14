@@ -122,6 +122,9 @@ export function initMobile(h0) {
   ui.scrim.addEventListener('click', () => { if (st.drawer) st.drawer(); });
 
   setupDrawer();
+  // the folder tree re-renders (expand, counts): keep a single check mark
+  const nav = document.getElementById('navpane');
+  if (nav) new MutationObserver(() => markDupSelection()).observe(nav, { childList: true, subtree: true });
   setupList();
   // Large titles above the mail and contact lists; they fold into the app bar on scroll.
   ui.large = h('div.m-largetitle', { dataset: { testid: 'm-largetitle' } });
@@ -477,12 +480,16 @@ function paintDrawerHead() {
   }
 }
 
+function markDupSelection() {
+  const sel = [...document.querySelectorAll('#navpane .tree-node.selected')];
+  sel.forEach((n, i) => n.classList.toggle('m-dup', i > 0));
+}
+
 function openDrawer() {
   if (st.drawer) return;
   paintDrawerHead();
   // A folder that is also a favourite is marked once (in Favoriten) – not twice.
-  const sel = [...document.querySelectorAll('#navpane .tree-node.selected')];
-  sel.forEach((n, i) => n.classList.toggle('m-dup', i > 0));
+  markDupSelection();
   document.body.classList.add('m-drawer-open');
   const pop = pushLayer(() => closeDrawer());
   st.drawer = () => pop();

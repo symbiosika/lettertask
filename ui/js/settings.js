@@ -34,9 +34,32 @@ const TAB_ALIASES = { compose: 'signatures', account: 'accounts' };
 function snoozeEditor(initial) {
   let rows = initial.map((o) => ({ label: o.label, ...(parseRule(o.rule) || parseRule('tomorrow@08:00')) }));
   const host = h('div.snooze-editor', { dataset: { testid: 'snooze-editor' } });
+  // Phone: one grouped list of "Bezeichnung → Zeitpunkt ›" rows; a tap opens that row's editor.
+  let openIdx = -1;
   const render = () => {
     host.innerHTML = '';
-    rows.forEach((r, i) => {
+    if (isMobile) {
+      const list = h('div.sn-list');
+      rows.forEach((r, i) => {
+        const d = computeSnooze(formatRule(r));
+        const sum = h('button.sn-sum', { type: 'button', dataset: { testid: 'snooze-row' }, 'aria-expanded': String(i === openIdx) },
+          h('span.sn-sum-label', r.label || 'Ohne Bezeichnung'),
+          h('span.sn-sum-val', d ? fmtSnoozeTarget(d) : ''),
+          h('span.sn-sum-chev', { html: icon(i === openIdx ? 'chevronDown' : 'chevronRight', 16) }));
+        sum.addEventListener('click', () => { openIdx = i === openIdx ? -1 : i; render(); });
+        list.appendChild(sum);
+        if (i === openIdx) list.appendChild(rowEditor(r, i));
+      });
+      host.appendChild(list);
+    } else {
+      rows.forEach((r, i) => host.appendChild(rowEditor(r, i)));
+    }
+    host.appendChild(h('div.sn-actions',
+      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); openIdx = rows.length - 1; render(); } }),
+      h('button.btn.small', { type: 'button', onclick: () => { rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); openIdx = -1; render(); } }, 'Standard wiederherstellen')));
+  };
+  const rowEditor = (r, i) => {
+    {
       const label = h('input.input.sn-label', { value: r.label, placeholder: 'Bezeichnung', name: `snoozeLabel${i}`, 'aria-label': 'Bezeichnung' });
       label.addEventListener('input', () => { r.label = label.value; });
       const base = select(BASE_LABELS, r.base);
@@ -54,25 +77,38 @@ function snoozeEditor(initial) {
         atLbl.classList.toggle('hidden', r.base === 'hours');
         time.classList.toggle('hidden', r.base === 'hours');
       };
-      base.addEventListener('change', () => { r.base = base.value; sync(); preview(); });
+      base.addEventListener('change', () => { r.base = base.value; if (isMobile) { render(); return; } sync(); preview(); });
       days.addEventListener('input', () => { r.days = Math.max(1, parseInt(days.value, 10) || 1); preview(); });
+      if (isMobile) days.addEventListener('change', render);
       const time = h('input.input.sn-time', { type: 'time', value: `${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`, name: `snoozeTime${i}`, 'aria-label': 'Uhrzeit' });
-      time.addEventListener('change', () => { const [hh, mm] = (time.value || '08:00').split(':').map(Number); r.hour = hh || 0; r.minute = mm || 0; preview(); });
+      time.addEventListener('change', () => { const [hh, mm] = (time.value || '08:00').split(':').map(Number); r.hour = hh || 0; r.minute = mm || 0; preview(); if (isMobile) render(); });
       const pv = h('span.sn-preview.dim');
       sync();
       const preview = () => { const d = computeSnooze(formatRule(r)); pv.textContent = d ? '→ ' + fmtSnoozeTarget(d) : ''; };
       preview();
-      const mv = (d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; render(); };
-      host.appendChild(h('div.sn-row',
+      const mv = (d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; if (openIdx === i) openIdx = j; render(); };
+      const del = () => { rows.splice(i, 1); openIdx = -1; render(); };
+      if (isMobile) {
+        // the summary row above shows label and target; the editor holds the fields and the row tools
+        label.addEventListener('change', render);
+        const fieldRow = (name, ...ctl) => h('label.sn-field', h('span.sn-fname', name), ...ctl);
+        return h('div.sn-row.sn-open', { dataset: { testid: 'snooze-editrow' } },
+          fieldRow('Bezeichnung', label),
+          fieldRow('Wann', base),
+          h('div.sn-field' + ((r.base === 'days' || r.base === 'hours') ? '' : '.hidden'), { dataset: { k: 'days' } }, h('span.sn-fname', 'Anzahl'), daysWrap),
+          h('label.sn-field' + (r.base === 'hours' ? '.hidden' : ''), { dataset: { k: 'time' } }, h('span.sn-fname', 'Uhrzeit'), time),
+          h('div.sn-tools',
+            h('button.sn-tool', { type: 'button', disabled: i === 0, onclick: () => mv(-1), html: icon('up', 18) + '<span>Nach oben</span>' }),
+            h('button.sn-tool', { type: 'button', disabled: i === rows.length - 1, onclick: () => mv(1), html: icon('down', 18) + '<span>Nach unten</span>' }),
+            h('button.sn-tool.sn-del', { type: 'button', dataset: { testid: 'snooze-del' }, onclick: del, html: icon('delete', 18) + '<span>Entfernen</span>' })));
+      }
+      return h('div.sn-row',
         h('div.sn-top', label, pv, h('span.spacer'),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach oben', html: icon('up', 14), disabled: i === 0, onclick: () => mv(-1) }),
           h('button.icon-btn.sm', { type: 'button', title: 'Nach unten', html: icon('down', 14), disabled: i === rows.length - 1, onclick: () => mv(1) }),
-          h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 14), onclick: () => { rows.splice(i, 1); render(); } })),
-        h('div.sn-rule', base, daysWrap, atLbl, time)));
-    });
-    host.appendChild(h('div.sn-actions',
-      h('button.btn.small', { type: 'button', dataset: { testid: 'snooze-add' }, html: icon('plus', 14) + ' Option hinzufügen', onclick: () => { rows.push({ label: 'In 3 Tagen', base: 'days', days: 3, hour: 8, minute: 0 }); render(); } }),
-      h('button.btn.small', { type: 'button', onclick: () => { rows = DEFAULT_SNOOZE.map((o) => ({ label: o.label, ...parseRule(o.rule) })); render(); } }, 'Standard wiederherstellen')));
+          h('button.icon-btn.sm', { type: 'button', title: 'Entfernen', html: icon('close', 14), onclick: del })),
+        h('div.sn-rule', base, daysWrap, atLbl, time));
+    }
   };
   render();
   return { el: host, get: () => rows.filter((r) => r.label.trim()).map((r) => ({ label: r.label.trim(), rule: formatRule(r) })) };

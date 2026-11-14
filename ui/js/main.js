@@ -129,7 +129,7 @@ function focusMenu() {
   }
   return [
     { header: 'Neue Mails werden erst nach der Pause abgerufen.' },
-    ...[[1, '1 Stunde Pause'], [2, '2 Stunden'], [3, '3 Stunden'], [4, '4 Stunden']].map(([n, label]) => ({ label, icon: n === 1 ? 'focus' : null, onClick: () => setFocus(n * 60), testid: 'focus-' + n })),
+    ...[[1, '1 Stunde'], [2, '2 Stunden'], [3, '3 Stunden'], [4, '4 Stunden']].map(([n, label]) => ({ label, onClick: () => setFocus(n * 60), testid: 'focus-' + n })),
   ];
 }
 
