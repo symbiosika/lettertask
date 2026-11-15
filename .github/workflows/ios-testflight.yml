@@ -1,7 +1,10 @@
 name: iOS TestFlight
 
-# Manually started: builds a signed iOS build (arm64) and uploads it to
-# App Store Connect, from where it is distributed through TestFlight.
+# Manually started for a new version (Actions → iOS TestFlight → Run workflow):
+# builds a signed iOS build (arm64) and uploads it to App Store Connect, from
+# where it is distributed through TestFlight. Version: "version" in
+# src-tauri/tauri.conf.json; the build number is the run number, so the same
+# version can be uploaded several times.
 #
 # Secrets:
 #   APPLE_DEVELOPMENT_TEAM  team ID (developer.apple.com → Membership)
@@ -16,7 +19,7 @@ on:
       demo:
         description: Demo-Build (fest eingebaute Beispieldaten statt echter Konten)
         type: boolean
-        default: true
+        default: false
 
 jobs:
   testflight:
@@ -125,7 +128,9 @@ jobs:
         env:
           KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+        run: |
+          xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          echo "Hochgeladen: Version $(jq -r .version src-tauri/tauri.conf.json), Build ${{ github.run_number }}${{ inputs.demo && ' (Demo)' || '' }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Schlüssel entfernen
         if: always()
         run: rm -rf "$HOME/.appstoreconnect"
