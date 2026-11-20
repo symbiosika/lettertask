@@ -5,6 +5,7 @@ import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
 import { openWindow } from './api.js';
+import './undo.js';
 import { onBroadcast } from './bus.js';
 import { tbBtn, newBtns, sep, setPressed } from './toolbar.js';
 import * as mail from './mail.js';

@@ -4,6 +4,7 @@ import { h } from './util.js';
 import { icon } from './icons.js';
 import { promptDialog, showMenuAt, showSheetMenu } from './dialogs.js';
 import { isMobile } from './api.js';
+import { registerEditor } from './undo.js';
 import { installNativeImageMenu } from './imagemenu.js';
 
 installNativeImageMenu();
@@ -288,6 +289,103 @@ function bindImageResize(frame, doc, changed) {
   document.addEventListener('mousedown', (e) => { if (img && !box.contains(e.target) && !e.target.closest('.img-spot')) hide(); });
 }
 
+// ---- undo history
+// The editor keeps its own undo steps (keys: undo.js): WebKitGTK binds no keys
+// to its native undo, and lumps everything typed and deleted since the caret
+// last moved into one step. Here a step ends after a pause, when typing turns
+// into deleting (or back), and around toolbar actions, links, pictures and
+// pasting.
+const UNDO_PAUSE_MS = 1000;
+const UNDO_GROUP_MS = 4000;
+const UNDO_MAX = 100;
+
+/** Child-index path from `root` to `node` (null when outside). */
+function nodePath(root, node) {
+  const path = [];
+  for (let n = node; n !== root; n = n.parentNode) {
+    if (!n || !n.parentNode) return null;
+    path.unshift(Array.prototype.indexOf.call(n.parentNode.childNodes, n));
+  }
+  return path;
+}
+function nodeAt(root, path) {
+  let n = root;
+  for (const i of path) { n = n && n.childNodes[i]; if (!n) return null; }
+  return n;
+}
+const maxOffset = (n) => (n.nodeType === 3 ? n.data.length : n.childNodes.length);
+
+function createHistory(doc, onRestore) {
+  const body = doc.body;
+  const saveSel = () => {
+    const sel = doc.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    const a = nodePath(body, r.startContainer), b = nodePath(body, r.endContainer);
+    return a && b ? { a, ao: r.startOffset, b, bo: r.endOffset } : null;
+  };
+  const snap = () => ({ html: body.innerHTML, len: body.textContent.length, sel: saveSel() });
+  const stack = [snap()];
+  let idx = 0, last = 0, start = 0, dir = 0, isolate = false;
+
+  const restoreSel = (...cands) => {
+    for (const c of cands) {
+      if (!c) continue;
+      const a = nodeAt(body, c.a), b = nodeAt(body, c.b);
+      if (!a || !b) continue;
+      try {
+        const r = doc.createRange();
+        r.setStart(a, Math.min(c.ao, maxOffset(a)));
+        r.setEnd(b, Math.min(c.bo, maxOffset(b)));
+        const sel = doc.getSelection();
+        sel.removeAllRanges(); sel.addRange(r);
+        return;
+      } catch { /* try the next */ }
+    }
+    const r = doc.createRange();
+    r.selectNodeContents(body); r.collapse(false);
+    const sel = doc.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  };
+  const go = (to, selFirst) => {
+    const leaving = stack[idx];
+    idx = to;
+    body.innerHTML = stack[idx].html;
+    // Undo: the caret goes where the undone change was; redo: where the step ended.
+    if (selFirst) restoreSel(leaving.sel, stack[idx].sel); else restoreSel(stack[idx].sel);
+    last = 0;
+    onRestore();
+  };
+  return {
+    /** Called after every change of the text (MutationObserver). */
+    record() {
+      const cur = snap();
+      const top = stack[idx];
+      if (cur.html === top.html) { top.sel = cur.sel; return; }
+      const now = Date.now();
+      // Direction by text length: the HTML shrinks when a typed letter turns &nbsp; into a space.
+      const d = Math.sign(cur.len - top.len);
+      const merge = !isolate && idx > 0 && last && now - last < UNDO_PAUSE_MS && now - start < UNDO_GROUP_MS && (d === dir || !d || !dir);
+      if (merge) {
+        stack[idx] = cur;
+        if (d) dir = d;
+      } else {
+        stack.length = idx + 1;
+        stack.push(cur);
+        if (stack.length > UNDO_MAX) stack.shift();
+        idx = stack.length - 1;
+        start = now; dir = d;
+      }
+      // A separate step (toolbar action, link, picture, paste): the next change starts a new one too.
+      last = isolate ? 0 : now;
+      isolate = false;
+    },
+    /** The next change becomes a step of its own. */
+    checkpoint() { isolate = true; last = 0; },
+    undo() { if (idx > 0) go(idx - 1, true); },
+    redo() { if (idx < stack.length - 1) go(idx + 1, false); },
+  };
+}
+
 /** Local paths when `text` consists only of file:// addresses (one per line
  *  or separated by blanks), else []. */
 export function fileUriPaths(text) {
@@ -334,6 +432,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
   const phCss = isMobile && placeholder ? `body.lt-empty::before{content:${JSON.stringify(placeholder)};position:absolute;color:#9aa1ab;pointer-events:none}` : '';
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
+  let history = null;
   let pending = html;
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
@@ -354,7 +453,10 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       };
       syncEmpty();
       new MutationObserver(syncEmpty).observe(d.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class'] });
-      new MutationObserver((records) => {
+      // Restoring a step is no new change: its records are dropped.
+      const hist = createHistory(d, () => { observer.takeRecords(); onInput && onInput(); updateState(); });
+      history = hist;
+      const observer = new MutationObserver((records) => {
         if (d !== doc) return;
         // WebKitGTK fires no paste event here: pasted file addresses are
         // recognised in the inserted text, removed and attached as files.
@@ -365,7 +467,9 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
         onInput && onInput();
         // A native paste (e.g. an image in WebKit) may bring blob: images.
         if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
-      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true });
+        hist.record();
+      });
+      observer.observe(d.documentElement, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true });
       if (onDropFiles) {
         // Files dropped onto the text become attachments (the drop lands in this frame, not the window).
         const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
@@ -384,7 +488,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
           onDropFiles([...e.dataTransfer.files]);
         });
       }
-      bindImageResize(frame, doc, () => { onInput && onInput(); });
+      bindImageResize(frame, doc, () => { hist.checkpoint(); onInput && onInput(); });
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
@@ -405,12 +509,20 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
           // Image only (screenshot, copied picture): embed it as data URL.
           if (!html) html = (await Promise.all(files.map(fileToDataUrl))).map((u) => `<img src="${u}">`).join('');
           if (target !== doc) return;
+          hist.checkpoint();
           doc.execCommand('insertHTML', false, html);
         })().catch(console.warn);
       });
       doc.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        // Undo/redo with the editor's own steps (where the frame reports keys at all).
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'z' || (k === 'y' && !e.shiftKey))) {
+          e.preventDefault();
+          if (k === 'y' || e.shiftKey) hist.redo(); else hist.undo();
+          return;
+        }
         // forward window shortcuts (Ctrl+Enter send, Ctrl+S save, Esc)
-        if ((e.ctrlKey || e.metaKey) && (e.key === 'Enter' || e.key.toLowerCase() === 's')) {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'Enter' || k === 's')) {
           e.preventDefault();
           window.dispatchEvent(new KeyboardEvent('keydown', { key: e.key, ctrlKey: true, bubbles: true }));
         }
@@ -418,13 +530,15 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       resolveReady();
   });
   setContent(pending);
+  registerEditor(frame, { undo: () => history && history.undo(), redo: () => history && history.redo() });
 
   function setContent(x) {
     const { styles, body } = splitHtml(x);
     frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}${isMobile ? MOBILE_CSS + phCss : ''}</style>${styles}</head><body>${body}</body></html>`;
   }
 
-  const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
+  const checkpoint = () => { if (history) history.checkpoint(); };
+  const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); checkpoint(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
   const btn = (ic, title, fn, cmd) => {
     const b = h('button.ed-btn', { type: 'button', title, 'aria-label': title, html: icon(ic, 18), dataset: { cmd: cmd || '' } });
     b.addEventListener('mousedown', (e) => e.preventDefault());
@@ -485,6 +599,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     const url = normalizeUrl(input);
     if (!url) return;
     frame.contentWindow.focus();
+    checkpoint();
     if (existing) {
       if (existing.textContent === existing.getAttribute('href')) existing.textContent = url;
       existing.setAttribute('href', url);
@@ -511,6 +626,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     const sel = doc && doc.getSelection();
     const a = linkAt(sel && sel.rangeCount ? sel.getRangeAt(0) : null);
     if (!a) return;
+    checkpoint();
     a.replaceWith(...a.childNodes);
     onInput && onInput();
   }
@@ -572,9 +688,11 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     getText: () => (doc ? doc.body.innerText : ''),
     /** The editable document (null until loaded). */
     doc: () => doc,
-    /** Notifies listeners after programmatic changes. */
-    changed: () => onInput && onInput(),
-    setHtml: async (x) => { pending = x; doc = null; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
+    /** Notifies listeners after programmatic changes (a step of its own for undo). */
+    changed: () => { checkpoint(); onInput && onInput(); },
+    undo: () => history && history.undo(),
+    redo: () => history && history.redo(),
+    setHtml: async (x) => { pending = x; doc = null; history = null; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
     focus: async () => {
       await ready;
       frame.contentWindow.focus();
