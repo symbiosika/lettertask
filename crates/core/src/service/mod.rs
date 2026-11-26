@@ -568,6 +568,18 @@ impl Service {
                     &arg::<Option<String>>(a, "action")?.unwrap_or_else(|| "open".into()),
                 )
                 .await?),
+            // ---- iCalendar import ----
+            "parse_ics" => ok(crate::ical::parse_ics(&arg::<String>(a, "ics")?)),
+            "ics_from_attachment" => {
+                let (_, bytes) = self
+                    .attachment_file(
+                        &arg::<String>(a, "mailboxId")?,
+                        &arg::<String>(a, "messageId")?,
+                        &arg::<String>(a, "attachmentId")?,
+                    )
+                    .await?;
+                ok(crate::ical::parse_ics(&String::from_utf8_lossy(&bytes)))
+            }
             "attachment_content" => ok(self
                 .attachment_content(
                     &arg::<String>(a, "mailboxId")?,

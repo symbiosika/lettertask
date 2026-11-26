@@ -13,6 +13,7 @@ import { isTaskMail } from './categories.js';
 import * as mail from './mail.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
+import { pickIcsFile } from './icsimport.js';
 
 // ------------------------------------------------------------------ layers
 const layers = [];
@@ -394,6 +395,7 @@ function calViewItems() {
     ...VIEWS.map(([v, label, ic]) => ({ label, icon: ic, checked: cur === v, onClick: () => { calendar.setView(v); setTimeout(update, 50); } })),
     { separator: true },
     { label: 'Heute', icon: 'today', onClick: () => { calendar.goToday(); setTimeout(update, 50); } },
+    { label: 'Kalenderdatei importieren…', icon: 'import', onClick: () => pickIcsFile() },
   ];
 }
 

@@ -7,6 +7,7 @@ import { call, openUrl, openWindow, suppressNativeMenu, isTauri, isMobile, invok
 import { bindContactCards, addrAttrs } from './contactcard.js';
 import { showMenu, showMenuAt, reportError, toast, busyClick } from './dialogs.js';
 import { openTagPicker } from './tagpicker.js';
+import { isIcs, canImportIcs, importIcsAttachment } from './icsimport.js';
 import { fmtSnoozeTarget } from './snooze.js';
 import { showImageMenu, installNativeImageMenu } from './imagemenu.js';
 
@@ -682,17 +683,23 @@ export function renderMessage(container, msg, opts) {
     const strip = h('div.rp-attachments');
     for (const a of msg.attachments) {
       const ext = fileExt(a.name);
-      const el = h('button.attachment', { type: 'button', title: `${a.name} (${fmtSize(a.size)}) – Klicken zum Öffnen, Rechtsklick zum Speichern` },
+      // Calendar files go into the calendar (adjusted first in the event window).
+      const ics = isIcs(a) && canImportIcs();
+      const ref = { mailboxId: msg.mailboxId, messageId: msg.id, attachmentId: a.id };
+      const importIt = () => importIcsAttachment(ref).catch(reportError);
+      const el = h('button.attachment', { type: 'button', title: `${a.name} (${fmtSize(a.size)}) – ${ics ? 'Klicken zum Importieren in den Kalender' : 'Klicken zum Öffnen'}, Rechtsklick für mehr` },
         h('span.att-ic', { html: icon(fileIcon(a), 18) }),
         h('span.att-text', h('span.att-name', a.name), h('span.att-size', [ext, fmtSize(a.size)].filter(Boolean).join(' · '))));
       const dl = (action) => call('download_attachment', { mailboxId: msg.mailboxId, messageId: msg.id, attachmentId: a.id, action })
         .then((p) => { if (p && action === 'save') toast('Gespeichert: ' + p); })
         .catch(reportError);
-      el.addEventListener('click', () => dl('open'));
+      if (ics) el.dataset.ics = '1';
+      el.addEventListener('click', () => (ics ? importIt() : dl('open')));
       bindAttachmentDrag(el, msg, a);
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         showMenu([
+          ics ? { label: 'In Kalender importieren…', icon: 'calendarNew', onClick: importIt } : null,
           { label: 'Öffnen', icon: 'open', onClick: () => dl('open') },
           { label: 'Speichern unter…', icon: 'save', onClick: () => dl('save') },
         ], e.clientX, e.clientY);

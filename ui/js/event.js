@@ -12,8 +12,18 @@ import { tbBtn, group, setPressed } from './toolbar.js';
 import { getCategories, presetHex, swatchHtml, textOn, categoryHex } from './categories.js';
 import { state, bootstrapSecondary } from './state.js';
 import { isImap, isGoogle } from './accounts.js';
+import { IMPORT_KEY } from './icsimport.js';
 
 const P = params();
+/** Event of an .ics file to import (see icsimport.js), read once. */
+const IMPORTED = (() => {
+  if (!P.importKey || !P.importKey.startsWith(IMPORT_KEY)) return null;
+  try {
+    const v = JSON.parse(localStorage.getItem(P.importKey) || 'null');
+    localStorage.removeItem(P.importKey);
+    return v;
+  } catch { return null; }
+})();
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 // Reminder before the start – labelled "… vorher" so it is not read as the duration.
 const REMINDERS = [[-1, 'Keine Erinnerung'], [0, 'Erinnerung bei Beginn'], [5, '5 Minuten vorher'], [10, '10 Minuten vorher'], [15, '15 Minuten vorher'], [30, '30 Minuten vorher'], [60, '1 Stunde vorher'], [120, '2 Stunden vorher'], [240, '4 Stunden vorher'], [720, '12 Stunden vorher'], [1440, '1 Tag vorher'], [2880, '2 Tage vorher'], [10080, '1 Woche vorher']];
@@ -110,7 +120,7 @@ function renderMobile() {
   const isNew = !(st.event && st.event.id);
   const opts = mobileSlot('m-opts', $('#form'));
   const tail = mobileSlot('m-tail', $('#editor'));
-  const title = h('div.m-nav-title', st.readOnly ? 'Termin' : isNew ? (st.attendeesVisible ? 'Neue Besprechung' : 'Neuer Termin') : 'Termin bearbeiten');
+  const title = h('div.m-nav-title', st.readOnly ? 'Termin' : IMPORTED && isNew ? 'Termin importieren' : isNew ? (st.attendeesVisible ? 'Neue Besprechung' : 'Neuer Termin') : 'Termin bearbeiten');
   if (st.readOnly) {
     tb.append(title);
     const resp = (label, ic, mode, testid) => mRow(label, null, { icon: ic, onClick: () => respond(mode), testid });
@@ -292,7 +302,7 @@ function updateRecurText() {
 
 function updateTitle() {
   const t = f.subject.value.trim() || 'Unbenannt';
-  document.title = `${t} – ${st.attendeesVisible ? 'Besprechung' : 'Termin'}`;
+  document.title = `${t} – ${IMPORTED && !(st.event && st.event.id) ? 'Termin importieren' : st.attendeesVisible ? 'Besprechung' : 'Termin'}`;
   { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
 }
 
@@ -560,10 +570,17 @@ async function init() {
     if (!def) onCalendarChange(); // first writable calendar of another account
     syncAllDay();
     if (P.attendees) { st.attendeesVisible = true; required.set(P.attendees.split(';').filter(Boolean).map((a) => ({ name: a, address: a }))); layoutRows(); }
+    if (IMPORTED) {
+      // Attendees are not taken over: saving would send them invitations.
+      fillFromEvent({ ...IMPORTED, attendees: [] });
+      if (google()) { st.categories = []; renderCats(); }
+      await editor.setHtml(IMPORTED.bodyHtml || '');
+      $('#banner').appendChild(h('div.readonly-banner', { dataset: { testid: 'ev-import-banner' }, html: icon('import', 14) + ' Termin aus Kalenderdatei – vor dem Speichern anpassen und Kalender wählen.' }));
+    }
   }
   renderToolbar();
   updateTitle();
-  st.dirty = false;
+  st.dirty = !!IMPORTED && !(st.event && st.event.id);
   f.subject.focus();
 
   window.addEventListener('keydown', (e) => {
