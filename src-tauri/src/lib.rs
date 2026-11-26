@@ -277,10 +277,19 @@ fn navigation_guard() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .build()
 }
 
+/// Phone build mode, compiled in from `src-tauri/mobile-mode.txt` ("demo" or
+/// "real"). A file rather than an environment variable: on iOS, Xcode builds
+/// the Rust part in its own build phase, where variables set for
+/// `cargo tauri ios build` do not reliably arrive. The release workflows write
+/// "real" into the file before building and then look for this exact string in
+/// the built binary, to prove which mode ended up in the app.
+static MOBILE_MODE: &str = concat!("LETTERTASK_MOBILE_MODE=", include_str!("../mobile-mode.txt"));
+
 /// The phone build runs against the built-in demo server unless it was built
-/// with `LETTERTASK_DEMO=0` (real accounts).
+/// in "real" mode (real accounts).
 pub(crate) fn mobile_demo() -> bool {
-    cfg!(mobile) && option_env!("LETTERTASK_DEMO") != Some("0")
+    // black_box keeps the string in the binary (no constant folding).
+    cfg!(mobile) && std::hint::black_box(MOBILE_MODE).trim() != "LETTERTASK_MOBILE_MODE=real"
 }
 
 /// Options for the real (non-demo) service in `dir`.

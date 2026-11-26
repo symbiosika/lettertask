@@ -61,15 +61,27 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: Swatinem/rust-cache@v2
       - run: cargo install tauri-cli --version "^2" --locked
+      - name: Handy-Modus festlegen
+        # compiled into the app (src-tauri/mobile-mode.txt, see lib.rs)
+        run: echo "${{ inputs.demo && 'demo' || 'real' }}" > src-tauri/mobile-mode.txt
       - name: Bauen (AAB und APK)
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-          LETTERTASK_DEMO: ${{ inputs.demo && '1' || '0' }}
           LETTERTASK_GOOGLE_CLIENT_ID: ${{ secrets.LETTERTASK_GOOGLE_CLIENT_ID }}
           LETTERTASK_GOOGLE_CLIENT_SECRET: ${{ secrets.LETTERTASK_GOOGLE_CLIENT_SECRET }}
         working-directory: src-tauri
         # 64-bit ARM (all current phones, required by Play) and 32-bit ARM (older ones).
         run: cargo tauri android build --aab --apk --target aarch64 armv7 --ci
+      - name: Modus in der App prüfen
+        run: |
+          WANT="${{ inputs.demo && 'demo' || 'real' }}"
+          APK=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          rm -rf apk-check && mkdir apk-check && unzip -q "$APK" 'lib/*' -d apk-check
+          FOUND=$(find apk-check/lib -name 'liblettertask_lib.so' -exec strings {} \; | grep -o 'LETTERTASK_MOBILE_MODE=[a-z]*' | sort -u)
+          echo "$APK – $FOUND"
+          rm -rf apk-check
+          [ "$FOUND" = "LETTERTASK_MOBILE_MODE=$WANT" ] || { echo "::error::Die App enthält '$FOUND', erwartet war Modus '$WANT'"; exit 1; }
+          echo "Modus in der App: $WANT" >> "$GITHUB_STEP_SUMMARY"
       - name: Signieren
         env:
           KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

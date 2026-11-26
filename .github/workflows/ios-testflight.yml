@@ -105,13 +105,15 @@ jobs:
       - name: Exportkontrolle (nur Standard-TLS)
         # Saves answering the encryption question for every TestFlight build.
         run: /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" src-tauri/gen/apple/lettertask_iOS/Info.plist
+      - name: Handy-Modus festlegen
+        # compiled into the app (src-tauri/mobile-mode.txt, see lib.rs)
+        run: echo "${{ inputs.demo && 'demo' || 'real' }}" > src-tauri/mobile-mode.txt
       - name: Bauen und signieren
         working-directory: src-tauri
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          LETTERTASK_DEMO: ${{ inputs.demo && '1' || '0' }}
         # Every upload needs a new build number: version.run_number.
         run: cargo tauri ios build --target aarch64 --export-method app-store-connect --build-number ${{ github.run_number }} --ci
       - name: IPA suchen
@@ -120,6 +122,16 @@ jobs:
           [ -n "$IPA" ] || { echo "::error::keine .ipa gefunden"; exit 1; }
           echo "IPA: $IPA"
           echo "IPA=$IPA" >> "$GITHUB_ENV"
+      - name: Modus in der App prüfen
+        run: |
+          WANT="${{ inputs.demo && 'demo' || 'real' }}"
+          rm -rf ipa-check && mkdir ipa-check && unzip -q "$IPA" -d ipa-check
+          BIN=$(find ipa-check/Payload -maxdepth 2 -type f -perm -u+x -name 'lettertask*' | head -n 1)
+          FOUND=$(strings "$BIN" | grep -o 'LETTERTASK_MOBILE_MODE=[a-z]*' | head -n 1)
+          echo "Binary: $BIN – $FOUND"
+          rm -rf ipa-check
+          [ "$FOUND" = "LETTERTASK_MOBILE_MODE=$WANT" ] || { echo "::error::Die App enthält '$FOUND', erwartet war Modus '$WANT'"; exit 1; }
+          echo "Modus in der App: $WANT" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: lettertask-ios-ipa
