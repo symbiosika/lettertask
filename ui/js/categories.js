@@ -49,7 +49,11 @@ export function textOn(hex) {
 // recurrence "[#monthly]", delegations "[D_<address>]". They never show up as tags but must survive tag edits.
 export const LANE_PREFIX = '[K_';
 export const LANE_NAME_RE = /^[A-Za-z0-9ÄÖÜäöüß _-]{1,30}$/;
-const HIDDEN_PREFIXES = ['[K_', '[F_', '[#', '[D_', '[DT_'];
+const HIDDEN_PREFIXES = ['[K_', '[F_', '[#', '[D_', '[DT_', '[T_'];
+/** Marker of a task ("Aufgabe (Mail)"), set by create_task. */
+export const TASK_CATEGORY = '[T_Aufgabe]';
+/** A task: created as one, or a delegation followed up as one. */
+export function isTaskMail(m) { return !!m && (m.categories || []).some((c) => c === TASK_CATEGORY || (typeof c === 'string' && c.startsWith('[D_'))); }
 export function isHiddenCategory(name) {
   return typeof name === 'string' && name.endsWith(']') && HIDDEN_PREFIXES.some((p) => name.startsWith(p));
 }

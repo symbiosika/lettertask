@@ -14,6 +14,9 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: android-actions/setup-android@v3
+        with:
+          # the default also asks for "tools", which current cmdline-tools no longer have
+          packages: platform-tools
       - name: Android-NDK
         run: sdkmanager "ndk;27.2.12479018"
       - uses: dtolnay/rust-toolchain@stable

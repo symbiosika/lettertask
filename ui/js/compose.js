@@ -40,6 +40,7 @@ function renderHead() {
   const head = $('#head');
   const more = h('button.icon-btn', { type: 'button', title: 'Weitere Optionen', 'aria-label': 'Weitere Optionen', dataset: { testid: 'compose-more' }, html: icon(isMobile ? 'more' : 'menu', 18) });
   more.addEventListener('click', () => showMenuAt(more, [
+    ...(isMobile && canArchiveSource() ? [{ label: DELEGATE ? 'Delegieren & archivieren' : 'Senden & archivieren', icon: 'archive', onClick: () => { store('composeSendMode', 'sendArchive'); return send_(); }, testid: 'compose-send-archive' }, { separator: true }] : []),
     { label: 'Als Entwurf speichern', icon: 'save', shortcut: 'Strg+S', onClick: () => save(false), testid: 'compose-save' },
     { label: 'Verwerfen', icon: 'delete', onClick: () => discard(), testid: 'compose-discard' },
     { separator: true },
@@ -49,6 +50,12 @@ function renderHead() {
   ]));
   titleEl = h('div.cw-title', 'Neue Nachricht');
   head.append(more, titleEl, h('span.cw-flags'));
+  // Phone: send as a round arrow top right, like Mail.
+  if (isMobile) {
+    const s = h('button.m-send', { type: 'button', title: DELEGATE ? 'Delegieren' : 'Senden', dataset: { testid: 'm-compose-send' }, html: icon('send', 18) + `<span>${DELEGATE ? 'Delegieren' : 'Senden'}</span>` });
+    s.addEventListener('click', () => { store('composeSendMode', 'send'); send_().catch(reportError); });
+    head.appendChild(s);
+  }
 }
 
 function setImportance(v) { st.importance = v; markDirty(); syncToggles(); }
@@ -109,9 +116,10 @@ function renderForm() {
   renderForm.paintFrom = paintFrom;
   sendSplit = send;
   sendrow.append(send, h('span.cw-from-lbl', 'Von'), fromChip);
+  if (isMobile) sendrow.classList.add('m-fromrow');
 
   // fields
-  ccLink = h('button.linkbtn.cc-link', { type: 'button', dataset: { testid: 'add-ccbcc' }, onclick: () => showCcBcc(true) }, 'Cc & Bcc hinzufügen');
+  ccLink = h('button.linkbtn.cc-link', { type: 'button', dataset: { testid: 'add-ccbcc' }, onclick: () => showCcBcc(true) }, isMobile ? 'Cc/Bcc' : 'Cc & Bcc hinzufügen');
   const row = (label, field, extra) => h('div.cw-row', h('label.cw-lbl', { onclick: () => field.focus() }, label), h('div.cw-val', field.el || field, extra || null));
   const toRow = row('An', to, ccLink);
   ccRow = row('Cc', cc);
@@ -139,11 +147,39 @@ function renderForm() {
   sigBtn = h('button.ed-btn.ed-sig', { type: 'button', title: 'Signatur', 'aria-label': 'Signatur', dataset: { testid: 'compose-signature' }, html: icon('signature', 18) + `<span class="ed-sig-label">Signatur</span>` + icon('chevronDown', 12) });
   sigBtn.addEventListener('mousedown', (e) => e.preventDefault());
   sigBtn.addEventListener('click', () => openSignatureMenu().catch(reportError));
-  editor = createEditor({ onInput: markDirty, lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles, onPasteFiles: addFiles, onPastePaths: (p) => addPastedPaths(p).catch(reportError) });
+  editor = createEditor({ onInput: markDirty, placeholder: 'Nachricht schreiben …', lead: [attachBtn, fileInput, impBtn, sigBtn], onDropFiles: addFiles, onPasteFiles: addFiles, onPastePaths: (p) => addPastedPaths(p).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
 
   // drag & drop files onto the window (and, in the app, from the backend)
   installFileDrop((a) => a && addAttachment(a));
+}
+
+// ------------------------------------------------------------------ phone: collapsed quote
+/** Reply/forward on the phone: the quoted mail stays hidden behind a pill (as in Mail). */
+function collapseQuote() {
+  const doc = editor && editor.doc();
+  if (!isMobile || !doc || !doc.body.querySelector('hr')) return;
+  doc.body.classList.add('lt-qc');
+  const hdr = doc.body.querySelector('hr ~ div, hr ~ font');
+  const from = hdr && (hdr.textContent.match(/(?:Von|From):\s*([^\n<]+?)(?:\s*<|\s*Gesendet|\s*Sent|$)/) || [])[1];
+  const pill = h('button.m-quote-pill', { type: 'button', dataset: { testid: 'm-show-quote' }, html: icon('more', 16) + `<span>Zitierten Text anzeigen${from ? ' – ' + esc(from.trim()) : ''}</span>` });
+  pill.addEventListener('click', () => { doc.body.classList.remove('lt-qc'); pill.remove(); obs.disconnect(); });
+  editor.area.after(pill);
+  // The pill follows the text you write (as in Mail), instead of sitting at the bottom.
+  const place = () => {
+    let bottom = 0;
+    for (const n of doc.body.children) {
+      if (n.tagName === 'HR') break;
+      const r = n.getBoundingClientRect();
+      if (r.height) bottom = Math.max(bottom, r.bottom);
+    }
+    const frame = editor.area;
+    const top = Math.min(frame.offsetTop + Math.max(bottom, 24) + 8, frame.offsetTop + frame.clientHeight - 56);
+    pill.style.top = top + 'px';
+  };
+  const obs = new MutationObserver(place);
+  obs.observe(doc.body, { childList: true, subtree: true, characterData: true });
+  requestAnimationFrame(place);
 }
 
 // ------------------------------------------------------------------ signatures
@@ -225,7 +261,8 @@ function renderAttachments() {
 function updateTitle() {
   const s = subject.value.trim() || (DELEGATE ? 'Delegieren' : MODE_TITLE[(st.draft && st.draft.mode) || P.mode || 'new']);
   document.title = s;
-  if (titleEl) titleEl.textContent = s;
+  // Phone: the header names the action (the subject is right below it)
+  if (titleEl) titleEl.textContent = isMobile ? (DELEGATE ? 'Delegieren' : { new: 'Neue Nachricht', reply: 'Antworten', replyAll: 'Allen antworten', forward: 'Weiterleiten' }[(st.draft && st.draft.mode) || P.mode || 'new']) : s;
   { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
 }
 
@@ -277,14 +314,20 @@ function reminderRow() {
   const onBtn = mk(true, 'Ein');
   const paint = () => {
     off.classList.toggle('on', !on); onBtn.classList.toggle('on', on);
+    if (sw) sw.checked = on;
     off.setAttribute('aria-checked', String(!on)); onBtn.setAttribute('aria-checked', String(on));
     picker.el.classList.toggle('hidden', !on);
     el.classList.toggle('active', on);
   };
+  // Phone: a switch row "Erinnerung an mich" – the segments stay (hidden) for the logic.
+  const sw = isMobile ? h('input.m-switch', { type: 'checkbox', role: 'switch', 'aria-label': 'Erinnerung an mich', dataset: { testid: 'remind-switch' } }) : null;
+  if (sw) sw.addEventListener('change', () => { on = sw.checked; paint(); });
   const el = h('div.cw-row.remind-row', { dataset: { testid: 'remind-row' } },
     h('span.cw-lbl.remind-lbl'),
     h('div.cw-val.remind-val', { title: 'Nach dem Senden liegt eine Kopie zum Nachfassen auf Wiedervorlage – „Antworten“ geht an die Empfänger.' },
-      h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich:</span>' }), seg, picker.el));
+      ...(isMobile
+        ? [h('label.m-remind', h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich</span>' }), sw)]
+        : [h('span.remind-text', { html: icon('bell', 15) + '<span>Erinnerung an mich:</span>' })]), seg, picker.el));
   paint();
   return {
     el,
@@ -494,6 +537,7 @@ async function init() {
     if (renderForm.paintFrom) renderForm.paintFrom();
     await editor.setHtml(d.bodyHtml || '');
     stopPill();
+    collapseQuote();
     st.dirty = !!P.to;
     // Loading takes a moment; never pull the cursor out of a field the user
     // already started typing in.

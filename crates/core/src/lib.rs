@@ -8,6 +8,7 @@ pub mod files;
 pub mod gapi;
 pub mod google;
 pub mod graph;
+pub mod ical;
 pub mod host;
 pub mod imap;
 pub mod model;

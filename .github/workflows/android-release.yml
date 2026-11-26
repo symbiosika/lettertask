@@ -1,0 +1,119 @@
+name: Android Release
+
+# Manually started for a new version: builds the Android app signed with the
+# release key, as
+#   - .aab (App Bundle) for Google Play
+#   - .apk for direct installation (sideload)
+# and attaches both to the GitHub release v<version> (draft if none exists yet).
+# Version: "version" in src-tauri/tauri.conf.json (versionCode is derived from it,
+# so every Play upload needs a higher version).
+#
+# Secrets (one release key for the app's whole life – keep a backup of it!):
+#   ANDROID_KEYSTORE_BASE64    the .jks file, base64-encoded
+#   ANDROID_KEYSTORE_PASSWORD  keystore password
+#   ANDROID_KEY_ALIAS          alias of the key in the keystore
+#   ANDROID_KEY_PASSWORD       password of the key (often the same as the keystore's)
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: Demo-Build (fest eingebaute Beispieldaten statt echter Konten)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secrets prüfen
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then echo "::error::Secret $name fehlt (siehe Kopf von android-release.yml)"; missing=1; fi
+          done
+          exit $missing
+      - name: Version lesen
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Version $VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          # the default also asks for "tools", which current cmdline-tools no longer have
+          packages: platform-tools
+      - name: Android-NDK
+        run: sdkmanager "ndk;27.2.12479018"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install tauri-cli --version "^2" --locked
+      - name: Bauen (AAB und APK)
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          LETTERTASK_DEMO: ${{ inputs.demo && '1' || '0' }}
+          LETTERTASK_GOOGLE_CLIENT_ID: ${{ secrets.LETTERTASK_GOOGLE_CLIENT_ID }}
+          LETTERTASK_GOOGLE_CLIENT_SECRET: ${{ secrets.LETTERTASK_GOOGLE_CLIENT_SECRET }}
+        working-directory: src-tauri
+        # 64-bit ARM (all current phones, required by Play) and 32-bit ARM (older ones).
+        run: cargo tauri android build --aab --apk --target aarch64 armv7 --ci
+      - name: Signieren
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          OUT=src-tauri/gen/android/app/build/outputs
+          AAB=$(find "$OUT/bundle" -name '*.aab' | head -n 1)
+          APK=$(find "$OUT/apk" -name '*-unsigned.apk' | head -n 1)
+          [ -n "$AAB" ] && [ -n "$APK" ] || { echo "::error::AAB/APK nicht gefunden"; find "$OUT" -type f; exit 1; }
+          NAME="lettertask-$VERSION"
+          [ "${{ inputs.demo }}" = "true" ] && NAME="$NAME-demo"
+          # App Bundle: jarsigner (Google re-signs for delivery with Play App Signing).
+          cp "$AAB" "$NAME.aab"
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore "$RUNNER_TEMP/release.jks" -storepass "$KS_PASS" -keypass "$KEY_PASS" \
+            "$NAME.aab" "$KEY_ALIAS"
+          # APK: zipalign, then apksigner (v2/v3 signature).
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$BT/zipalign" -f 4 "$APK" aligned.apk
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-pass env:KS_PASS \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASS --out "$NAME.apk" aligned.apk
+          "$BT/apksigner" verify "$NAME.apk"
+          rm -f "$RUNNER_TEMP/release.jks" aligned.apk
+          echo "AAB_FILE=$NAME.aab" >> "$GITHUB_ENV"
+          echo "APK_FILE=$NAME.apk" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.AAB_FILE }}
+          archive: false
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.APK_FILE }}
+          archive: false
+      - name: An GitHub-Release v${{ env.VERSION }} anhängen
+        if: ${{ !inputs.demo }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$VERSION"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "lettertask $TAG" --target "$GITHUB_SHA" --notes ""
+          fi
+          gh release upload "$TAG" "$AAB_FILE" "$APK_FILE" --clobber
+          echo "Angehängt an Release $TAG: $AAB_FILE, $APK_FILE" >> "$GITHUB_STEP_SUMMARY"

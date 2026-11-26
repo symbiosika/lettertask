@@ -5,6 +5,7 @@ import { icon } from './icons.js';
 import { showMenu, showMenuAt, reportError, toast, busyIndicator, modal } from './dialogs.js';
 import { state, mailboxes, loadConfig, loadAccounts, loadFolders, loadCategories, loadLanes, wellKnown, folderById } from './state.js';
 import { openWindow } from './api.js';
+import './undo.js';
 import { onBroadcast } from './bus.js';
 import { tbBtn, newBtns, sep, setPressed } from './toolbar.js';
 import * as mail from './mail.js';
@@ -15,6 +16,7 @@ import { isImap, isGoogle, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { dateTimeField } from './due.js';
 import * as mobile from './mobile.js';
+import { pickIcsFile } from './icsimport.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
 const els = {
@@ -128,8 +130,8 @@ function focusMenu() {
     ];
   }
   return [
-    { header: 'Fokuszeit – keine automatischen Abrufe' },
-    ...[[1, '1 Stunde Pause'], [2, '2 Stunden'], [3, '3 Stunden'], [4, '4 Stunden']].map(([n, label]) => ({ label, icon: n === 1 ? 'focus' : null, onClick: () => setFocus(n * 60), testid: 'focus-' + n })),
+    { header: 'Neue Mails werden erst nach der Pause abgerufen.' },
+    ...[[1, '1 Stunde'], [2, '2 Stunden'], [3, '3 Stunden'], [4, '4 Stunden']].map(([n, label]) => ({ label, onClick: () => setFocus(n * 60), testid: 'focus-' + n })),
   ];
 }
 
@@ -188,6 +190,7 @@ function appMenu() {
     { label: 'Neue Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', disabled: !acc, onClick: () => newTask() },
     { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', disabled: !withCalendar, onClick: () => calendar.newEvent() },
     { label: 'Neuer Kontakt', icon: 'contacts', disabled: !acc, onClick: () => { setMode('contacts'); contacts.newContact().catch(reportError); } },
+    { label: 'Kalenderdatei importieren…', icon: 'import', disabled: !withCalendar, onClick: () => pickIcsFile() },
     { separator: true },
     { label: 'Ansicht', icon: 'workWeek', submenu: () => [
       { header: 'Lesebereich' },
@@ -208,7 +211,7 @@ function appMenu() {
     { label: 'Abwesenheitsnotiz…', icon: 'outOfOffice', disabled: !o365, onClick: () => openAutoReply(o365.id), testid: 'menu-autoreply' },
     { separator: true },
     { label: 'Konto hinzufügen…', icon: 'user', onClick: () => addAccountFlow().catch(reportError), testid: 'menu-add-account' },
-    { label: 'Konto entfernen…', icon: 'signOut', disabled: !acc, onClick: () => removeAccountDialog() },
+    { label: 'Konto entfernen…', icon: 'signOut', danger: true, disabled: !acc, onClick: () => removeAccountDialog() },
     { separator: true },
     { label: 'Über…', icon: 'info', onClick: () => aboutDialog() },
   ];
@@ -343,6 +346,7 @@ function renderToolbar() {
       h('span.spacer'),
       seg,
       sep(),
+      tbBtn('Importieren', 'import', () => pickIcsFile(), { testid: 'tb-import-ics', title: 'Kalenderdatei (.ics) importieren' }),
       tbBtn('Löschen', 'delete', () => calendar.deleteSelected(), { testid: 'tb-delete-event' }),
       tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Aktualisieren (F9)', iconOnly: true }),
     );
@@ -519,6 +523,9 @@ function setupShortcuts() {
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     const ctrl = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
+    // Phone: no single-key shortcuts – a key that reaches the page before a
+    // field got focus must not archive or delete anything.
+    if (isMobile && !ctrl) return;
     if (e.key === 'F9') { e.preventDefault(); syncAll(); return; }
     if (ctrl && k === '1') { e.preventDefault(); setMode('mail'); return; }
     if (ctrl && k === '2') { e.preventDefault(); setMode('calendar'); return; }

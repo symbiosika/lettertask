@@ -2,7 +2,7 @@
 // Created directly on the server (create_task): "Sofort" → inbox, otherwise → Wiedervorlage.
 // "Andere Person" (Delegation): the task goes out as a mail ("ToDo: …"); the copy for
 // yourself carries the hidden marker "[D_<address>]" and is followed up like a task.
-import { call, params, closeWindow, currentWindow } from './api.js';
+import { call, params, closeWindow, currentWindow, isMobile } from './api.js';
 import { h, $ } from './util.js';
 import { icon } from './icons.js';
 import { reportError, toast, confirmDialog, setPending } from './dialogs.js';
@@ -30,7 +30,7 @@ function render() {
 
   subject = h('input.task-subject#subject', { type: 'text', name: 'subject', placeholder: 'Was ist zu tun?', 'aria-label': 'Betreff', autocomplete: 'off' });
   subject.addEventListener('input', () => { markDirty(); document.title = subject.value.trim() ? `Aufgabe: ${subject.value.trim()}` : 'Neue Aufgabe'; });
-  due = duePicker({ config: state.config, allowNow: true, variant: 'chips', testid: 'task-due', onChange: markDirty });
+  due = duePicker({ config: state.config, allowNow: true, variant: isMobile ? 'select' : 'chips', testid: 'task-due', onChange: markDirty });
 
   repeat = h('select.input.task-repeat', { name: 'recurrence', dataset: { testid: 'task-repeat' }, 'aria-label': 'Wiederholen' });
   for (const [k, label] of RECURRENCE_OPTIONS) repeat.appendChild(h('option', { value: k || '' }, label));
@@ -61,7 +61,7 @@ function render() {
     // The copy is a reminder for yourself; a recurring delegation would need a new mail each time.
     repeatRow.classList.toggle('hidden', delegated);
     $('#head .cw-title').textContent = delegated ? 'Neue Aufgabe delegieren' : 'Neue Aufgabe';
-    createBtn.querySelector('span').textContent = delegated ? 'Aufgabe senden' : 'Aufgabe anlegen';
+    createBtn.querySelector('span').textContent = isMobile ? (delegated ? 'Senden' : 'Hinzufügen') : delegated ? 'Aufgabe senden' : 'Aufgabe anlegen';
   };
 
   form.append(
@@ -80,17 +80,38 @@ function render() {
     fileInput.value = '';
   });
   const attachBtn = h('button.ed-btn', { type: 'button', title: 'Datei anfügen', 'aria-label': 'Datei anfügen', dataset: { testid: 'task-attach' }, html: icon('attach', 18), onclick: () => fileInput.click() });
-  editor = createEditor({ onInput: markDirty, minHeight: 180, lead: [attachBtn, fileInput], onDropFiles: addFiles, onPasteFiles: addFiles,
+  editor = createEditor({ onInput: markDirty, minHeight: 180, placeholder: 'Notizen', lead: [attachBtn, fileInput], onDropFiles: addFiles, onPasteFiles: addFiles,
     onPastePaths: (p) => readPastedPaths(p).then((list) => list.forEach(addAttachment)).catch(reportError) });
   $('#editor').append(editor.toolbar, editor.area);
   $('#editor').after(attList);
   installFileDrop(addAttachment);
 
-  createBtn = h('button.btn.primary', { type: 'button', dataset: { testid: 'task-create' }, title: 'Aufgabe anlegen (Strg+Eingabe)', html: icon('task', 16) + '<span>Aufgabe anlegen</span>' });
+  createBtn = isMobile
+    ? h('button.m-nav-action', { type: 'button', dataset: { testid: 'task-create' } }, h('span', 'Hinzufügen'))
+    : h('button.btn.primary', { type: 'button', dataset: { testid: 'task-create' }, title: 'Aufgabe anlegen (Strg+Eingabe)', html: icon('task', 16) + '<span>Aufgabe anlegen</span>' });
   createBtn.addEventListener('click', () => create().catch(reportError));
+  // Phone: the action sits top right like in the event sheet; no footer.
+  if (isMobile) {
+    $('#head').appendChild(createBtn);
+    $('#foot').classList.add('m-hidden');
+    // greyed out until there is a title (like "Hinzufügen" in iOS sheets)
+    const sync = () => { createBtn.disabled = !subject.value.trim(); };
+    // the whole row opens its picker, not only the value text
+    for (const row of document.querySelectorAll('.task-due, .task-row:has(.task-repeat)')) {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('select, input, button')) return;
+        const sel = row.querySelector('select');
+        if (!sel) return;
+        try { sel.showPicker(); } catch { sel.focus(); }
+      });
+    }
+    subject.addEventListener('input', sync);
+    sync();
+  }
   const cancel = h('button.btn', { type: 'button', dataset: { testid: 'task-cancel' } }, 'Abbrechen');
   cancel.addEventListener('click', () => confirmClose().then((ok) => ok && closeWindow()));
-  $('#foot').append(h('span.task-kbd', 'Strg+Eingabe: anlegen · Esc: abbrechen'), h('span.spacer'), cancel, createBtn);
+  // (on the phone createBtn already sits in the head – appending it here would move it into the hidden footer)
+  $('#foot').append(h('span.task-kbd', 'Strg+Eingabe: anlegen · Esc: abbrechen'), h('span.spacer'), cancel, ...(isMobile ? [] : [createBtn]));
   paint();
 }
 

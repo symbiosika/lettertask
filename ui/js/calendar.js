@@ -217,7 +217,7 @@ export function renderNav() {
       sec.appendChild(item);
     }
     if (!isGoogle(a)) sec.appendChild(h('button.cal-add', { type: 'button', dataset: { testid: 'cal-add-person' }, onclick: () => addPeopleCalendar(a) },
-      h('span', { html: icon('plus', 13) }), 'Kalender einer Person hinzufügen…'));
+      h('span', { html: icon('plus', 13) }), isMobile ? 'Kalender einer Person hinzufügen' : 'Kalender einer Person hinzufügen…'));
     els.nav.appendChild(sec);
   }
 }
@@ -413,6 +413,19 @@ function renderTimeGrid() {
   // header
   const head = h('div.tg-head', h('div.tg-gutter'));
   const today = startOfDay(new Date());
+  // Phone, day view: a week strip (Mo–So) instead of a lone day header – tap a day to switch.
+  if (isMobile && cal.view === 'day') {
+    const wk = addDays(startOfDay(cal.date), -((cal.date.getDay() + 6) % 7));
+    const strip = h('div.m-weekstrip', { dataset: { testid: 'm-weekstrip' } });
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(wk, i);
+      const b = h('button.m-wsday' + (sameDay(d, cal.date) ? '.on' : '') + (sameDay(d, today) ? '.today' : ''), { type: 'button', 'aria-label': fmtDateLong(d) },
+        h('span.m-wsname', WEEKDAYS_SHORT[d.getDay()]), h('span.m-wsnum', String(d.getDate())));
+      b.addEventListener('click', () => { cal.date = d; refresh().catch(reportError); });
+      strip.appendChild(b);
+    }
+    els.body.appendChild(strip);
+  }
   for (const d of dayList) {
     head.appendChild(h('div.tg-dayhead' + (sameDay(d, today) ? '.today' : ''), { onclick: () => { cal.date = d; setView('day'); } },
       h('span.dnum', String(d.getDate())), h('span.dname', WEEKDAYS[d.getDay()])));
@@ -517,7 +530,7 @@ function renderTimeGrid() {
   scroll.appendChild(body);
   grid.appendChild(scroll);
   els.body.appendChild(grid);
-  scroll.scrollTop = prevScroll !== null ? prevScroll : SLOT_PX * 2 * 7;
+  scroll.scrollTop = prevScroll !== null ? prevScroll : SLOT_PX * 2 * 7 - (isMobile ? 10 : 0);
   paintNowLine();
   if (cal.slot) {
     const col = cols.querySelector(`.tg-col[data-date="${toLocalIso(cal.slot.start).slice(0, 10)}"]`);
@@ -736,38 +749,51 @@ async function rescheduleEvent(ev, start, end) {
   refresh().catch(reportError);
 }
 
+// Phone: the month grid picks a day; its events are listed under the grid (as in iOS Calendar).
+let mSelDay = null;
 function renderMonth() {
   const { start } = range();
   els.body.innerHTML = '';
   const grid = h('div.monthgrid');
+  if (isMobile && (!mSelDay || mSelDay.getMonth() !== cal.date.getMonth())) {
+    const t = startOfDay(new Date());
+    mSelDay = t.getMonth() === cal.date.getMonth() && t.getFullYear() === cal.date.getFullYear() ? t : new Date(cal.date.getFullYear(), cal.date.getMonth(), 1);
+  }
   for (const wd of [1, 2, 3, 4, 5, 6, 0]) grid.appendChild(h('div.mg-wd', (isMobile ? WEEKDAYS_SHORT : WEEKDAYS)[wd]));
   const today = startOfDay(new Date());
   const m = cal.date.getMonth();
   for (let i = 0; i < 42; i++) {
     const d = addDays(start, i);
-    const cell = h('div.mg-cell' + (d.getMonth() !== m ? '.other' : '') + (sameDay(d, today) ? '.today' : ''), { dataset: { date: toLocalIso(d).slice(0, 10) } });
-    cell.appendChild(h('div.mg-date', d.getDate() === 1 ? `${d.getDate()}. ${MONTHS[d.getMonth()].slice(0, 3)}` : String(d.getDate())));
+    const cell = h('div.mg-cell' + (d.getMonth() !== m ? '.other' : '') + (sameDay(d, today) ? '.today' : '') + (isMobile && sameDay(d, mSelDay) ? '.sel' : ''), { dataset: { date: toLocalIso(d).slice(0, 10) } });
+    cell.appendChild(h('div.mg-date', d.getDate() === 1 && !isMobile ? `${d.getDate()}. ${MONTHS[d.getMonth()].slice(0, 3)}` : String(d.getDate())));
     const evs = cal.events.filter((ev) => {
       if (ev.isAllDay) { const r = allDayRange(ev); return r.start <= d && r.end > d; }
       const s = new Date(ev.start), e = new Date(ev.end);
       return s < addDays(d, 1) && e > d && !(e.getTime() === d.getTime());
     }).sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
-    const max = 4;
+    const max = isMobile ? 2 : 4;
     evs.slice(0, evs.length > max ? max - 1 : max).forEach((ev) => cell.appendChild(eventBlock(ev, 'month')));
     if (evs.length > max) {
-      cell.appendChild(h('div.mg-more', { onclick: (e) => { e.stopPropagation(); cal.date = d; setView('day'); } }, `+${evs.length - max + 1} weitere`));
+      cell.appendChild(h('div.mg-more', { onclick: (e) => { e.stopPropagation(); cal.date = d; setView('day'); } }, isMobile ? `+${evs.length - max + 1}` : `+${evs.length - max + 1} weitere`));
     }
     cell.addEventListener('dblclick', (e) => {
       if (e.target.closest('.ev')) return;
       const st = new Date(d); st.setHours(9);
       newEvent({ start: st, end: addMinutes(st, 30) });
     });
-    // Phone: the bars are too small to tap – a tap on the day opens it.
-    if (isMobile) cell.addEventListener('click', () => { cal.date = d; setView('day'); });
+    // Phone: the bars are too small to tap – a tap selects the day for the list below.
+    if (isMobile) cell.addEventListener('click', () => { mSelDay = d; renderMonth(); });
     else cell.addEventListener('click', (e) => { if (!e.target.closest('.ev')) { cal.slot = { start: new Date(d.getTime() + 9 * 3600000), end: new Date(d.getTime() + 9.5 * 3600000) }; grid.querySelectorAll('.mg-cell.sel').forEach((x) => x.classList.remove('sel')); cell.classList.add('sel'); closePeek(); } });
     grid.appendChild(cell);
   }
   els.body.appendChild(grid);
+  if (isMobile) {
+    const evs = eventsOn(mSelDay).sort((a, b) => (b.isAllDay - a.isAllDay) || (new Date(a.start) - new Date(b.start)));
+    const list = h('div.m-daylist', { dataset: { testid: 'm-daylist' } },
+      h('div.m-daylist-head', `${WEEKDAYS[mSelDay.getDay()]}, ${mSelDay.getDate()}. ${MONTHS[mSelDay.getMonth()]}`),
+      ...(evs.length ? evs.map((ev) => eventBlock(ev, 'sprint')) : [h('div.m-daylist-empty', 'Keine Termine')]));
+    els.body.appendChild(list);
+  }
 }
 
 // ------------------------------------------------------------- "14 Tage"
@@ -1058,8 +1084,8 @@ function briefingCard(ev, { actions = false } = {}) {
         h('button.btn.small', { html: icon('decline', 12) + ' Ablehnen', onclick: busyClick(() => respond(ev, 'decline'), bar) }),
       );
     }
-    bar.append(h('span.spacer'), h('button.btn.small', { onclick: () => { closePeek(); openEvent(ev); } }, 'Öffnen'));
-    if (!calObj || calObj.canEdit) bar.append(h('button.btn.small', { onclick: () => { closePeek(); deleteEvent(ev).catch(reportError); } }, 'Löschen'));
+    bar.append(h('span.spacer'), h('button.btn.small.pk-open', { dataset: { testid: 'peek-open' }, onclick: () => { closePeek(); openEvent(ev); } }, isMobile && (!calObj || calObj.canEdit) ? 'Bearbeiten' : 'Öffnen'));
+    if (!calObj || calObj.canEdit) bar.append(h('button.btn.small.pk-delete', { dataset: { testid: 'peek-delete' }, onclick: () => { closePeek(); deleteEvent(ev).catch(reportError); } }, isMobile ? 'Termin löschen' : 'Löschen'));
     p.appendChild(bar);
   }
   return p;

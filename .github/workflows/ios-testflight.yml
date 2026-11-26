@@ -1,0 +1,136 @@
+name: iOS TestFlight
+
+# Manually started for a new version (Actions → iOS TestFlight → Run workflow):
+# builds a signed iOS build (arm64) and uploads it to App Store Connect, from
+# where it is distributed through TestFlight. Version: "version" in
+# src-tauri/tauri.conf.json; the build number is the run number, so the same
+# version can be uploaded several times.
+#
+# Secrets:
+#   APPLE_DEVELOPMENT_TEAM  team ID (developer.apple.com → Membership)
+#   APPLE_API_KEY_ID        App Store Connect API key (role App Manager)
+#   APPLE_API_ISSUER        issuer ID of that key
+#   APPLE_API_KEY_P8        contents of the AuthKey_<id>.p8 file
+# Xcode signs automatically with the API key (certificate and provisioning
+# profile are created on demand); the app must exist in App Store Connect.
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: Demo-Build (fest eingebaute Beispieldaten statt echter Konten)
+        type: boolean
+        default: false
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # App Store Connect only accepts builds made with the iOS 26 SDK
+      # (Xcode 26); the runner's default is still Xcode 16. Beta Xcodes are
+      # rejected as well, so take the newest release.
+      - name: Xcode 26 auswählen
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          [ -n "$XCODE" ] || { echo "::error::Kein Xcode 26 auf dem Runner"; ls -d /Applications/Xcode*.app; exit 1; }
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          echo "Xcode: $XCODE, iOS-SDK $(xcrun --sdk iphoneos --show-sdk-version)"
+      - name: Secrets prüfen
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          missing=0
+          for name in APPLE_DEVELOPMENT_TEAM APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            if [ -z "${!name}" ]; then echo "::error::Secret $name fehlt"; missing=1; fi
+          done
+          exit $missing
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install tauri-cli --version "^2" --locked
+      - name: XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: API-Key ablegen
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          # altool looks for the key here; tauri gets the path explicitly.
+          dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$dir"
+          key="$dir/AuthKey_$KEY_ID.p8"
+          python3 - "$key" <<'PY'
+          # Writes the App Store Connect key from $P8 as a clean PEM file to argv[1].
+          # Accepts the .p8 as pasted: with/without BEGIN/END lines, CRLF, line breaks
+          # replaced by spaces or "\n", or the whole file base64-encoded.
+          import base64, binascii, os, re, sys
+
+          raw = os.environ.get("P8", "").replace("\r", "").replace("\\n", "\n").strip()
+          if "BEGIN" not in raw:
+              try:
+                  decoded = base64.b64decode(re.sub(r"\s+", "", raw), validate=True).decode()
+                  if "BEGIN" in decoded:
+                      raw = decoded
+              except (binascii.Error, UnicodeDecodeError):
+                  pass
+          # Drop the BEGIN/END markers whatever their dashes look like (missing
+          # dash, en dash from a word processor), then keep only base64.
+          found = re.search(r"\bBEGIN\b", raw) is not None
+          body = re.sub(r"[^A-Za-z0-9+/=]*\b(BEGIN|END)\b[A-Z ]*?KEY[^A-Za-z0-9+/=]*", " ", raw)
+          stray = len(re.sub(r"[A-Za-z0-9+/=\s]", "", body))
+          body = re.sub(r"[^A-Za-z0-9+/=]", "", body)
+          print(f"Schlüssel: BEGIN/END {'gefunden' if found else 'fehlt (ergänzt)'}, {len(body)} Base64-Zeichen"
+                + (f", {stray} fremde Zeichen entfernt" if stray else ""))
+          lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+          with open(sys.argv[1], "w") as f:
+              f.write("-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n")
+          PY
+          if ! openssl pkey -in "$key" -noout 2>/dev/null; then
+            echo "::error::APPLE_API_KEY_P8 ist kein gültiger privater Schlüssel. Den kompletten Inhalt der AuthKey_….p8 einfügen."
+            exit 1
+          fi
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+      - name: Xcode-Projekt anlegen (gen/apple)
+        if: hashFiles('src-tauri/gen/apple/project.yml') == ''
+        working-directory: src-tauri
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+        run: cargo tauri ios init --ci
+      - name: App-Icons übernehmen
+        run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+      - name: Exportkontrolle (nur Standard-TLS)
+        # Saves answering the encryption question for every TestFlight build.
+        run: /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" src-tauri/gen/apple/lettertask_iOS/Info.plist
+      - name: Bauen und signieren
+        working-directory: src-tauri
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          LETTERTASK_DEMO: ${{ inputs.demo && '1' || '0' }}
+        # Every upload needs a new build number: version.run_number.
+        run: cargo tauri ios build --target aarch64 --export-method app-store-connect --build-number ${{ github.run_number }} --ci
+      - name: IPA suchen
+        run: |
+          IPA=$(find src-tauri/gen/apple/build -name '*.ipa' | head -n 1)
+          [ -n "$IPA" ] || { echo "::error::keine .ipa gefunden"; exit 1; }
+          echo "IPA: $IPA"
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lettertask-ios-ipa
+          path: ${{ env.IPA }}
+      - name: Zu App Store Connect hochladen
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          echo "Hochgeladen: Version $(jq -r .version src-tauri/tauri.conf.json), Build ${{ github.run_number }}${{ inputs.demo && ' (Demo)' || '' }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Schlüssel entfernen
+        if: always()
+        run: rm -rf "$HOME/.appstoreconnect"

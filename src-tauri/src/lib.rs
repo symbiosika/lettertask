@@ -405,7 +405,42 @@ pub fn run() {
 fn setup_webview(w: &tauri::WebviewWindow) {
     disable_pinch_zoom(w);
     image_context_menu(w);
+    undo_shortcuts(w);
 }
+
+/// Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y: WebKitGTK keeps an undo history but binds
+/// no keys to it (a browser does that itself), and the mail editor's frame
+/// reports no keys to the page. So the keys are caught on the widget and sent
+/// to the page as "edit-undo" `{ label, redo }` (ui/js/undo.js): the editor
+/// and text fields undo their own steps.
+#[cfg(target_os = "linux")]
+fn undo_shortcuts(w: &tauri::WebviewWindow) {
+    let app = w.app_handle().clone();
+    let label = w.label().to_string();
+    let _ = w.with_webview(move |wv| {
+        use gtk::gdk::{keys::constants as key, ModifierType};
+        use gtk::prelude::*;
+        wv.inner().connect_key_press_event(move |_, ev| {
+            let mods = ev.state()
+                & (ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK | ModifierType::MOD1_MASK | ModifierType::SUPER_MASK);
+            let k = ev.keyval().to_lower();
+            let redo = if mods == ModifierType::CONTROL_MASK && k == key::z {
+                false
+            } else if (mods == ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK && k == key::z)
+                || (mods == ModifierType::CONTROL_MASK && k == key::y)
+            {
+                true
+            } else {
+                return gtk::glib::Propagation::Proceed;
+            };
+            let _ = app.emit_to(&label, "edit-undo", serde_json::json!({ "label": label, "redo": redo }));
+            gtk::glib::Propagation::Stop
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn undo_shortcuts(_: &tauri::WebviewWindow) {}
 
 /// A right click on a picture opens the app's own image menu (ui/js/imagemenu.js)
 /// via "image-menu" `{ label, uri, x, y }`: WebKitGTK delivers no events from the

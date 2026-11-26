@@ -2,15 +2,22 @@
 // The iframe keeps styles of quoted/forwarded HTML mails away from the window's own UI.
 import { h } from './util.js';
 import { icon } from './icons.js';
-import { promptDialog, showMenuAt } from './dialogs.js';
+import { modal, field, showMenuAt, showSheetMenu } from './dialogs.js';
+import { isMobile } from './api.js';
+import { registerEditor } from './undo.js';
 import { installNativeImageMenu } from './imagemenu.js';
 
 installNativeImageMenu();
 
 const COLORS = ['#000000', '#7f7f7f', '#c00000', '#ff0000', '#ffc000', '#00b050', '#0070c0', '#002060', '#7030a0'];
+const COLOR_NAMES = [['#000000', 'Schwarz'], ['#7f7f7f', 'Grau'], ['#c00000', 'Dunkelrot'], ['#ff0000', 'Rot'], ['#ffc000', 'Orange'], ['#00b050', 'Grün'], ['#0070c0', 'Blau'], ['#002060', 'Dunkelblau'], ['#7030a0', 'Lila']];
 // html needs a height so the body's min-height fills the editor: clicks
 // anywhere in an empty editor land in the text and it is never 0 px tall.
-const BASE_CSS = 'html{height:100%}body{font-family:"Segoe UI",Calibri,system-ui,Arial,sans-serif;font-size:11pt;line-height:1.45;color:#1f2328;margin:14px 20px;max-width:820px;word-wrap:break-word;min-height:calc(100% - 28px);box-sizing:border-box}p{margin:0}img{max-width:100%}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex}';
+// Phone: the same 11pt mail text, shown larger (zoom keeps the sent formatting).
+const MOBILE_CSS = 'html{zoom:1.14}body{margin:12px 14px;min-height:calc(100% - 24px)}'
+  // reply/forward: the quote (from the first rule on) collapsed until asked for; the body class is never sent
+  + 'body.lt-qc hr,body.lt-qc hr~*{display:none!important}';
+const BASE_CSS = 'html{height:100%}body{font-family:"Segoe UI",Calibri,system-ui,Arial,sans-serif;font-size:11pt;line-height:1.45;color:#1f2328;margin:14px 20px;max-width:820px;word-wrap:break-word;min-height:calc(100% - 28px);box-sizing:border-box}p{margin:0}img{max-width:100%}blockquote{margin:0 0 0 .8ex;border-left:2px solid #b5c4df;padding-left:1ex}a[href]{color:#0563c1;text-decoration:underline}';
 
 function splitHtml(html) {
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
@@ -26,33 +33,59 @@ function splitHtml(html) {
 }
 
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+// Text the writer turned back from a link into plain text: never linked again.
+// The marker stays in the HTML (a plain <span>), so a reopened draft keeps it.
+const NOLINK = 'data-lt-nolink';
 
-/** Turns bare web addresses in the text into links (text inside <a> stays as is). */
-function linkify(root) {
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (n.parentElement && n.parentElement.closest('a,style,script') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+/**
+ * Turns bare web addresses in the text into links (text inside <a> stays as is).
+ * `sel`: the editor's selection; an address the caret is in or right behind
+ * (still being typed or edited) stays text, and the caret keeps its place.
+ * Returns whether anything was linked.
+ */
+function linkify(root, sel = null) {
+  const d = root.ownerDocument;
+  const walker = d.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement && n.parentElement.closest(`a,style,script,[${NOLINK}]`) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   });
   const nodes = [];
   for (let n = walker.nextNode(); n; n = walker.nextNode()) if (/https?:\/\/|www\./i.test(n.data)) nodes.push(n);
+  const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+  let changed = false;
   for (const node of nodes) {
+    // A selection over more than the caret: leave the text it touches alone.
+    if (range && !range.collapsed && range.intersectsNode(node)) continue;
+    const caret = range && range.collapsed && range.startContainer === node ? range.startOffset : -1;
     const text = node.data;
-    const frag = root.ownerDocument.createDocumentFragment();
-    let last = 0;
+    const frag = d.createDocumentFragment();
+    let last = 0, caretAt = null;
+    const put = (n, from) => {
+      frag.append(n);
+      if (caret >= from && caret <= from + n.data.length && n.nodeType === 3 && !caretAt) caretAt = [n, caret - from];
+    };
     for (const m of text.matchAll(URL_RE)) {
       // Trailing punctuation usually ends the sentence, not the address.
       const url = m[0].replace(/[.,;:!?)\]}'»“”]+$/, '');
       if (!url || /^www\.$/i.test(url)) continue;
-      frag.append(text.slice(last, m.index));
-      const a = root.ownerDocument.createElement('a');
+      if (caret >= m.index && caret <= m.index + url.length) continue;
+      put(d.createTextNode(text.slice(last, m.index)), last);
+      const a = d.createElement('a');
       a.href = /^www\./i.test(url) ? 'https://' + url : url;
       a.textContent = url;
       frag.append(a);
       last = m.index + url.length;
     }
     if (!last) continue;
-    frag.append(text.slice(last));
+    put(d.createTextNode(text.slice(last)), last);
     node.replaceWith(frag);
+    changed = true;
+    if (caretAt) {
+      const r = d.createRange();
+      r.setStart(caretAt[0], caretAt[1]); r.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r);
+    }
   }
+  return changed;
 }
 
 function fileToDataUrl(file) {
@@ -282,6 +315,105 @@ function bindImageResize(frame, doc, changed) {
   document.addEventListener('mousedown', (e) => { if (img && !box.contains(e.target) && !e.target.closest('.img-spot')) hide(); });
 }
 
+// ---- undo history
+// The editor keeps its own undo steps (keys: undo.js): WebKitGTK binds no keys
+// to its native undo, and lumps everything typed and deleted since the caret
+// last moved into one step. Here a step ends after a pause, when typing turns
+// into deleting (or back), and around toolbar actions, links, pictures and
+// pasting.
+const UNDO_PAUSE_MS = 1000;
+const UNDO_GROUP_MS = 4000;
+const UNDO_MAX = 100;
+
+/** Child-index path from `root` to `node` (null when outside). */
+function nodePath(root, node) {
+  const path = [];
+  for (let n = node; n !== root; n = n.parentNode) {
+    if (!n || !n.parentNode) return null;
+    path.unshift(Array.prototype.indexOf.call(n.parentNode.childNodes, n));
+  }
+  return path;
+}
+function nodeAt(root, path) {
+  let n = root;
+  for (const i of path) { n = n && n.childNodes[i]; if (!n) return null; }
+  return n;
+}
+const maxOffset = (n) => (n.nodeType === 3 ? n.data.length : n.childNodes.length);
+
+function createHistory(doc, onRestore) {
+  const body = doc.body;
+  const saveSel = () => {
+    const sel = doc.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    const a = nodePath(body, r.startContainer), b = nodePath(body, r.endContainer);
+    return a && b ? { a, ao: r.startOffset, b, bo: r.endOffset } : null;
+  };
+  const snap = () => ({ html: body.innerHTML, len: body.textContent.length, sel: saveSel() });
+  const stack = [snap()];
+  let idx = 0, last = 0, start = 0, dir = 0, isolate = false;
+
+  const restoreSel = (...cands) => {
+    for (const c of cands) {
+      if (!c) continue;
+      const a = nodeAt(body, c.a), b = nodeAt(body, c.b);
+      if (!a || !b) continue;
+      try {
+        const r = doc.createRange();
+        r.setStart(a, Math.min(c.ao, maxOffset(a)));
+        r.setEnd(b, Math.min(c.bo, maxOffset(b)));
+        const sel = doc.getSelection();
+        sel.removeAllRanges(); sel.addRange(r);
+        return;
+      } catch { /* try the next */ }
+    }
+    const r = doc.createRange();
+    r.selectNodeContents(body); r.collapse(false);
+    const sel = doc.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  };
+  const go = (to, selFirst) => {
+    const leaving = stack[idx];
+    idx = to;
+    body.innerHTML = stack[idx].html;
+    // Undo: the caret goes where the undone change was; redo: where the step ended.
+    if (selFirst) restoreSel(leaving.sel, stack[idx].sel); else restoreSel(stack[idx].sel);
+    last = 0;
+    onRestore();
+  };
+  return {
+    /** Called after every change of the text (MutationObserver). */
+    record() {
+      const cur = snap();
+      const top = stack[idx];
+      if (cur.html === top.html) { top.sel = cur.sel; return; }
+      const now = Date.now();
+      // Direction by text length: the HTML shrinks when a typed letter turns &nbsp; into a space.
+      const d = Math.sign(cur.len - top.len);
+      const merge = !isolate && idx > 0 && last && now - last < UNDO_PAUSE_MS && now - start < UNDO_GROUP_MS && (d === dir || !d || !dir);
+      if (merge) {
+        stack[idx] = cur;
+        if (d) dir = d;
+      } else {
+        stack.length = idx + 1;
+        stack.push(cur);
+        if (stack.length > UNDO_MAX) stack.shift();
+        idx = stack.length - 1;
+        start = now; dir = d;
+      }
+      // A separate step (toolbar action, link, picture, paste): the next change starts a new one too.
+      last = isolate ? 0 : now;
+      isolate = false;
+    },
+    /** The next change becomes a step of its own. */
+    checkpoint() { isolate = true; last = 0; },
+    /** Folds a change made by the editor itself (links made while typing) into the current step. */
+    amend() { const cur = snap(); stack[idx] = cur; },
+    undo() { if (idx > 0) go(idx - 1, true); },
+    redo() { if (idx < stack.length - 1) go(idx + 1, false); },
+  };
+}
+
 /** Local paths when `text` consists only of file:// addresses (one per line
  *  or separated by blanks), else []. */
 export function fileUriPaths(text) {
@@ -323,9 +455,13 @@ function takePastedFileUris(records) {
   return out;
 }
 
-export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles, onPasteFiles, onPastePaths } = {}) {
+export function createEditor({ html = '', onInput, minHeight = 200, lead = [], onDropFiles, onPasteFiles, onPastePaths, placeholder = '' } = {}) {
+  // Phone: grey hint text while the visible text is empty.
+  const phCss = isMobile && placeholder ? `body.lt-empty::before{content:${JSON.stringify(placeholder)};position:absolute;color:#9aa1ab;pointer-events:none}` : '';
   const frame = h('iframe.editor-frame', { sandbox: 'allow-same-origin', title: 'Nachrichtentext', style: { minHeight: minHeight + 'px' } });
   let doc = null;
+  let history = null;
+  let autoLinkHook = null;
   let pending = html;
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
@@ -337,7 +473,19 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       // (WebKitGTK on Linux) dispatches no events at all from a frame sandboxed
       // without allow-scripts, so typing and pasting would go unnoticed.
       const d = doc;
-      new MutationObserver((records) => {
+      // Phone: "Nachricht schreiben…" while the visible text is empty (the class is never sent).
+      const syncEmpty = () => {
+        if (!isMobile || !d.body) return;
+        let txt = '';
+        for (const n of d.body.childNodes) { if (n.nodeName === 'HR' && d.body.classList.contains('lt-qc')) break; txt += n.textContent || ''; if (n.querySelector && n.querySelector('img')) txt += 'x'; }
+        d.body.classList.toggle('lt-empty', !txt.trim());
+      };
+      syncEmpty();
+      new MutationObserver(syncEmpty).observe(d.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+      // Restoring a step is no new change: its records are dropped.
+      const hist = createHistory(d, () => { observer.takeRecords(); onInput && onInput(); updateState(); });
+      history = hist;
+      const observer = new MutationObserver((records) => {
         if (d !== doc) return;
         // WebKitGTK fires no paste event here: pasted file addresses are
         // recognised in the inserted text, removed and attached as files.
@@ -348,7 +496,22 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
         onInput && onInput();
         // A native paste (e.g. an image in WebKit) may bring blob: images.
         if (d.querySelector('img[src^="blob:" i]')) embedBlobImages(d).catch(console.warn);
-      }).observe(d.documentElement, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true });
+        hist.record();
+        scheduleLinkify();
+      });
+      // Web addresses become links while writing, once the caret has left them
+      // (checked again shortly after each change, and while the caret moves).
+      let linkTimer = 0;
+      const autoLink = (initial = false) => {
+        linkTimer = 0;
+        if (d !== doc) return;
+        // Not a change of the writer's: no undo step of its own.
+        if (linkify(d.body, d.getSelection())) { hist.amend(); if (!initial && onInput) onInput(); }
+      };
+      const scheduleLinkify = () => { if (!linkTimer) linkTimer = setTimeout(autoLink, 400); };
+      autoLink(true);
+      autoLinkHook = scheduleLinkify;
+      observer.observe(d.documentElement, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true });
       if (onDropFiles) {
         // Files dropped onto the text become attachments (the drop lands in this frame, not the window).
         const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
@@ -367,7 +530,7 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
           onDropFiles([...e.dataTransfer.files]);
         });
       }
-      bindImageResize(frame, doc, () => { onInput && onInput(); });
+      bindImageResize(frame, doc, () => { hist.checkpoint(); onInput && onInput(); });
       doc.addEventListener('keyup', updateState);
       doc.addEventListener('mouseup', updateState);
       doc.addEventListener('paste', (e) => {
@@ -388,12 +551,20 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
           // Image only (screenshot, copied picture): embed it as data URL.
           if (!html) html = (await Promise.all(files.map(fileToDataUrl))).map((u) => `<img src="${u}">`).join('');
           if (target !== doc) return;
+          hist.checkpoint();
           doc.execCommand('insertHTML', false, html);
         })().catch(console.warn);
       });
       doc.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        // Undo/redo with the editor's own steps (where the frame reports keys at all).
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'z' || (k === 'y' && !e.shiftKey))) {
+          e.preventDefault();
+          if (k === 'y' || e.shiftKey) hist.redo(); else hist.undo();
+          return;
+        }
         // forward window shortcuts (Ctrl+Enter send, Ctrl+S save, Esc)
-        if ((e.ctrlKey || e.metaKey) && (e.key === 'Enter' || e.key.toLowerCase() === 's')) {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'Enter' || k === 's')) {
           e.preventDefault();
           window.dispatchEvent(new KeyboardEvent('keydown', { key: e.key, ctrlKey: true, bubbles: true }));
         }
@@ -401,13 +572,15 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
       resolveReady();
   });
   setContent(pending);
+  registerEditor(frame, { undo: () => history && history.undo(), redo: () => history && history.redo() });
 
   function setContent(x) {
     const { styles, body } = splitHtml(x);
-    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}</style>${styles}</head><body>${body}</body></html>`;
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta data-oc="1" http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid: blob: https: http:; style-src 'unsafe-inline'"><style data-oc="1">${BASE_CSS}${isMobile ? MOBILE_CSS + phCss : ''}</style>${styles}</head><body>${body}</body></html>`;
   }
 
-  const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
+  const checkpoint = () => { if (history) history.checkpoint(); };
+  const exec = (cmd, val = null) => { if (!doc) return; frame.contentWindow.focus(); checkpoint(); doc.execCommand(cmd, false, val); onInput && onInput(); updateState(); };
   const btn = (ic, title, fn, cmd) => {
     const b = h('button.ed-btn', { type: 'button', title, 'aria-label': title, html: icon(ic, 18), dataset: { cmd: cmd || '' } });
     b.addEventListener('mousedown', (e) => e.preventDefault());
@@ -455,51 +628,172 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     if (/^[a-z][a-z0-9+.-]*:/i.test(v) && !/^[^:/]+:\d/.test(v)) return null;
     return 'https://' + v.replace(/^\/+/, '');
   };
+  /** The dialog for a link: its text and its address, edited apart. Resolves
+   *  { text, url }, 'remove' (existing link only) or null. */
+  function linkDialog({ text, url, existing }) {
+    const textIn = h('input.input', { type: 'text', value: text, placeholder: 'Wie die Adresse', style: { width: '100%' }, dataset: { testid: 'link-text' } });
+    const urlIn = h('input.input', { type: 'text', value: url, placeholder: 'https://…', style: { width: '100%' }, dataset: { testid: 'link-url' } });
+    const p = modal({
+      title: existing ? 'Link bearbeiten' : 'Link einfügen',
+      body: h('div.link-dialog', field('Angezeigter Text', textIn), field('Adresse', urlIn)),
+      buttons: [
+        { label: 'OK', value: 'ok', primary: true },
+        ...(existing ? [{ label: 'Link entfernen', value: 'remove', id: 'link-remove' }] : []),
+        { label: 'Abbrechen', value: null, cancel: true },
+      ],
+      onBeforeClose: (v) => {
+        if (v === 'remove') return 'remove';
+        const u = normalizeUrl(urlIn.value);
+        if (!u) { urlIn.focus(); urlIn.select(); return false; }
+        return { text: textIn.value, url: u };
+      },
+    });
+    // The address is what is asked for first (the text is mostly right already).
+    urlIn.focus(); urlIn.select();
+    return p.then((r) => (r == null ? null : r));
+  }
   // Done on the DOM rather than with execCommand('createLink'), which WebKit
   // ignores in the sandboxed frame once the selection was lost to the dialog.
-  async function editLink() {
+  async function editLink(target = null) {
     if (!doc) return;
     const d = doc;
     const sel = d.getSelection();
     const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-    const existing = linkAt(range);
-    const input = await promptDialog('Adresse:', { title: existing ? 'Link bearbeiten' : 'Link einfügen', value: existing ? existing.getAttribute('href') : 'https://' });
-    if (input == null || d !== doc) return;
-    const url = normalizeUrl(input);
-    if (!url) return;
+    const existing = target || linkAt(range);
+    const selText = range && !range.collapsed ? range.toString() : '';
+    const res = await linkDialog(existing
+      ? { text: existing.textContent, url: existing.getAttribute('href') || '', existing: true }
+      : { text: selText, url: 'https://' });
+    if (res == null || d !== doc || (existing && !existing.isConnected)) return;
     frame.contentWindow.focus();
+    if (res === 'remove') { unlink([existing]); return; }
+    const { url } = res;
+    const shown = (s) => s.replace(/^mailto:/i, '');
+    checkpoint();
+    let a = existing;
     if (existing) {
-      if (existing.textContent === existing.getAttribute('href')) existing.textContent = url;
+      const oldHref = existing.getAttribute('href') || '';
+      const oldText = existing.textContent;
       existing.setAttribute('href', url);
+      // Changed text replaces the link's content; an address shown as its text follows the address.
+      if (res.text !== oldText) existing.textContent = res.text || shown(url);
+      else if (oldText === oldHref || oldText === shown(oldHref)) existing.textContent = shown(url);
     } else {
       const r = range || (() => { const x = d.createRange(); x.selectNodeContents(d.body); x.collapse(false); return x; })();
-      const a = d.createElement('a');
+      a = d.createElement('a');
       a.setAttribute('href', url);
-      if (r.collapsed) a.textContent = url.replace(/^mailto:/i, '');
-      else {
-        // Links nested in the selection are replaced by the new one.
+      if (r.collapsed || res.text !== selText) {
+        a.textContent = res.text || shown(url);
+        r.deleteContents();
+      } else {
+        // Links nested in the selection are replaced by the new one; formatting stays.
         const frag = r.extractContents();
         frag.querySelectorAll('a').forEach((x) => x.replaceWith(...x.childNodes));
         a.appendChild(frag);
       }
       r.insertNode(a);
-      const after = d.createRange();
-      after.setStartAfter(a); after.collapse(true);
-      sel.removeAllRanges(); sel.addRange(after);
     }
+    // Text that is a link again may be linked automatically again.
+    const shell = a.closest(`[${NOLINK}]`);
+    if (shell) shell.removeAttribute(NOLINK);
+    const after = d.createRange();
+    after.setStartAfter(a); after.collapse(true);
+    sel.removeAllRanges(); sel.addRange(after);
     onInput && onInput();
     updateState();
   }
-  function removeLink() {
-    const sel = doc && doc.getSelection();
-    const a = linkAt(sel && sel.rangeCount ? sel.getRangeAt(0) : null);
-    if (!a) return;
-    a.replaceWith(...a.childNodes);
+  /** Links back to plain text. Text that looks like an address is marked, so
+   *  it is not turned into a link again when typing or sending. */
+  function unlink(links) {
+    links = links.filter((a) => a && a.isConnected);
+    if (!links.length || !doc) return;
+    checkpoint();
+    const d = doc;
+    for (const a of links) {
+      if (/https?:\/\/|www\./i.test(a.textContent)) {
+        const span = d.createElement('span');
+        span.setAttribute(NOLINK, '');
+        span.append(...a.childNodes);
+        a.replaceWith(span);
+      } else a.replaceWith(...a.childNodes);
+    }
     onInput && onInput();
   }
+  /** Removes the link the caret is in, or all links the selection touches. */
+  function removeLink() {
+    const sel = doc && doc.getSelection();
+    const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    if (!r) return;
+    const inside = linkAt(r);
+    const links = inside ? [inside] : [...doc.querySelectorAll('a[href]')].filter((a) => r.intersectsNode(a));
+    unlink(links);
+  }
+  // ---- link bar: while the caret is in a link, its address with
+  // "Bearbeiten" and "Entfernen" below it. Polled: WebKit reports no selection
+  // changes from the sandboxed frame. The same poll links an address once the
+  // caret has left it.
+  const barUrl = h('span.link-bar-url');
+  const barBtn = (label, testid, fn) => {
+    const b = h('button', { type: 'button', dataset: { testid } }, label);
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', () => { const a = barLink; hideBar(); if (a && a.isConnected) fn(a); });
+    return b;
+  };
+  const linkBar = h('div.link-bar', { dataset: { testid: 'link-bar' } },
+    barUrl,
+    barBtn('Bearbeiten', 'link-bar-edit', (a) => editLink(a)),
+    barBtn('Entfernen', 'link-bar-remove', (a) => { frame.contentWindow.focus(); unlink([a]); }));
+  linkBar.addEventListener('mousedown', (e) => e.preventDefault());
+  let barLink = null, caretKey = null, wasConnected = false;
+  const hideBar = () => { barLink = null; linkBar.remove(); };
+  const pollLink = () => {
+    if (!frame.isConnected) { if (wasConnected) { clearInterval(linkPoll); hideBar(); } return; }
+    wasConnected = true;
+    const d = doc;
+    const sel = d && d.getSelection();
+    const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    const key = r ? [r.startContainer, r.startOffset, r.endContainer, r.endOffset] : null;
+    if (r && autoLinkHook && (!caretKey || key.some((x, i) => x !== caretKey[i]))) autoLinkHook();
+    caretKey = key;
+    const focused = document.activeElement === frame && !document.querySelector('.modal-overlay');
+    const a = focused ? linkAt(r) : null;
+    if (!a) { if (barLink) hideBar(); return; }
+    barLink = a;
+    const href = a.getAttribute('href') || '';
+    barUrl.textContent = href.replace(/^mailto:/i, '');
+    barUrl.title = href;
+    if (!linkBar.isConnected) document.body.appendChild(linkBar);
+    const f = frame.getBoundingClientRect();
+    const rects = a.getClientRects();
+    const lr = rects.length ? rects[rects.length - 1] : a.getBoundingClientRect();
+    const w = linkBar.offsetWidth, hgt = linkBar.offsetHeight;
+    let top = f.top + lr.bottom + 4;
+    if (top + hgt > Math.min(f.bottom, window.innerHeight)) top = f.top + (rects.length ? rects[0] : lr).top - hgt - 4;
+    const left = Math.max(4, Math.min(f.left + lr.left, window.innerWidth - w - 4));
+    Object.assign(linkBar.style, { left: left + 'px', top: top + 'px' });
+  };
+  const linkPoll = setInterval(pollLink, 150);
   const sep = () => h('span.ed-sep');
 
-  const toolbar = h('div.ed-toolbar',
+  // Phone: a few 44pt buttons; the rest of the formatting lives in an "Aa" sheet.
+  const formatSheet = () => showSheetMenu([
+    { label: 'Unterstrichen', icon: 'underline', onClick: () => exec('underline') },
+    { label: 'Nummerierung', icon: 'numbers', onClick: () => exec('insertOrderedList') },
+    { label: 'Link einfügen', icon: 'link', onClick: () => editLink() },
+    { label: 'Link entfernen', icon: 'link', onClick: removeLink },
+    { label: 'Zitat', icon: 'quote', onClick: () => exec('formatBlock', 'blockquote') },
+    { label: 'Schriftfarbe', icon: 'textColor', submenu: () => COLOR_NAMES.map(([c, n]) => ({ label: n, iconHtml: `<span class="ed-swatch" style="background:${c}"></span>`, onClick: () => exec('foreColor', c) })) },
+    { label: 'Schriftgröße', icon: 'textColor', submenu: () => [['2', 'Klein'], ['3', 'Normal'], ['4', 'Groß'], ['5', 'Sehr groß']].map(([v, l]) => ({ label: l, onClick: () => exec('fontSize', v) })) },
+    { separator: true },
+    { label: 'Formatierung löschen', icon: 'clearFormat', onClick: () => exec('removeFormat') },
+  ], { title: 'Formatierung' });
+  const toolbar = isMobile ? h('div.ed-toolbar.m-ed-toolbar',
+    ...lead,
+    btn('bold', 'Fett', () => exec('bold'), 'bold'),
+    btn('italic', 'Kursiv', () => exec('italic'), 'italic'),
+    btn('bullets', 'Aufzählung', () => exec('insertUnorderedList')),
+    (() => { const b = h('button.ed-btn.ed-aa', { type: 'button', title: 'Weitere Formatierung', 'aria-label': 'Weitere Formatierung', dataset: { testid: 'ed-format' } }, 'Aa'); b.addEventListener('mousedown', (e) => e.preventDefault()); b.addEventListener('click', formatSheet); return b; })(),
+  ) : h('div.ed-toolbar',
     ...lead, lead.length ? sep() : null,
     btn('bold', 'Fett (Strg+B)', () => exec('bold'), 'bold'),
     btn('italic', 'Kursiv (Strg+I)', () => exec('italic'), 'italic'),
@@ -537,9 +831,11 @@ export function createEditor({ html = '', onInput, minHeight = 200, lead = [], o
     getText: () => (doc ? doc.body.innerText : ''),
     /** The editable document (null until loaded). */
     doc: () => doc,
-    /** Notifies listeners after programmatic changes. */
-    changed: () => onInput && onInput(),
-    setHtml: async (x) => { pending = x; doc = null; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
+    /** Notifies listeners after programmatic changes (a step of its own for undo). */
+    changed: () => { checkpoint(); onInput && onInput(); },
+    undo: () => history && history.undo(),
+    redo: () => history && history.redo(),
+    setHtml: async (x) => { pending = x; doc = null; history = null; const p = new Promise((r) => frame.addEventListener('load', r, { once: true })); setContent(x); await p; },
     focus: async () => {
       await ready;
       frame.contentWindow.focus();

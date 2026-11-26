@@ -474,19 +474,19 @@ textarea.input { height: auto; min-height: 70px; resize: vertical; padding: 8px 
 .checkrow { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 /* Own checkbox: the native one draws its check mark off-centre in WebKitGTK. */
-input[type=checkbox]:not(.cal-check) {
+input[type=checkbox]:not(.cal-check):not(.m-switch) {
   appearance: none; -webkit-appearance: none; flex: none; margin: 0; width: 16px; height: 16px;
   border: 1.5px solid var(--border-strong); border-radius: 4px; background: var(--bg);
   display: inline-grid; place-content: center; cursor: pointer; vertical-align: middle;
 }
-input[type=checkbox]:not(.cal-check)::before {
+input[type=checkbox]:not(.cal-check):not(.m-switch)::before {
   content: ''; width: 9px; height: 5px; border: 2px solid #fff; border-top: 0; border-right: 0;
   transform: translateY(-1px) rotate(-45deg); opacity: 0;
 }
-input[type=checkbox]:not(.cal-check):checked { background: var(--accent); border-color: var(--accent); }
-input[type=checkbox]:not(.cal-check):checked::before { opacity: 1; }
-input[type=checkbox]:not(.cal-check):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input[type=checkbox]:not(.cal-check):disabled { opacity: .5; cursor: default; }
+input[type=checkbox]:not(.cal-check):not(.m-switch):checked { background: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:not(.cal-check):not(.m-switch):checked::before { opacity: 1; }
+input[type=checkbox]:not(.cal-check):not(.m-switch):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=checkbox]:not(.cal-check):not(.m-switch):disabled { opacity: .5; cursor: default; }
 input[type=radio] { margin: 0; flex: none; width: 15px; height: 15px; }
 fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px 12px; margin: 10px 0; }
 legend { color: var(--text-2); padding: 0 6px; font-weight: 600; }
@@ -797,3 +797,8 @@ textarea.source { width: 100%; height: 60vh; font-family: Consolas, "Cascadia Mo
 .img-resize-bar button { border: 1px solid var(--border, #d0d7de); background: transparent; color: inherit; border-radius: 4px; padding: 1px 6px; cursor: pointer; font-size: 12px; }
 .img-resize-bar button:hover { background: var(--hover, #eef2f8); }
 .img-resize-size { color: var(--muted, #6e7781); margin-left: 4px; }
+.link-bar { position: fixed; z-index: 50; display: flex; gap: 4px; align-items: center; max-width: min(520px, calc(100vw - 8px)); background: var(--panel, #fff); border: 1px solid var(--border, #d0d7de); border-radius: 6px; padding: 3px 6px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.link-bar-url { color: #0563c1; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; margin-right: 4px; }
+.link-bar button { flex: none; border: 1px solid var(--border, #d0d7de); background: transparent; color: inherit; border-radius: 4px; padding: 1px 6px; cursor: pointer; font-size: 12px; }
+.link-bar button:hover { background: var(--hover, #eef2f8); }
+.link-dialog .field { grid-template-columns: 130px 1fr; }

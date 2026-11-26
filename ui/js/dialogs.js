@@ -52,6 +52,26 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
       if (b.id) btn.id = b.id;
       footer.appendChild(btn);
     }
+    // Phone: a form dialog gets an iOS sheet header – "Abbrechen" · title · action –
+    // instead of a desktop footer (alerts keep their buttons at the bottom).
+    const cancelDef = buttons.find((b) => b.cancel);
+    const primaryDef = buttons.find((b) => b.primary);
+    const isForm = body && body.querySelector && (body.querySelector('input:not([type=hidden]), select, textarea, [contenteditable]') || /settings|sig-modal|ct-/.test(className));
+    if (isMobile && cancelDef && primaryDef && isForm) {
+      const btns = [...footer.children];
+      const fCancel = btns[buttons.indexOf(cancelDef)];
+      const fPrimary = btns[buttons.indexOf(primaryDef)];
+      const bar = dlg.querySelector('.modal-title');
+      bar.innerHTML = '';
+      const left = h('button.m-modal-cancel', { type: 'button', dataset: { testid: 'modal-cancel' } }, cancelDef.label);
+      left.addEventListener('click', () => fCancel.click());
+      const right = h('button.m-modal-action', { type: 'button', dataset: { testid: 'modal-ok' } }, primaryDef.label);
+      right.addEventListener('click', () => fPrimary.click());
+      bar.append(left, h('span.m-modal-title', title), right);
+      dlg.classList.add('m-navmodal');
+      fCancel.classList.add('m-hidden'); fPrimary.classList.add('m-hidden');
+      if (buttons.length === 2) footer.classList.add('m-hidden');
+    }
     function onKey(e) {
       // Only the topmost dialog reacts (nested dialogs, e.g. a confirm inside the settings).
       const overlays = document.querySelectorAll('.modal-overlay');
@@ -73,10 +93,39 @@ export function modal({ title, body, buttons = [{ label: 'OK', value: true, prim
 }
 
 export function confirmDialog(message, { title = 'Bestätigen', ok = 'OK', cancel = 'Abbrechen', danger = false } = {}) {
+  if (isMobile && danger) return actionSheet(message, { ok, cancel });
   return modal({
     title,
     body: h('div.confirm-body', h('span.confirm-icon', { html: icon(danger ? 'warning' : 'info', 32) }), h('div', message)),
     buttons: [{ label: ok, value: true, primary: true }, { label: cancel, value: false, cancel: true }],
+  });
+}
+
+/** Phone: a destructive confirmation as an iOS action sheet – message, red action, "Abbrechen". */
+function actionSheet(message, { ok, cancel }) {
+  return new Promise((resolve) => {
+    const scrim = h('div.msheet-scrim');
+    const sheet = h('div.msheet.m-action', { role: 'alertdialog', 'aria-label': message });
+    const msg = h('div.m-action-msg', message);
+    const okBtn = h('button.msheet-item.m-action-ok', { type: 'button', dataset: { testid: 'confirm-ok' } }, h('span.msheet-label', ok));
+    const cancelBtn = h('button.msheet-item.msheet-cancel', { type: 'button', dataset: { testid: 'confirm-cancel' } }, h('span.msheet-label', cancel));
+    sheet.append(h('div.msheet-grip'), msg, okBtn, cancelBtn);
+    let done = false;
+    const sh = shell();
+    const popLayer = sh ? sh.pushLayer(() => finish(false, true)) : null;
+    function finish(v, fromBack = false) {
+      if (done) return;
+      done = true;
+      if (popLayer && !fromBack) popLayer(false);
+      scrim.classList.remove('in'); sheet.classList.remove('in');
+      setTimeout(() => { scrim.remove(); sheet.remove(); }, 200);
+      resolve(v);
+    }
+    okBtn.addEventListener('click', () => finish(true));
+    cancelBtn.addEventListener('click', () => finish(false));
+    scrim.addEventListener('click', () => finish(false));
+    document.body.append(scrim, sheet);
+    requestAnimationFrame(() => { scrim.classList.add('in'); sheet.classList.add('in'); });
   });
 }
 
@@ -100,8 +149,10 @@ let toastHost;
 export function toast(message, kind = 'info', ms = 4500, opts = {}) {
   if (!toastHost) { toastHost = h('div.toast-host'); document.body.appendChild(toastHost); }
   const actionBtn = opts.action ? h('button.toast-action', { type: 'button', dataset: { testid: 'toast-action' } }, opts.action.label) : null;
+  // Phone: one message at a time – a new one replaces the previous (they used to stack over the list).
+  if (isMobile) toastHost.querySelectorAll('.toast').forEach((x) => x.remove());
   const t = h('div.toast.' + kind, { role: kind === 'error' ? 'alert' : 'status', title: opts.title || null },
-    h('span', { html: icon(kind === 'error' ? 'warning' : 'info', 16) }), h('span.toast-msg', message),
+    h('span', { html: icon(opts.icon || (kind === 'error' ? 'warning' : 'info'), 16) }), h('span.toast-msg', message),
     actionBtn,
     h('button.toast-x', { html: icon('close', 10), onclick: () => t.remove() }));
   if (actionBtn) actionBtn.addEventListener('click', () => { t.remove(); Promise.resolve().then(opts.action.onClick).catch(reportError); });
@@ -223,14 +274,20 @@ export function showSheetMenu(items, { title } = {}) {
       sheet.appendChild(h('div.msheet-title', heading));
     }
     const body = h('div.msheet-body');
+    // icons on all rows or on none – a lone icon makes the label column jump
+    const real = list.filter((it) => it && !it.separator && !it.header);
+    const withIcon = real.filter((it) => it.icon || it.iconHtml || it.checked).length;
+    const noIcons = withIcon < real.length / 2;
+    if (noIcons) sheet.classList.add('msheet-noicons'); else sheet.classList.remove('msheet-noicons');
     for (const it of list) {
       if (!it) continue;
-      if (it.separator) { body.appendChild(h('div.msheet-sep')); continue; }
+      // one hairline at most, never at the start or end
+      if (it.separator) { if (body.lastChild && !body.lastChild.classList.contains('msheet-sep')) body.appendChild(h('div.msheet-sep')); continue; }
       if (it.header) { body.appendChild(h('div.msheet-header', it.header)); continue; }
       const hint = it.shortcut && !KEY_HINT.test(it.shortcut) ? it.shortcut : '';
-      const row = h('button.msheet-item' + (it.disabled ? '.disabled' : '') + (it.checked ? '.checked' : ''), { type: 'button', role: 'menuitem', disabled: !!it.disabled },
+      const row = h('button.msheet-item' + (it.disabled ? '.disabled' : '') + (it.checked ? '.checked' : '') + (it.danger ? '.danger' : ''), { type: 'button', role: 'menuitem', disabled: !!it.disabled },
         h('span.msheet-icon', { html: it.checked ? icon('check', 18) : (it.iconHtml || (it.icon ? icon(it.icon, 20) : '')) }),
-        h('span.msheet-label', it.label),
+        h('span.msheet-label', String(it.label || '').replace(/…$/, '')),
         hint ? h('span.msheet-hint', hint) : null,
         it.submenu ? h('span.msheet-arrow', { html: icon('chevronRight', 16) }) : null);
       if (it.testid) row.dataset.testid = it.testid;
@@ -247,7 +304,11 @@ export function showSheetMenu(items, { title } = {}) {
       });
       body.appendChild(row);
     }
+    if (body.lastChild && body.lastChild.classList.contains('msheet-sep')) body.lastChild.remove();
     sheet.appendChild(body);
+    const cancel = h('button.msheet-item.msheet-cancel', { type: 'button', dataset: { testid: 'msheet-cancel' } }, h('span.msheet-label', 'Abbrechen'));
+    cancel.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    sheet.appendChild(cancel);
   };
   render(items, null, title);
   let done = false;

@@ -1,5 +1,5 @@
 // Signatures per account: settings panel and helpers for the compose window.
-import { call } from './api.js';
+import { call, isMobile } from './api.js';
 import { h, esc } from './util.js';
 import { icon } from './icons.js';
 import { createEditor } from './editor.js';
@@ -82,11 +82,14 @@ export function signaturesPanel(accounts, initialAccountId) {
   const cbNew = h('input', { type: 'checkbox', name: 'useOnNew' });
   const cbReply = h('input', { type: 'checkbox', name: 'useOnReply' });
   const cbFwd = h('input', { type: 'checkbox', name: 'useOnForward' });
-  const flags = h('div.sig-flags',
-    h('div.sig-flags-title', 'Standardsignatur automatisch einfügen bei:'),
+  const flagRows = [
     h('label.checkrow', cbNew, 'Neuen E-Mails'),
-    h('label.checkrow', cbReply, 'Antworten (Antworten / Allen antworten)'),
-    h('label.checkrow', cbFwd, 'Weiterleitungen'));
+    h('label.checkrow', cbReply, isMobile ? 'Antworten und „Allen antworten“' : 'Antworten (Antworten / Allen antworten)'),
+    h('label.checkrow', cbFwd, 'Weiterleitungen')];
+  // Phone: the heading sits above the group (as a section title), not inside it.
+  const flags = isMobile
+    ? h('div.sig-flagwrap', h('div.m-group-title.sig-flags-head', 'Standardsignatur einfügen bei'), h('div.sig-flags', ...flagRows))
+    : h('div.sig-flags', h('div.sig-flags-title', 'Standardsignatur automatisch einfügen bei:'), ...flagRows);
 
   const cur = () => work.get(accountId);
   const markDirty = () => { const w = cur(); if (w) w.dirty = true; };

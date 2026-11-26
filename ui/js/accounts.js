@@ -1,5 +1,8 @@
 // Account setup: chooser (Microsoft 365 / Google / IMAP), IMAP wizard, server settings editor.
-import { call, on, openUrl } from './api.js';
+import { call, on, openUrl, isMobile } from './api.js';
+
+/** Phone: no trailing "…" on buttons (iOS uses it sparingly). */
+const btnLabel = (s) => (isMobile ? s.replace(/…$/, '') : s);
 import { h, esc, EMAIL_RE, initials, avatarColor, AVATAR_COLORS } from './util.js';
 import { icon } from './icons.js';
 import { modal, toast, reportError, busyClick, confirmDialog, promptDialog } from './dialogs.js';
@@ -390,7 +393,7 @@ export function avatarFromFile(file) {
 /** Picture of the account: choose (PNG/JPG, shown round) or remove. */
 function avatarEditor(acc, onChanged) {
   const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' }, dataset: { testid: 'acc-avatar-file' } });
-  const pick = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-pick' } }, acc.avatar ? 'Bild ändern…' : 'Bild wählen…');
+  const pick = h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-pick' } }, btnLabel(acc.avatar ? 'Bild ändern…' : 'Bild wählen…'));
   const remove = acc.avatar ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-avatar-remove' } }, 'Bild entfernen') : null;
   const set = async (avatar) => {
     await call('set_account_avatar', { accountId: acc.id, avatar });
@@ -430,6 +433,7 @@ function lookEditor(acc, { onPreview, onChanged }) {
       onclick: () => { color = c; renderSwatches(); save(); },
     }, c ? null : 'A');
     swatches.appendChild(sw(null, 'Automatisch'));
+    if (isMobile) swatches.appendChild(h('span.acc-swatch-hint', '„A“ = automatisch aus der Adresse'));
     for (const c of AVATAR_COLORS) swatches.appendChild(sw(c, c));
     picker.value = color || avatarColor(acc.email);
     swatches.appendChild(picker);
@@ -461,16 +465,34 @@ function lookEditor(acc, { onPreview, onChanged }) {
   label.addEventListener('input', () => onPreview(current()));
   label.addEventListener('change', save);
   renderSwatches();
-  return h('div.acc-look', { dataset: { testid: 'acc-look' } },
-    h('div.wiz-grid',
-      h('label.srv-l', 'Name in der Ansicht'), label,
-      h('label.srv-l', 'Farbe'), swatches,
-      h('label.srv-l', 'Inhalt im Kreis'), h('div', text,
-        h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`))));
+  const grid = h('div.wiz-grid',
+    h('label.srv-l', 'Name in der Ansicht'), label,
+    h('label.srv-l', 'Farbe'), swatches,
+    h('label.srv-l', isMobile ? 'Text im Kontobild' : 'Inhalt im Kreis'), h('div', text,
+      h('div.note', `Ohne Bild zeigt der Kreis diesen Text – bis zu ${BADGE_LINES} Zeilen mit je ${BADGE_LINE_MAX} Zeichen, die Schrift passt sich an. Leer = Initialen.`)));
+  // Phone: the look settings fold away behind one row – the page shows the essentials.
+  return isMobile
+    ? h('details.acc-look.m-details', { dataset: { testid: 'acc-look' } }, h('summary', 'Darstellung anpassen'), grid)
+    : h('div.acc-look', { dataset: { testid: 'acc-look' } }, grid);
 }
 
 /** Own sync interval of the account; empty = the global setting. Saved right away. */
+/** Phone: the sync interval as a value row with a picker ("Abgleich · Standard ›"). */
+function intervalRow(acc) {
+  const opts = [['', 'Standard'], ['30', '30 Sekunden'], ['60', '1 Minute'], ['120', '2 Minuten'], ['300', '5 Minuten'], ['900', '15 Minuten'], ['1800', '30 Minuten'], ['3600', '1 Stunde']];
+  const cur = acc.syncIntervalSecs ? String(acc.syncIntervalSecs) : '';
+  if (cur && !opts.some(([v]) => v === cur)) opts.push([cur, `${cur} Sekunden`]);
+  const sel = h('select.m-select', { name: 'accSyncInterval', dataset: { testid: 'acc-sync-interval' }, 'aria-label': 'Abgleich' },
+    ...opts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)));
+  sel.addEventListener('change', async () => {
+    const secs = sel.value === '' ? null : parseInt(sel.value, 10);
+    try { await call('set_account_sync_interval', { accountId: acc.id, syncIntervalSecs: secs }); acc.syncIntervalSecs = secs; } catch (e) { reportError(e); }
+  });
+  return h('label.m-row.m-row-select', { dataset: { testid: 'acc-interval' } }, h('span.m-row-label', 'Abgleich'), h('span.m-row-value', sel), h('span.m-row-chev', { html: icon('chevronRight', 16) }));
+}
+
 function intervalEditor(acc) {
+  if (isMobile) return intervalRow(acc);
   const input = h('input.input', { type: 'number', min: '30', max: '3600', step: '30', name: 'accSyncInterval', value: acc.syncIntervalSecs ? String(acc.syncIntervalSecs) : '', placeholder: 'Standard', style: { width: '100px' }, dataset: { testid: 'acc-sync-interval' } });
   input.addEventListener('change', async () => {
     const raw = input.value.trim();
@@ -510,7 +532,7 @@ function sharedMailboxes(acc, { onSaved, onRelogin }) {
       rm));
   }
   if (!shared.length) list.appendChild(h('div.dim', 'Keine freigegebenen Postfächer eingebunden.'));
-  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'shared-mb-add' }, html: icon('plus', 14) + ' Postfach hinzufügen…' });
+  const add = h('button.btn.small', { type: 'button', dataset: { testid: 'shared-mb-add' }, html: icon('plus', 14) + ' ' + btnLabel('Postfach hinzufügen…') });
   add.addEventListener('click', busyClick(async () => {
     const address = await promptDialog('E-Mail-Adresse des freigegebenen Postfachs (Sie brauchen in Exchange Vollzugriff darauf):', { title: 'Freigegebenes Postfach hinzufügen', placeholder: 'team@firma.de', ok: 'Hinzufügen' });
     if (!address || !address.trim()) return;
@@ -518,13 +540,13 @@ function sharedMailboxes(acc, { onSaved, onRelogin }) {
     toast(`Postfach ${mb.address} wurde hinzugefügt.`);
     onSaved && onSaved();
   }));
-  const relogin = onRelogin ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-relogin' }, html: icon('user', 14) + ' Erneut anmelden…' }) : null;
+  const relogin = onRelogin ? h('button.btn.small', { type: 'button', dataset: { testid: 'acc-relogin' }, html: icon('user', 14) + ' ' + btnLabel('Erneut anmelden…') }) : null;
   if (relogin) relogin.addEventListener('click', busyClick(() => onRelogin(acc)));
   return h('div.shared-mbs',
     h('div.acc-sub', 'Freigegebene Postfächer'),
     list,
     h('div.acc-actions', add, relogin),
-    h('p.note', 'Für Konten, die vor dieser Funktion angemeldet wurden, einmal „Erneut anmelden“ wählen, damit lettertask auf freigegebene Postfächer zugreifen darf.'));
+    h('p.note', isMobile ? '„Erneut anmelden“ ist nur für Konten nötig, die vor dieser Funktion angemeldet wurden.' : 'Für Konten, die vor dieser Funktion angemeldet wurden, einmal „Erneut anmelden“ wählen, damit lettertask auf freigegebene Postfächer zugreifen darf.'));
 }
 
 export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRelogin }) {
@@ -542,9 +564,20 @@ export function accountDetail(acc, { onRemoved, onSaved, onAvatar, onLook, onRel
     avatar.replaceWith(next);
     avatar = next;
   };
-  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc));
   const remove = h('button.btn.danger', { type: 'button', dataset: { testid: 'acc-remove' }, html: icon('signOut', 15) + ' Konto entfernen' });
   remove.addEventListener('click', () => onRemoved(acc));
+  // Phone (Microsoft 365): groups like a settings page – identity, a group of rows,
+  // a one-line footnote, shared mailboxes, and "Konto entfernen" on its own.
+  if (isMobile && !isGoogle(acc) && !isImap(acc)) {
+    box.classList.add('m-acc');
+    box.append(header,
+      h('div.m-acc-group', lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc)),
+      h('div.m-acc-foot', 'Microsoft-365-Konto, angebunden über Microsoft Graph. Der Name kommt aus Microsoft 365.'),
+      sharedMailboxes(acc, { onSaved, onRelogin }),
+      h('div.m-acc-group.m-acc-danger', remove));
+    return box;
+  }
+  box.append(header, lookEditor(acc, { onPreview: preview, onChanged: () => onLook && onLook(acc) }), intervalEditor(acc));
   if (isGoogle(acc)) return googleDetail(acc, box, remove, onSaved);
   if (!isImap(acc)) {
     box.append(

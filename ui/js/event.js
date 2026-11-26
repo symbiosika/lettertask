@@ -1,5 +1,6 @@
 // Appointment / meeting window.
-import { call, params, closeWindow, currentWindow } from './api.js';
+import { call, params, closeWindow, currentWindow, isMobile } from './api.js';
+import { mGroup, mRow, mSwitchRow, mSelectRow, mDanger } from './mform.js';
 import {
   h, $, esc, addDays, startOfDay, toDateInput, toTimeInput, parseLocal, toLocalIso, DAY_KEYS, WEEKDAYS, MONTHS, displayName, recurrenceText,
 } from './util.js';
@@ -11,8 +12,18 @@ import { tbBtn, group, setPressed } from './toolbar.js';
 import { getCategories, presetHex, swatchHtml, textOn, categoryHex } from './categories.js';
 import { state, bootstrapSecondary } from './state.js';
 import { isImap, isGoogle } from './accounts.js';
+import { IMPORT_KEY } from './icsimport.js';
 
 const P = params();
+/** Event of an .ics file to import (see icsimport.js), read once. */
+const IMPORTED = (() => {
+  if (!P.importKey || !P.importKey.startsWith(IMPORT_KEY)) return null;
+  try {
+    const v = JSON.parse(localStorage.getItem(P.importKey) || 'null');
+    localStorage.removeItem(P.importKey);
+    return v;
+  } catch { return null; }
+})();
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 // Reminder before the start – labelled "… vorher" so it is not read as the duration.
 const REMINDERS = [[-1, 'Keine Erinnerung'], [0, 'Erinnerung bei Beginn'], [5, '5 Minuten vorher'], [10, '10 Minuten vorher'], [15, '15 Minuten vorher'], [30, '30 Minuten vorher'], [60, '1 Stunde vorher'], [120, '2 Stunden vorher'], [240, '4 Stunden vorher'], [720, '12 Stunden vorher'], [1440, '1 Tag vorher'], [2880, '2 Tage vorher'], [10080, '1 Woche vorher']];
@@ -53,6 +64,7 @@ function allDayRange(ev) {
 
 // --------------------------------------------------------------- toolbar
 function renderToolbar() {
+  if (isMobile) { renderMobile(); return; }
   const tb = $('#toolbar');
   tb.innerHTML = '';
   if (st.readOnly) {
@@ -93,6 +105,73 @@ function renderToolbar() {
   );
 }
 
+// --------------------------------------------------------------- phone: nav bar + grouped option rows
+function mobileSlot(id, after) {
+  let el = document.getElementById(id);
+  if (!el) { el = h('div.m-form-slot', { id }); after.after(el); }
+  el.innerHTML = '';
+  return el;
+}
+
+function renderMobile() {
+  const tb = $('#toolbar');
+  tb.innerHTML = '';
+  tb.classList.add('m-navbar');
+  const isNew = !(st.event && st.event.id);
+  const opts = mobileSlot('m-opts', $('#form'));
+  const tail = mobileSlot('m-tail', $('#editor'));
+  const title = h('div.m-nav-title', st.readOnly ? 'Termin' : IMPORTED && isNew ? 'Termin importieren' : isNew ? (st.attendeesVisible ? 'Neue Besprechung' : 'Neuer Termin') : 'Termin bearbeiten');
+  if (st.readOnly) {
+    tb.append(title);
+    const resp = (label, ic, mode, testid) => mRow(label, null, { icon: ic, onClick: () => respond(mode), testid });
+    opts.append(mGroup([
+      resp('Annehmen', 'accept', 'accept', 'ev-accept'),
+      resp('Mit Vorbehalt', 'tentative', 'tentativelyAccept'),
+      resp('Ablehnen', 'decline', 'decline'),
+    ], { title: 'Antworten' }));
+    if (st.event && st.event.onlineMeetingUrl) {
+      opts.append(mGroup([mRow(meetingLabel() + ' beitreten', null, { icon: 'teams', onClick: () => import('./api.js').then((m) => m.openUrl(st.event.onlineMeetingUrl)) })]));
+    }
+    tail.append(mGroup([mDanger('Termin löschen', () => del(), { testid: 'ev-delete' })]));
+    return;
+  }
+  const send = st.attendeesVisible && isNew;
+  const save_ = h('button.m-nav-action', { type: 'button', dataset: { testid: 'ev-save' } }, send ? 'Senden' : 'Sichern');
+  save_.addEventListener('click', () => save());
+  tb.append(title, save_);
+
+  const sel = (options, value, onChange, testid) => {
+    const s = h('select', { dataset: { testid } }, ...options.map(([v, l]) => h('option', { value: String(v), selected: value === v }, l)));
+    s.addEventListener('change', () => { onChange(s.value); dirty(); });
+    return s;
+  };
+  const teams = mSwitchRow(google() ? 'Google Meet' : 'Teams-Besprechung', st.online, (v) => { st.online = v; dirty(); }, { icon: 'teams', testid: 'ev-teams' });
+  const n = required ? required.get().length + optional.get().length : 0;
+  void n;
+  const rows = [
+    st.attendeesVisible ? null : mRow('Teilnehmer', 'Einladen', { icon: 'people', chevron: true, onClick: () => toggleAttendees(), testid: 'ev-invite' }),
+    teams.row,
+  ];
+
+  const more = [
+    mSelectRow('Erinnerung', sel(REMINDERS, st.reminder, (v) => { st.reminder = Number(v); }, 'ev-reminder'), { icon: 'bell' }),
+    mRow('Wiederholen', st.recurrence ? recurrenceText(st.recurrence) : 'Nie', { icon: 'recurrence', chevron: true, onClick: () => recurrenceDialog(), testid: 'ev-series' }),
+    mSelectRow('Anzeigen als', sel(SHOWAS, st.showAs, (v) => { st.showAs = v; }, 'ev-showas'), { icon: 'clock' }),
+  ];
+  const flags = [];
+  if (!google()) {
+    flags.push(mRow('Kategorien', st.categories.length ? st.categories.join(', ') : 'Keine', { icon: 'tag', chevron: true, onClick: (b) => showMenuAt(b, categoryItems()), testid: 'ev-categorize' }));
+  }
+  flags.push(mSwitchRow('Privat', st.sensitivity === 'private', (v) => { st.sensitivity = v ? 'private' : 'normal'; dirty(); }, { icon: 'lock' }).row);
+  if (!google()) flags.push(mSwitchRow('Wichtig', st.importance === 'high', (v) => { st.importance = v ? 'high' : 'normal'; dirty(); }, { icon: 'important' }).row);
+  opts.append(mGroup(rows), mGroup(more), mGroup(flags));
+  const danger = [
+    st.attendeesVisible ? mDanger(isNew ? 'Teilnehmer entfernen' : 'Einladung zurückziehen', () => toggleAttendees(), { testid: 'ev-invite' }) : null,
+    isNew ? null : mDanger('Termin löschen', () => del(), { testid: 'ev-delete' }),
+  ].filter(Boolean);
+  if (danger.length) tail.append(mGroup(danger));
+}
+
 /** Event of a Google account (Google Meet instead of Teams, no categories). */
 function google() { const a = state.accounts.find((x) => x.id === st.accountId); return !!a && isGoogle(a); }
 function meetingLabel() { return /meet\.google\.com/.test((st.event && st.event.onlineMeetingUrl) || '') ? 'Meet' : 'Teams'; }
@@ -127,8 +206,8 @@ function renderForm() {
     const acc = state.accounts.find((a) => a.id === st.accountId);
     return acc && acc.mailboxes[0] ? acc.mailboxes[0].id : null;
   };
-  required = recipientField({ mailboxId: mb, name: 'required', onChange: dirty });
-  optional = recipientField({ mailboxId: mb, name: 'optional', onChange: dirty });
+  required = recipientField({ mailboxId: mb, name: 'required', onChange: dirty, placeholder: isMobile ? 'Person hinzufügen' : undefined });
+  optional = recipientField({ mailboxId: mb, name: 'optional', onChange: dirty, placeholder: isMobile ? 'Person hinzufügen' : undefined });
   f.subject = h('input.input', { name: 'subject', 'aria-label': 'Betreff' });
   f.subject.addEventListener('input', () => { dirty(); updateTitle(); });
   f.location = h('input.input', { name: 'location', 'aria-label': 'Ort' });
@@ -159,9 +238,31 @@ function renderForm() {
   f.allDay.addEventListener('change', () => { syncAllDay(); dirty(); });
   f.calendar.addEventListener('change', () => { dirty(); onCalendarChange(); });
 
-  const attLbl = (label, fld) => h('button.flabel.btn.small', { type: 'button', tabindex: '-1', onclick: () => fld.focus(), style: { justifyContent: 'flex-start' } }, label);
+  const attLbl = (label, fld) => (isMobile
+    ? h('span.m-att-lbl', { onclick: () => fld.focus() }, label.replace('…', ''))
+    : h('button.flabel.btn.small', { type: 'button', tabindex: '-1', onclick: () => fld.focus(), style: { justifyContent: 'flex-start' } }, label));
   f.rowsAtt = [attLbl('Erforderlich…', required), required.el, attLbl('Optional…', optional), optional.el];
   f.catRow = h('div.cat-picks');
+  if (isMobile) {
+    f.allDay.classList.add('m-switch');
+    f.allDay.setAttribute('role', 'switch');
+    f.subject.placeholder = 'Titel';
+    f.location.placeholder = 'Ort oder Videoanruf';
+    form.classList.add('m-evform');
+    form.append(
+      h('span.m-lbl-hidden', 'Titel'), f.subject,
+      h('span.m-lbl-hidden', 'Ort'), f.location,
+      ...f.rowsAtt,
+      h('span', 'Ganztägig'), h('label.inline.m-end', f.allDay),
+      h('span', 'Beginn'), h('div.inline', f.startDate, f.startTime),
+      h('span', 'Ende'), h('div.inline', f.endDate, f.endTime, f.recurText = h('span.dim.hidden')),
+      h('span', 'Kalender'), h('div.inline', f.calendar, f.catRow),
+    );
+    editor = createEditor({ onInput: dirty, minHeight: 160, placeholder: 'Notizen hinzufügen' });
+    $('#editor').append(h('div.m-group-title', 'Notizen'), editor.toolbar, editor.area);
+    layoutRows();
+    return;
+  }
   form.append(
     ...f.rowsAtt,
     h('span', 'Betreff:'), f.subject,
@@ -187,6 +288,7 @@ function syncAllDay() {
 }
 
 function renderCats() {
+  if (isMobile && $('#m-opts')) renderToolbar();
   f.catRow.innerHTML = '';
   for (const c of st.categories) {
     const bg = categoryHex(st.accountId, c);
@@ -200,7 +302,7 @@ function updateRecurText() {
 
 function updateTitle() {
   const t = f.subject.value.trim() || 'Unbenannt';
-  document.title = `${t} – ${st.attendeesVisible ? 'Besprechung' : 'Termin'}`;
+  document.title = `${t} – ${IMPORTED && !(st.event && st.event.id) ? 'Termin importieren' : st.attendeesVisible ? 'Besprechung' : 'Termin'}`;
   { const w = currentWindow(); if (w) w.setTitle(document.title).catch(() => {}); }
 }
 
@@ -468,10 +570,17 @@ async function init() {
     if (!def) onCalendarChange(); // first writable calendar of another account
     syncAllDay();
     if (P.attendees) { st.attendeesVisible = true; required.set(P.attendees.split(';').filter(Boolean).map((a) => ({ name: a, address: a }))); layoutRows(); }
+    if (IMPORTED) {
+      // Attendees are not taken over: saving would send them invitations.
+      fillFromEvent({ ...IMPORTED, attendees: [] });
+      if (google()) { st.categories = []; renderCats(); }
+      await editor.setHtml(IMPORTED.bodyHtml || '');
+      $('#banner').appendChild(h('div.readonly-banner', { dataset: { testid: 'ev-import-banner' }, html: icon('import', 14) + ' Termin aus Kalenderdatei – vor dem Speichern anpassen und Kalender wählen.' }));
+    }
   }
   renderToolbar();
   updateTitle();
-  st.dirty = false;
+  st.dirty = !!IMPORTED && !(st.event && st.event.id);
   f.subject.focus();
 
   window.addEventListener('keydown', (e) => {
