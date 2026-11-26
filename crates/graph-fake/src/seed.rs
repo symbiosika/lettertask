@@ -214,6 +214,16 @@ fn seed_primary(mb: &mut Mailbox, now: DateTime<Utc>) {
     ], "Erika Beispiel<br>Fabrikam AG – Einkauf &amp; Abrechnung"), 4.0, json!({ "isRead": true, "categories": ["Rechnung"] }));
     mb.messages.get_mut(&id).expect("inserted").attachments.push(Att::new("Rechnung_2026-1043.pdf", "application/pdf", pdf.clone(), false, None));
 
+    // A calendar file as a plain attachment (not an Outlook invitation).
+    let id = add(mb, "inbox", KATRIN, "Termin Sommerfest zum Eintragen", html(&[
+        "Hallo zusammen,",
+        "im Anhang findet ihr den Termin für unser Sommerfest zum Eintragen in den Kalender.",
+    ], "Katrin Becker<br>IT"), 6.0, json!({ "isRead": true }));
+    let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Contoso//Sommerfest//DE\r\nBEGIN:VEVENT\r\nUID:sommerfest-2027@contoso.example\r\n\
+SUMMARY:Sommerfest Contoso\r\nDTSTART;TZID=Europe/Berlin:20270702T170000\r\nDTEND;TZID=Europe/Berlin:20270702T230000\r\n\
+LOCATION:Biergarten am See\r\nDESCRIPTION:Grillen\\, Musik und gute Laune.\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    mb.messages.get_mut(&id).expect("inserted").attachments.push(Att::new("Sommerfest.ics", "text/calendar", ics.as_bytes().to_vec(), false, None));
+
     let id = add(mb, "inbox", JULIA, "Neues Logo für den Website-Relaunch", html(&[
         "Hi Max,",
         "hier der finale Entwurf für den Header der neuen Website:",

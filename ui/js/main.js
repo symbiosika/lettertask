@@ -16,6 +16,7 @@ import { isImap, isGoogle, accountAvatar } from './accounts.js';
 import { snoozeOptions, computeSnooze, fmtSnoozeTarget } from './snooze.js';
 import { dateTimeField } from './due.js';
 import * as mobile from './mobile.js';
+import { pickIcsFile } from './icsimport.js';
 import { hooks, openSettings, openCategoryManager, openAutoReply, removeAccountDialog, addAccountFlow, welcomeDialog, aboutDialog } from './settings.js';
 
 const els = {
@@ -189,6 +190,7 @@ function appMenu() {
     { label: 'Neue Aufgabe', icon: 'task', shortcut: 'Strg+Umschalt+N', disabled: !acc, onClick: () => newTask() },
     { label: 'Neuer Termin', icon: 'calendarNew', shortcut: 'Strg+Umschalt+A', disabled: !withCalendar, onClick: () => calendar.newEvent() },
     { label: 'Neuer Kontakt', icon: 'contacts', disabled: !acc, onClick: () => { setMode('contacts'); contacts.newContact().catch(reportError); } },
+    { label: 'Kalenderdatei importieren…', icon: 'import', disabled: !withCalendar, onClick: () => pickIcsFile() },
     { separator: true },
     { label: 'Ansicht', icon: 'workWeek', submenu: () => [
       { header: 'Lesebereich' },
@@ -344,6 +346,7 @@ function renderToolbar() {
       h('span.spacer'),
       seg,
       sep(),
+      tbBtn('Importieren', 'import', () => pickIcsFile(), { testid: 'tb-import-ics', title: 'Kalenderdatei (.ics) importieren' }),
       tbBtn('Löschen', 'delete', () => calendar.deleteSelected(), { testid: 'tb-delete-event' }),
       tbBtn('', 'sync', () => syncAll(), { testid: 'tb-sync', title: 'Aktualisieren (F9)', iconOnly: true }),
     );
